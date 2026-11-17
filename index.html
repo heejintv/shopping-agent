@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>가격비교</title>
+<script src="config.js"></script>
 <style>
   :root {
     --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #6b7280; --line: #e5e7eb;
@@ -63,12 +64,6 @@
           background: color-mix(in srgb, var(--warn) 14%, var(--card)); border: 1px solid var(--warn); }
   #demo strong { color: var(--warn); }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-  #settings { padding: 12px 18px; }
-  #settings summary { cursor: pointer; font-weight: 600; }
-  .field { display: grid; gap: 4px; margin-top: 12px; font-size: 14px; color: var(--muted); }
-  .field input { padding: 10px 12px; font-size: 16px; border: 1px solid var(--line); border-radius: 8px;
-                 background: var(--bg); color: var(--text); min-width: 0; }
-  #saveSettings { margin-top: 12px; padding: 10px 16px; font-size: 15px; }
   #status { margin-top: 10px; font-size: 13px; color: var(--muted); }
   #status.ok { color: var(--good); }
   #status.bad { color: var(--bad); }
@@ -87,17 +82,6 @@
   </form>
 
   <div id="status"></div>
-
-  <details class="panel" id="settings">
-    <summary>서버 설정</summary>
-    <label class="field" id="serverRow">서버 주소 (터널을 켤 때마다 바뀌어요)
-      <input type="url" id="server" placeholder="https://xxxx.trycloudflare.com" autocomplete="off" spellcheck="false">
-    </label>
-    <label class="field">비밀번호
-      <input type="password" id="pw" autocomplete="current-password">
-    </label>
-    <button type="button" id="saveSettings">저장하고 연결</button>
-  </details>
 
   <div id="demo">
     <strong>데모 모드: 저장된 검색 결과를 보여주는 중</strong><br>
@@ -141,15 +125,11 @@ const fmtPrice = (p, cur) => p == null ? null :
 const safeUrl = u => /^https?:\/\//i.test(u || "") ? u : null;
 const list = (arr, cls) => arr && arr.length ? `<ul class="pc ${cls}">${arr.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : NA;
 
-// 서버 주소·비밀번호는 이 브라우저에만 저장 (저장이 막힌 브라우저에서도 동작하도록 try/catch)
-const store = {
-  get(k) { try { return localStorage.getItem(k) || ""; } catch (_) { return ""; } },
-  set(k, v) { try { localStorage.setItem(k, v); } catch (_) {} },
-};
-// Flask가 직접 이 페이지를 띄웠으면 같은 주소, 아니면(GitHub Pages) 설정한 서버 주소로 요청
+// Flask가 직접 이 페이지를 띄웠으면 같은 주소, 아니면(GitHub Pages) config.js의 서버 주소로 요청
 const onFlask = location.port === "5000";
-const apiBase = () => onFlask ? "" : (store.get("server") || "http://localhost:5000").trim().replace(/\/+$/, "");
-const authHeaders = () => ({ "X-App-Password": store.get("password") });
+const API_BASE = onFlask ? "" : String(window.APP_CONFIG?.SERVER_URL || "").trim().replace(/\/+$/, "");
+// ngrok 무료 도메인은 처음 접속 시 경고 페이지를 보여주는데, 이 헤더가 있으면 건너뜀
+const API_HEADERS = { "ngrok-skip-browser-warning": "1" };
 
 let demoMode = false;
 let demoList = null;
@@ -160,37 +140,26 @@ function setStatus(text, cls = "") {
   $("status").className = cls;
 }
 
-function openSettings(msg) {
-  $("settings").open = true;
-  setStatus(msg, "bad");
-  (onFlask || $("server").value ? $("pw") : $("server")).focus();
-}
-
 function showRemaining(d) {
-  if (d && d.remaining != null) setStatus(`연결됨 · 오늘 남은 새 검색 ${d.remaining}/${d.limit}회 (저장된 검색어는 무제한)`, "ok");
+  if (d && d.remaining != null) setStatus(`🟢 실시간 검색 가능 (오늘 남은 횟수 ${d.remaining}회)`, "ok");
 }
 
+// 페이지가 열리면 자동으로 서버 연결 시도. 안 되면 데모 모드
 async function connect() {
-  setStatus("서버 연결 확인 중...");
-  let reachable = false;
-  try {
-    reachable = (await fetch(apiBase() + "/health", { signal: AbortSignal.timeout(5000) })).ok;
-  } catch (_) {}
-  if (!reachable) {
-    setStatus("검색 서버에 연결할 수 없어요. 서버 주소를 확인하세요.", "bad");
+  setStatus("검색 서버 연결 확인 중...");
+  let d = null;
+  if (onFlask || API_BASE) {
+    try {
+      const res = await fetch(API_BASE + "/health", { headers: API_HEADERS, signal: AbortSignal.timeout(5000) });
+      if (res.ok) d = await res.json();
+    } catch (_) {}
+  }
+  if (!d || !d.ok) {
+    setStatus("");
     return enterDemoMode();
   }
   exitDemoMode();
-  if (!store.get("password")) return openSettings("비밀번호를 입력하세요.");
-  try {
-    const res = await fetch(apiBase() + "/verify", { headers: authHeaders() });
-    const d = await res.json();
-    if (!res.ok) return openSettings(d.error || "인증 실패");
-    $("settings").open = false;
-    showRemaining(d);
-  } catch (_) {
-    openSettings("서버 응답을 읽지 못했어요.");
-  }
+  showRemaining(d);
 }
 
 async function enterDemoMode() {
@@ -210,15 +179,6 @@ function exitDemoMode() {
   $("demo").style.display = "none";
 }
 
-if (onFlask) $("serverRow").style.display = "none";
-$("server").value = store.get("server");
-$("pw").value = store.get("password");
-$("saveSettings").addEventListener("click", () => {
-  store.set("server", $("server").value.trim());
-  store.set("password", $("pw").value);
-  connect();
-});
-
 $("chips").addEventListener("click", e => {
   const q = e.target.dataset?.q;
   if (q) { $("q").value = q; $("f").requestSubmit(); }
@@ -236,9 +196,9 @@ async function fetchDemo(q) {
 }
 
 async function fetchLive(q) {
-  const res = await fetch(apiBase() + "/search?q=" + encodeURIComponent(q), { headers: authHeaders() });
+  const res = await fetch(API_BASE + "/search?q=" + encodeURIComponent(q), { headers: API_HEADERS });
   const data = await res.json();
-  if (res.status === 401) openSettings(data.error);
+  if (res.status === 429) setStatus(`🟡 오늘 새 검색 횟수를 모두 썼어요 (저장된 검색어는 계속 볼 수 있어요)`, "bad");
   if (!res.ok) throw new Error(data.error || res.statusText);
   showRemaining(data);
   return data;
@@ -274,6 +234,7 @@ $("f").addEventListener("submit", async e => {
       data = await fetchLive(q);
     } catch (err) {
       if (!(err instanceof TypeError)) throw err;  // TypeError = 서버 연결 자체가 안 됨
+      setStatus("");
       await enterDemoMode();
       data = await fetchDemo(q);
     }

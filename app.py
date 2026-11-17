@@ -4,21 +4,17 @@
 브랜드·모델별 가격 정보를 JSON으로 받아 돌려준다. 결과는 cache/에 저장한다.
 
 인터넷에 공개할 때를 위한 보호 장치:
-- .env의 APP_PASSWORD와 요청 헤더 X-App-Password가 같아야 검색 가능
-- 비밀번호를 5번 틀리면 15분 동안 그 IP의 인증을 막음
-- 새 검색(claude 실행)은 하루 DAILY_LIMIT회(기본 20회)까지. 캐시된 결과는 제한 없음
+- 새 검색(claude 실행)은 하루 DAILY_LIMIT회(기본 10회)까지. 캐시된 결과는 제한 없음
 - CORS는 GitHub Pages 주소(ALLOWED_ORIGIN)만 허용
 """
 
 import hashlib
-import hmac
 import json
 import os
 import subprocess
 import threading
 import time
 from datetime import date
-from functools import wraps
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -43,10 +39,8 @@ def load_env(path: Path) -> None:
 
 load_env(BASE_DIR / ".env")
 
-APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
-DAILY_LIMIT = int(os.environ.get("DAILY_LIMIT", "20"))
+DAILY_LIMIT = int(os.environ.get("DAILY_LIMIT", "10"))
 ALLOWED_ORIGIN = "https://heejintv.github.io"
-MAX_FAILS, FAIL_WINDOW = 5, 15 * 60  # 15분 안에 5번 틀리면 잠금
 
 CLAUDE_TIMEOUT = 600  # 초. 웹 검색을 여러 번 하므로 넉넉하게 10분
 WEB_TOOLS = "WebSearch,WebFetch"
@@ -110,35 +104,6 @@ app = Flask(__name__)
 _locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
 _usage_lock = threading.Lock()
-_fails: dict[str, list[float]] = {}
-_fails_lock = threading.Lock()
-
-
-# ---------- 인증 ----------
-
-def client_ip() -> str:
-    # cloudflared 터널을 거치면 실제 접속자 IP는 CF-Connecting-IP 헤더에 담겨 온다
-    return request.headers.get("CF-Connecting-IP") or request.remote_addr or "?"
-
-
-def require_password(view):
-    @wraps(view)
-    def wrapper(*args, **kwargs):
-        if not APP_PASSWORD:
-            return jsonify(error="서버에 APP_PASSWORD가 설정되지 않았어요 (.env 확인)."), 503
-        ip, now = client_ip(), time.time()
-        with _fails_lock:
-            recent = [t for t in _fails.get(ip, []) if now - t < FAIL_WINDOW]
-            _fails[ip] = recent
-            if len(recent) >= MAX_FAILS:
-                return jsonify(error="비밀번호를 여러 번 틀려서 15분 동안 잠겼어요."), 429
-        given = request.headers.get("X-App-Password", "")
-        if not hmac.compare_digest(given.encode("utf-8"), APP_PASSWORD.encode("utf-8")):
-            with _fails_lock:
-                _fails[ip].append(now)
-            return jsonify(error="비밀번호가 틀렸어요.", auth=False), 401
-        return view(*args, **kwargs)
-    return wrapper
 
 
 # ---------- 하루 검색 횟수 ----------
@@ -211,7 +176,8 @@ def cors(resp):
     # GitHub Pages(heejintv.github.io)에서 온 요청만 허용. 다른 사이트는 브라우저가 차단
     if request.headers.get("Origin") == ALLOWED_ORIGIN:
         resp.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
-        resp.headers["Access-Control-Allow-Headers"] = "X-App-Password"
+        # ngrok 무료 도메인의 경고 페이지를 건너뛰는 헤더를 브라우저가 보낼 수 있게 허용
+        resp.headers["Access-Control-Allow-Headers"] = "ngrok-skip-browser-warning"
         resp.headers["Access-Control-Allow-Methods"] = "GET"
         resp.headers["Access-Control-Max-Age"] = "600"
     resp.headers["Vary"] = "Origin"
@@ -220,12 +186,6 @@ def cors(resp):
 
 @app.get("/health")
 def health():
-    return jsonify(ok=True)
-
-
-@app.get("/verify")
-@require_password
-def verify():
     return jsonify(ok=True, remaining=remaining(), limit=DAILY_LIMIT)
 
 
@@ -234,13 +194,17 @@ def index():
     return send_from_directory(BASE_DIR, "index.html")
 
 
+@app.get("/config.js")
+def config_js():
+    return send_from_directory(BASE_DIR, "config.js")
+
+
 @app.get("/demo/<path:name>")
 def demo_files(name):
     return send_from_directory(BASE_DIR / "demo", name)
 
 
 @app.get("/search")
-@require_password
 def search():
     q = (request.args.get("q") or "").strip()
     if not q:
@@ -283,8 +247,6 @@ def search():
 
 
 if __name__ == "__main__":
-    if not APP_PASSWORD:
-        print("경고: .env에 APP_PASSWORD가 없어서 검색이 모두 거부됩니다.")
-    # 127.0.0.1에서만 받음. 외부 공개는 cloudflared 터널이 대신 연결해 줌
+    # 127.0.0.1에서만 받음. 외부 공개는 ngrok 터널이 대신 연결해 줌
     # threaded=True: 검색 하나가 오래 걸려도 다른 요청을 동시에 처리
     app.run(host="127.0.0.1", port=5000, threaded=True)

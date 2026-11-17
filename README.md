@@ -18,9 +18,9 @@ API 키 없이 로컬에 설치된 Claude Code CLI(`claude -p`)를 검색 엔진
 
 GitHub Pages: https://heejintv.github.io/shopping-agent/
 
-검색 서버에 연결되지 않으면 **데모 모드**로 동작합니다.
-화면에 "데모 모드: 저장된 검색 결과를 보여주는 중"이 표시되고, 미리 검색해 둔 결과(`demo/`)를 보여줍니다.
-화면의 **서버 설정**에 터널 주소와 비밀번호를 넣으면 실제 검색을 할 수 있습니다.
+페이지가 열리면 `config.js`에 적힌 검색 서버로 자동 연결을 시도합니다.
+- 연결되면 바로 검색 가능: "🟢 실시간 검색 가능 (오늘 남은 횟수 N회)"
+- 연결되지 않으면 자동으로 **데모 모드**: 미리 검색해 둔 결과(`demo/`)를 보여줍니다.
 
 ## 구조
 
@@ -41,6 +41,7 @@ GitHub Pages: https://heejintv.github.io/shopping-agent/
 | 파일 | 역할 |
 |---|---|
 | `index.html` | 화면 (검색창, 로딩, 비교표, 막대그래프, 추천 카드, 데모 모드) |
+| `config.js` | 검색 서버 주소 (ngrok 고정 도메인) |
 | `app.py` | Flask 백엔드. `claude -p`를 웹 검색 도구만 허용해서 실행하고 결과를 캐시 |
 | `make_demo.py` | `cache/`의 검색 결과를 `demo/`로 복사 (GitHub Pages 데모용) |
 | `demo/` | 공개용으로 저장해 둔 검색 결과 |
@@ -48,8 +49,7 @@ GitHub Pages: https://heejintv.github.io/shopping-agent/
 | `.env.example` | 환경변수 예시 (`.env`로 복사해서 사용, `.env`는 올리지 않음) |
 
 ### 안전장치
-- **접속 비밀번호**: `.env`의 `APP_PASSWORD`와 요청 헤더 `X-App-Password`가 같아야 검색할 수 있습니다. 15분 안에 5번 틀리면 15분 동안 잠깁니다.
-- **하루 검색 제한**: 새 검색(Claude 실행)은 하루 20회(`DAILY_LIMIT`)까지. 이미 검색한 단어(캐시)는 제한 없음.
+- **하루 검색 제한**: 새 검색(Claude 실행)은 하루 10회(`DAILY_LIMIT`)까지. 이미 검색한 단어(캐시)는 제한 없음.
 - **CORS**: `https://heejintv.github.io`에서 온 요청만 허용합니다.
 - Claude가 쓸 수 있는 도구를 **웹 검색(WebSearch)과 웹페이지 읽기(WebFetch)로만 제한**해서 파일 수정이나 명령 실행이 불가능합니다.
 - JSON 스키마로 출력 형식을 강제하고, 확인 못 한 값은 `null`로 두도록 지시합니다.
@@ -67,26 +67,33 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-cp .env.example .env   # .env를 열어 APP_PASSWORD를 긴 비밀번호로 바꾸기
+cp .env.example .env   # 필요하면 DAILY_LIMIT 조정
 python app.py
 ```
 
 브라우저에서 http://localhost:5000 을 엽니다.
 검색 한 번에 보통 1~3분이 걸리고, Claude 계정 사용량이 차감됩니다.
 
-### 휴대폰에서 쓰기 (Cloudflare 빠른 터널)
+### 외부 공개 (ngrok 고정 도메인)
 
 ```bash
-# 터미널 1: 서버
-python app.py
+# 1. 설치 (Ubuntu/WSL)
+curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+sudo apt update && sudo apt install ngrok
 
-# 터미널 2: 터널
-cloudflared tunnel --url http://localhost:5000
+# 2. 토큰 등록 (https://dashboard.ngrok.com/get-started/your-authtoken)
+ngrok config add-authtoken <내 토큰>
+
+# 3. 고정 도메인 확인 (https://dashboard.ngrok.com/domains, 무료 계정에 1개 제공)
+
+# 4. 서버와 터널 실행
+python app.py                                   # 터미널 1
+ngrok http --url=<내도메인>.ngrok-free.app 5000  # 터미널 2
 ```
 
-터널 로그에 나오는 `https://xxxx.trycloudflare.com` 주소를 복사해서,
-휴대폰으로 https://heejintv.github.io/shopping-agent/ 를 열고 **서버 설정**에 주소와 비밀번호를 넣습니다.
-터널 주소는 켤 때마다 바뀌므로 다시 켜면 설정도 다시 입력합니다.
+`config.js`의 `SERVER_URL`을 내 고정 도메인으로 바꿔 push하면, GitHub Pages가 그 주소로 자동 연결합니다.
+도메인이 고정이라 터널을 다시 켜도 설정을 바꿀 필요가 없습니다.
 
 ### 데모 데이터 갱신
 
