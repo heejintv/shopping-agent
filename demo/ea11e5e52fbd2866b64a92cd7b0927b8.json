@@ -17,7 +17,8 @@
         "오른손 전용",
         "판매처별 가격 편차 큼(18만~23만원대)"
       ],
-      "url": "https://prod.danawa.com/info/?pcode=28481684"
+      "url": "https://prod.danawa.com/info/?pcode=28481684",
+      "url_verified": true
     },
     {
       "brand": "로지텍",
@@ -37,7 +38,8 @@
         "오른손 전용",
         "보증 1년"
       ],
-      "url": "https://prod.danawa.com/info/?pcode=98766185"
+      "url": "https://prod.danawa.com/info/?pcode=98766185",
+      "url_verified": true
     },
     {
       "brand": "로지텍",
@@ -55,7 +57,8 @@
       "cons": [
         "멀티페어링 미지원"
       ],
-      "url": "https://prod.danawa.com/info/?pcode=16221932"
+      "url": "https://prod.danawa.com/info/?pcode=16221932",
+      "url_verified": true
     },
     {
       "brand": "로지텍",
@@ -74,7 +77,8 @@
         "AA 건전지 사용(비충전식)",
         "블루투스 미지원"
       ],
-      "url": "https://prod.danawa.com/info/?pcode=6143401"
+      "url": "https://prod.danawa.com/info/?pcode=6143401",
+      "url_verified": true
     },
     {
       "brand": "로지텍",
@@ -94,7 +98,8 @@
         "오른손 전용",
         "부피가 커 휴대성 낮음"
       ],
-      "url": "https://prod.danawa.com/info/?pcode=16909604"
+      "url": "https://prod.danawa.com/info/?pcode=16909604",
+      "url_verified": true
     },
     {
       "brand": "로지텍",
@@ -114,7 +119,8 @@
         "AA 건전지 사용",
         "수신기 분실 시 사용 불가"
       ],
-      "url": "https://prod.danawa.com/info/?pcode=4554259"
+      "url": "https://prod.danawa.com/info/?pcode=4554259",
+      "url_verified": true
     },
     {
       "brand": "ATK",
@@ -134,7 +140,8 @@
         "판매처별 가격 차이 큼(최대 35,900원)",
         "보증 1년"
       ],
-      "url": "https://prod.danawa.com/info/?pcode=91770953"
+      "url": "https://prod.danawa.com/info/?pcode=91770953",
+      "url_verified": true
     },
     {
       "brand": "로지텍",
@@ -146,7 +153,8 @@
       "review_count": 176,
       "pros": [],
       "cons": [],
-      "url": "https://prod.danawa.com/info/?pcode=20312480"
+      "url": "https://prod.danawa.com/info/?pcode=20312480",
+      "url_verified": true
     }
   ],
   "value_pick": {

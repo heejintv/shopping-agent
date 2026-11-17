@@ -20,6 +20,8 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
 
+from links import verify_links
+
 BASE_DIR = Path(__file__).resolve().parent
 CACHE_DIR = BASE_DIR / "cache"
 CACHE_DIR.mkdir(exist_ok=True)
@@ -88,6 +90,7 @@ SCHEMA = {
 PROMPT = """상품 "{q}"의 한국 쇼핑몰(다나와·네이버쇼핑·쿠팡 등) 가격을 비교해.
 - 웹 검색은 최대 3번. 다나와 같은 가격비교 사이트 위주로 찾아.
 - 인기 상위 5개 모델만: price(원, 숫자), store, rating(5점), review_count, pros/cons(각 1~2개), url.
+- url: 검색 결과나 읽은 페이지에서 실제로 확인한 상품 페이지 주소를 그대로만. 주소를 만들거나 추측하지 말고, 확실하지 않으면 null.
 - 확인 못 한 값은 null(목록은 빈 배열). 지어내지 마.
 - value_pick(가성비)·quality_pick(품질): products의 model 이름 그대로 + 이유 한 줄. 근거 없으면 null.
 - notes: 주의사항 한 문장 또는 null.
@@ -297,6 +300,7 @@ def search():
             app.logger.exception("search failed")
             return jsonify(error="검색 중 오류가 났어요. 서버 로그를 확인하세요."), 502
 
+        verify_links(data)  # 링크마다 실제 접속해서 확인, 실패하면 다나와 검색 링크로 교체
         data["query"] = q
         data["condition"] = c or None
         data["searched_at"] = time.strftime("%Y-%m-%d %H:%M:%S")

@@ -217,6 +217,10 @@ const fmtPrice = (p, cur) => p == null ? null :
 const safeUrl = u => /^https?:\/\//i.test(u || "") ? u : null;
 const list = (arr, cls) => arr && arr.length ? `<ul class="pc ${cls}">${arr.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : NA;
 const hasPrice = p => typeof p.price === "number";
+// 서버가 검증한 링크면 "상품 보기", 다나와 검색 링크로 바뀐 경우면 "다나와에서 검색"
+const linkText = (p, short) => p.url_verified === false
+  ? (short ? "다나와 검색" : "다나와에서 검색 →")
+  : (short ? "보기" : "상품 보기 →");
 const cleanCond = s => (s || "").trim().split(/\s+/).join(" ");
 const FIT_CLASS = { "높음": "high", "보통": "mid", "낮음": "low" };
 const fitBadge = f => f ? `<span class="fit ${FIT_CLASS[f] || "low"}">적합도 ${esc(f)}</span>` : "";
@@ -456,7 +460,7 @@ function render(d) {
       <div class="price">${price ?? '<span class="na" style="font-size:16px;font-weight:400">가격 확인 안 됨</span>'}</div>
       ${p?.store ? `<div class="store">${esc(p.store)}</div>` : ""}
       ${why ? `<p class="why">${esc(why)}</p>` : ""}
-      ${url ? `<div class="go"><a href="${esc(url)}" target="_blank" rel="noopener noreferrer">상품 보기 →</a></div>` : ""}</div>`;
+      ${url ? `<div class="go"><a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${linkText(p)}</a></div>` : ""}</div>`;
   }).join("");
 
   current = { items, cheapest, valueP, qualityP, max: Math.max(...priced.map(p => p.price), 1) };
@@ -492,7 +496,7 @@ function renderTable() {
       <td class="rating" data-label="별점">${rating}</td>
       <td class="pc-cell" data-label="장점">${list(p.pros, "pros")}</td>
       <td class="pc-cell" data-label="단점">${list(p.cons, "cons")}</td>
-      <td class="link">${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">보기</a>` : ""}</td></tr>`;
+      <td class="link">${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${linkText(p, true)}</a>` : ""}</td></tr>`;
   }).join("");
 }
 </script>
