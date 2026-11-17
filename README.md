@@ -16,10 +16,11 @@ API 키 없이 로컬에 설치된 Claude Code CLI(`claude -p`)를 검색 엔진
 
 ## 데모
 
-GitHub Pages: `https://<사용자명>.github.io/<저장소명>/`
+GitHub Pages: https://heejintv.github.io/shopping-agent/
 
-GitHub Pages에는 검색 서버가 없기 때문에 **데모 모드**로 동작합니다.
+검색 서버에 연결되지 않으면 **데모 모드**로 동작합니다.
 화면에 "데모 모드: 저장된 검색 결과를 보여주는 중"이 표시되고, 미리 검색해 둔 결과(`demo/`)를 보여줍니다.
+화면의 **서버 설정**에 터널 주소와 비밀번호를 넣으면 실제 검색을 할 수 있습니다.
 
 ## 구조
 
@@ -44,8 +45,12 @@ GitHub Pages에는 검색 서버가 없기 때문에 **데모 모드**로 동작
 | `make_demo.py` | `cache/`의 검색 결과를 `demo/`로 복사 (GitHub Pages 데모용) |
 | `demo/` | 공개용으로 저장해 둔 검색 결과 |
 | `requirements.txt` | 파이썬 패키지 목록 |
+| `.env.example` | 환경변수 예시 (`.env`로 복사해서 사용, `.env`는 올리지 않음) |
 
 ### 안전장치
+- **접속 비밀번호**: `.env`의 `APP_PASSWORD`와 요청 헤더 `X-App-Password`가 같아야 검색할 수 있습니다. 15분 안에 5번 틀리면 15분 동안 잠깁니다.
+- **하루 검색 제한**: 새 검색(Claude 실행)은 하루 20회(`DAILY_LIMIT`)까지. 이미 검색한 단어(캐시)는 제한 없음.
+- **CORS**: `https://heejintv.github.io`에서 온 요청만 허용합니다.
 - Claude가 쓸 수 있는 도구를 **웹 검색(WebSearch)과 웹페이지 읽기(WebFetch)로만 제한**해서 파일 수정이나 명령 실행이 불가능합니다.
 - JSON 스키마로 출력 형식을 강제하고, 확인 못 한 값은 `null`로 두도록 지시합니다.
 - 화면에 표시할 때 모든 값을 HTML 이스케이프하고, `http(s)` 링크만 표시합니다.
@@ -62,11 +67,26 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
+cp .env.example .env   # .env를 열어 APP_PASSWORD를 긴 비밀번호로 바꾸기
 python app.py
 ```
 
 브라우저에서 http://localhost:5000 을 엽니다.
 검색 한 번에 보통 1~3분이 걸리고, Claude 계정 사용량이 차감됩니다.
+
+### 휴대폰에서 쓰기 (Cloudflare 빠른 터널)
+
+```bash
+# 터미널 1: 서버
+python app.py
+
+# 터미널 2: 터널
+cloudflared tunnel --url http://localhost:5000
+```
+
+터널 로그에 나오는 `https://xxxx.trycloudflare.com` 주소를 복사해서,
+휴대폰으로 https://heejintv.github.io/shopping-agent/ 를 열고 **서버 설정**에 주소와 비밀번호를 넣습니다.
+터널 주소는 켤 때마다 바뀌므로 다시 켜면 설정도 다시 입력합니다.
 
 ### 데모 데이터 갱신
 

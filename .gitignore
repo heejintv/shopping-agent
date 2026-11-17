@@ -10,6 +10,7 @@ __pycache__/
 # 비밀번호·API 키 등 환경변수 파일
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 
@@ -36,3 +37,9 @@ Thumbs.db
 *.tar.gz
 *.mp4
 *.mov
+
+# 하루 검색 횟수 기록
+usage.json
+
+# 실행 파일
+cloudflared

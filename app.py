@@ -2,13 +2,23 @@
 
 /search?q=상품명 요청이 오면 `claude -p`를 웹 검색 전용으로 실행해서
 브랜드·모델별 가격 정보를 JSON으로 받아 돌려준다. 결과는 cache/에 저장한다.
+
+인터넷에 공개할 때를 위한 보호 장치:
+- .env의 APP_PASSWORD와 요청 헤더 X-App-Password가 같아야 검색 가능
+- 비밀번호를 5번 틀리면 15분 동안 그 IP의 인증을 막음
+- 새 검색(claude 실행)은 하루 DAILY_LIMIT회(기본 20회)까지. 캐시된 결과는 제한 없음
+- CORS는 GitHub Pages 주소(ALLOWED_ORIGIN)만 허용
 """
 
 import hashlib
+import hmac
 import json
+import os
 import subprocess
 import threading
 import time
+from datetime import date
+from functools import wraps
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -16,6 +26,27 @@ from flask import Flask, jsonify, request, send_from_directory
 BASE_DIR = Path(__file__).resolve().parent
 CACHE_DIR = BASE_DIR / "cache"
 CACHE_DIR.mkdir(exist_ok=True)
+USAGE_FILE = BASE_DIR / "usage.json"
+
+
+def load_env(path: Path) -> None:
+    """.env 파일의 KEY=VALUE 줄을 환경변수로 읽는다 (이미 있는 환경변수는 덮어쓰지 않음)."""
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
+load_env(BASE_DIR / ".env")
+
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
+DAILY_LIMIT = int(os.environ.get("DAILY_LIMIT", "20"))
+ALLOWED_ORIGIN = "https://heejintv.github.io"
+MAX_FAILS, FAIL_WINDOW = 5, 15 * 60  # 15분 안에 5번 틀리면 잠금
 
 CLAUDE_TIMEOUT = 600  # 초. 웹 검색을 여러 번 하므로 넉넉하게 10분
 WEB_TOOLS = "WebSearch,WebFetch"
@@ -78,7 +109,68 @@ app = Flask(__name__)
 # 같은 검색어가 동시에 들어오면 claude를 한 번만 실행하도록 검색어별 잠금
 _locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
+_usage_lock = threading.Lock()
+_fails: dict[str, list[float]] = {}
+_fails_lock = threading.Lock()
 
+
+# ---------- 인증 ----------
+
+def client_ip() -> str:
+    # cloudflared 터널을 거치면 실제 접속자 IP는 CF-Connecting-IP 헤더에 담겨 온다
+    return request.headers.get("CF-Connecting-IP") or request.remote_addr or "?"
+
+
+def require_password(view):
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if not APP_PASSWORD:
+            return jsonify(error="서버에 APP_PASSWORD가 설정되지 않았어요 (.env 확인)."), 503
+        ip, now = client_ip(), time.time()
+        with _fails_lock:
+            recent = [t for t in _fails.get(ip, []) if now - t < FAIL_WINDOW]
+            _fails[ip] = recent
+            if len(recent) >= MAX_FAILS:
+                return jsonify(error="비밀번호를 여러 번 틀려서 15분 동안 잠겼어요."), 429
+        given = request.headers.get("X-App-Password", "")
+        if not hmac.compare_digest(given.encode("utf-8"), APP_PASSWORD.encode("utf-8")):
+            with _fails_lock:
+                _fails[ip].append(now)
+            return jsonify(error="비밀번호가 틀렸어요.", auth=False), 401
+        return view(*args, **kwargs)
+    return wrapper
+
+
+# ---------- 하루 검색 횟수 ----------
+
+def read_usage() -> dict:
+    today = date.today().isoformat()
+    try:
+        usage = json.loads(USAGE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        usage = {}
+    if usage.get("date") != today:  # 날짜가 바뀌면 0부터
+        usage = {"date": today, "count": 0}
+    return usage
+
+
+def try_use_one() -> int | None:
+    """검색 1회를 차감하고 남은 횟수를 돌려준다. 다 썼으면 None."""
+    with _usage_lock:
+        usage = read_usage()
+        if usage["count"] >= DAILY_LIMIT:
+            return None
+        usage["count"] += 1
+        USAGE_FILE.write_text(json.dumps(usage), encoding="utf-8")
+        return DAILY_LIMIT - usage["count"]
+
+
+def remaining() -> int:
+    with _usage_lock:
+        return max(0, DAILY_LIMIT - read_usage()["count"])
+
+
+# ---------- 검색 ----------
 
 def normalize(q: str) -> str:
     return " ".join(q.split()).lower()
@@ -112,16 +204,29 @@ def run_claude(q: str) -> dict:
     return data
 
 
+# ---------- 라우트 ----------
+
 @app.after_request
-def allow_cors(resp):
-    # GitHub Pages에 올린 화면에서도 내 PC의 서버(localhost:5000)를 부를 수 있게 허용
-    resp.headers["Access-Control-Allow-Origin"] = "*"
+def cors(resp):
+    # GitHub Pages(heejintv.github.io)에서 온 요청만 허용. 다른 사이트는 브라우저가 차단
+    if request.headers.get("Origin") == ALLOWED_ORIGIN:
+        resp.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
+        resp.headers["Access-Control-Allow-Headers"] = "X-App-Password"
+        resp.headers["Access-Control-Allow-Methods"] = "GET"
+        resp.headers["Access-Control-Max-Age"] = "600"
+    resp.headers["Vary"] = "Origin"
     return resp
 
 
 @app.get("/health")
 def health():
     return jsonify(ok=True)
+
+
+@app.get("/verify")
+@require_password
+def verify():
+    return jsonify(ok=True, remaining=remaining(), limit=DAILY_LIMIT)
 
 
 @app.get("/")
@@ -135,6 +240,7 @@ def demo_files(name):
 
 
 @app.get("/search")
+@require_password
 def search():
     q = (request.args.get("q") or "").strip()
     if not q:
@@ -147,28 +253,38 @@ def search():
         lock = _locks.setdefault(path.name, threading.Lock())
 
     with lock:
-        if path.exists():
+        if path.exists():  # 캐시된 결과는 횟수 차감 없음
             data = json.loads(path.read_text(encoding="utf-8"))
-            data["cached"] = True
+            data.pop("cost_usd", None)
+            data.update(cached=True, remaining=remaining(), limit=DAILY_LIMIT)
             return jsonify(data)
+
+        left = try_use_one()
+        if left is None:
+            return jsonify(error=f"오늘 새 검색 {DAILY_LIMIT}회를 모두 썼어요. 내일 다시 시도하세요.",
+                           remaining=0, limit=DAILY_LIMIT), 429
 
         started = time.time()
         try:
             data = run_claude(q)
         except subprocess.TimeoutExpired:
             return jsonify(error=f"검색 시간이 {CLAUDE_TIMEOUT}초를 넘었어요. 다시 시도해 주세요."), 504
-        except Exception as e:  # 실패한 결과는 캐시에 저장하지 않음
+        except Exception:  # 실패한 결과는 캐시에 저장하지 않음
             app.logger.exception("search failed")
-            return jsonify(error=str(e)), 502
+            return jsonify(error="검색 중 오류가 났어요. 서버 로그를 확인하세요."), 502
 
         data["query"] = q
         data["searched_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         data["elapsed_sec"] = round(time.time() - started, 1)
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        data["cached"] = False
+        data.pop("cost_usd", None)
+        data.update(cached=False, remaining=left, limit=DAILY_LIMIT)
         return jsonify(data)
 
 
 if __name__ == "__main__":
+    if not APP_PASSWORD:
+        print("경고: .env에 APP_PASSWORD가 없어서 검색이 모두 거부됩니다.")
+    # 127.0.0.1에서만 받음. 외부 공개는 cloudflared 터널이 대신 연결해 줌
     # threaded=True: 검색 하나가 오래 걸려도 다른 요청을 동시에 처리
     app.run(host="127.0.0.1", port=5000, threaded=True)
