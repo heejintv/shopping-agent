@@ -281,4 +281,8 @@ def search():
 if __name__ == "__main__":
     # 127.0.0.1에서만 받음. 외부 공개는 ngrok 터널이 대신 연결해 줌
     # threaded=True: 검색 하나가 오래 걸려도 다른 요청을 동시에 처리
-    app.run(host="127.0.0.1", port=5000, threaded=True)
+    # use_reloader=True: .py 파일이 바뀌면 서버 자동 재시작 (.env도 감시)
+    # debug=False: 외부에 공개 중이라 디버그 모드(브라우저에서 코드 실행 가능한 디버거)는 끔
+    env_file = BASE_DIR / ".env"
+    app.run(host="127.0.0.1", port=5000, threaded=True, debug=False,
+            use_reloader=True, extra_files=[str(env_file)] if env_file.exists() else None)
