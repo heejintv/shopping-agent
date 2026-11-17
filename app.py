@@ -11,6 +11,7 @@
 import hashlib
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -58,6 +59,7 @@ SCHEMA = {
     "properties": {
         "products": {
             "type": "array",
+            "maxItems": 5,
             "items": {
                 "type": "object",
                 "properties": {
@@ -83,19 +85,12 @@ SCHEMA = {
     "required": ["products", "value_pick", "quality_pick", "notes"],
 }
 
-PROMPT = """너는 쇼핑 가격비교 검색 엔진이야. 상품: "{q}"
-
-1. 웹 검색으로 이 상품을 찾아. 한국 쇼핑몰(네이버쇼핑, 쿠팡, 다나와, 11번가, G마켓 등)을 우선해.
-2. 브랜드·모델별로 서로 다른 상품을 최대 8개 정리해. 각 상품마다:
-   - price: 확인한 판매가 숫자(원 단위, 쉼표 없이). currency는 "KRW" 등
-   - store: 그 가격을 확인한 쇼핑몰 이름
-   - rating: 별점(5점 만점 기준), review_count: 리뷰 수
-   - pros / cons: 리뷰나 상품 정보에서 확인한 장점·단점 (각 1~3개, 짧게)
-   - url: 실제로 확인한 상품/판매 페이지 링크
-3. 확인하지 못한 값은 절대 지어내지 말고 null로 둬. pros/cons를 확인 못 하면 빈 배열.
-4. value_pick: 가격 대비 성능이 가장 좋은 모델과 이유, quality_pick: 품질이 가장 좋은 모델과 이유.
-   model은 products에 있는 model 이름을 그대로 써. 판단 근거가 부족하면 null.
-5. notes: 가격 확인 시점, 주의사항 등 한두 문장 (없으면 null).
+PROMPT = """상품 "{q}"의 한국 쇼핑몰(다나와·네이버쇼핑·쿠팡 등) 가격을 비교해.
+- 웹 검색은 최대 3번. 다나와 같은 가격비교 사이트 위주로 찾아.
+- 인기 상위 5개 모델만: price(원, 숫자), store, rating(5점), review_count, pros/cons(각 1~2개), url.
+- 확인 못 한 값은 null(목록은 빈 배열). 지어내지 마.
+- value_pick(가성비)·quality_pick(품질): products의 model 이름 그대로 + 이유 한 줄. 근거 없으면 null.
+- notes: 주의사항 한 문장 또는 null.
 """
 
 app = Flask(__name__)
@@ -202,6 +197,43 @@ def config_js():
 @app.get("/demo/<path:name>")
 def demo_files(name):
     return send_from_directory(BASE_DIR / "demo", name)
+
+
+HISTORY_ID = re.compile(r"^[0-9a-f]{32}$")
+
+
+@app.get("/history")
+def history():
+    """cache/에 저장된 검색어 목록 (최근 검색 순). 형식은 demo/index.json과 같다."""
+    items = []
+    for f in CACHE_DIR.glob("*.json"):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not data.get("query") or not data.get("products"):
+            continue
+        items.append({
+            "query": data["query"],
+            "file": f.name,
+            "searched_at": data.get("searched_at"),
+            "count": len(data["products"]),
+        })
+    items.sort(key=lambda m: m["searched_at"] or "", reverse=True)
+    return jsonify(items[:30])
+
+
+@app.get("/history/<name>")
+def history_item(name):
+    """저장된 검색 결과 하나. claude를 실행하지 않고 횟수도 차감하지 않는다."""
+    key = name.removesuffix(".json")
+    path = CACHE_DIR / f"{key}.json"
+    if not HISTORY_ID.match(key) or not path.exists():
+        return jsonify(error="저장된 검색 결과가 없어요."), 404
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data.pop("cost_usd", None)
+    data.update(cached=True, remaining=remaining(), limit=DAILY_LIMIT)
+    return jsonify(data)
 
 
 @app.get("/search")
