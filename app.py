@@ -93,6 +93,25 @@ PROMPT = """상품 "{q}"의 한국 쇼핑몰(다나와·네이버쇼핑·쿠팡 
 - notes: 주의사항 한 문장 또는 null.
 """
 
+# 사용자가 조건을 입력했을 때만 프롬프트 뒤에 붙임
+CONDITION_PROMPT = """
+사용자 조건: "{c}"
+- 조건에 맞는 모델을 우선 찾아. 각 상품마다 fit(조건 적합도: "높음"/"보통"/"낮음")과 fit_reason(이유 한 줄).
+- 조건에 맞는 상품이 하나도 없으면 지어내지 말고 products는 빈 배열, notes는 "조건에 맞는 상품을 못 찾음".
+"""
+
+
+def build_schema(with_condition: bool) -> dict:
+    """조건이 있으면 상품마다 fit·fit_reason을 필수로 추가한 스키마."""
+    if not with_condition:
+        return SCHEMA
+    schema = json.loads(json.dumps(SCHEMA))  # 깊은 복사
+    item = schema["properties"]["products"]["items"]
+    item["properties"]["fit"] = {"type": "string", "enum": ["높음", "보통", "낮음"]}
+    item["properties"]["fit_reason"] = {"type": "string"}
+    item["required"] += ["fit", "fit_reason"]
+    return schema
+
 app = Flask(__name__)
 
 # 같은 검색어가 동시에 들어오면 claude를 한 번만 실행하도록 검색어별 잠금
@@ -136,18 +155,21 @@ def normalize(q: str) -> str:
     return " ".join(q.split()).lower()
 
 
-def cache_path(q: str) -> Path:
-    key = hashlib.sha256(normalize(q).encode("utf-8")).hexdigest()[:32]
+def cache_path(q: str, c: str = "") -> Path:
+    """검색어+조건 조합별 캐시 파일. 조건이 없으면 예전과 같은 키라 기존 캐시를 그대로 쓴다."""
+    raw = normalize(q) if not c else normalize(q) + "\n" + normalize(c)
+    key = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
     return CACHE_DIR / f"{key}.json"
 
 
-def run_claude(q: str) -> dict:
+def run_claude(q: str, c: str = "") -> dict:
+    prompt = PROMPT.format(q=q) + (CONDITION_PROMPT.format(c=c) if c else "")
     cmd = [
-        "claude", "-p", PROMPT.format(q=q),
+        "claude", "-p", prompt,
         "--tools", WEB_TOOLS,            # 쓸 수 있는 도구를 웹 검색·웹페이지 읽기로만 제한
         "--allowedTools", WEB_TOOLS,     # 그 두 도구는 확인 없이 허용
         "--output-format", "json",
-        "--json-schema", json.dumps(SCHEMA),
+        "--json-schema", json.dumps(build_schema(bool(c))),
     ]
     proc = subprocess.run(
         cmd, capture_output=True, text=True, timeout=CLAUDE_TIMEOUT, cwd=BASE_DIR,
@@ -211,10 +233,13 @@ def history():
             data = json.loads(f.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if not data.get("query") or not data.get("products"):
+        if not data.get("query") or not isinstance(data.get("products"), list):
+            continue
+        if not data["products"] and not data.get("condition"):
             continue
         items.append({
             "query": data["query"],
+            "condition": data.get("condition"),
             "file": f.name,
             "searched_at": data.get("searched_at"),
             "count": len(data["products"]),
@@ -243,8 +268,11 @@ def search():
         return jsonify(error="검색어(q)를 입력하세요."), 400
     if len(q) > 100:
         return jsonify(error="검색어가 너무 길어요 (100자 이하)."), 400
+    c = " ".join((request.args.get("c") or "").split())  # 원하는 조건 (선택)
+    if len(c) > 100:
+        return jsonify(error="조건이 너무 길어요 (100자 이하)."), 400
 
-    path = cache_path(q)
+    path = cache_path(q, c)
     with _locks_guard:
         lock = _locks.setdefault(path.name, threading.Lock())
 
@@ -262,7 +290,7 @@ def search():
 
         started = time.time()
         try:
-            data = run_claude(q)
+            data = run_claude(q, c)
         except subprocess.TimeoutExpired:
             return jsonify(error=f"검색 시간이 {CLAUDE_TIMEOUT}초를 넘었어요. 다시 시도해 주세요."), 504
         except Exception:  # 실패한 결과는 캐시에 저장하지 않음
@@ -270,6 +298,7 @@ def search():
             return jsonify(error="검색 중 오류가 났어요. 서버 로그를 확인하세요."), 502
 
         data["query"] = q
+        data["condition"] = c or None
         data["searched_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         data["elapsed_sec"] = round(time.time() - started, 1)
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -36,6 +36,27 @@
   button { font: inherit; cursor: pointer; }
   #btn { padding: 0 22px; font-size: 16px; font-weight: 600; border: 0; border-radius: 12px; background: var(--accent); color: #fff; }
   #btn:disabled { opacity: .5; cursor: default; }
+  .cond-row { margin-top: 8px; }
+  #c { width: 100%; padding: 11px 16px; font-size: 15px; border: 1px solid var(--line); border-radius: 12px;
+       background: var(--card); color: var(--text); }
+  #c:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .cond-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .cond-chip { padding: 4px 11px; font-size: 13px; border-radius: 99px; border: 1px dashed var(--line);
+               background: none; color: var(--muted); }
+  .cond-chip:hover { border-color: var(--accent); color: var(--accent); }
+  .cond-chip::before { content: "+ "; }
+  .chip .cond { color: var(--accent); font-size: 13px; }
+  .req-cond { margin-top: 12px; padding: 12px 16px; border-radius: 12px; background: var(--accent-soft); color: var(--text); font-size: 15px; }
+  .req-cond b { color: var(--accent); }
+  .nomatch { margin-top: 12px; }
+  .fit { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 99px; white-space: nowrap; }
+  .fit.high { background: var(--value-soft); color: var(--value); }
+  .fit.mid { background: var(--cheap-soft); color: var(--cheap); }
+  .fit.low { background: var(--soft); color: var(--muted); }
+  td.fit-c { min-width: 130px; max-width: 200px; font-size: 13px; }
+  td.fit-c .fit-why { display: block; color: var(--muted); margin-top: 4px; }
+  .pick .fit { align-self: flex-start; margin-top: 8px; }
+  table.no-fit .fit-col { display: none !important; }
   #status { margin-top: 10px; font-size: 13px; color: var(--muted); min-height: 20px; }
   #status.ok { color: var(--value); }
   #status.bad { color: var(--bad); }
@@ -135,6 +156,16 @@
     <input type="search" id="q" placeholder="예: 무선 청소기, 에어팟 프로, 27인치 모니터" required maxlength="100" autofocus>
     <button id="btn">검색</button>
   </form>
+  <div class="cond-row">
+    <input type="text" id="c" maxlength="100" placeholder="원하는 조건 (선택) · 예: 디자인이 귀여운, 저소음, 5만원 이하, 화이트 색상">
+    <div class="cond-chips" id="condChips">
+      <button type="button" class="cond-chip">귀여운 디자인</button>
+      <button type="button" class="cond-chip">저소음</button>
+      <button type="button" class="cond-chip">가성비</button>
+      <button type="button" class="cond-chip">가벼움</button>
+      <button type="button" class="cond-chip">화이트</button>
+    </div>
+  </div>
   <div id="status"></div>
 
   <div id="demo">
@@ -155,9 +186,11 @@
 
   <div id="results">
     <div class="result-title"><h2 id="rq"></h2><span class="na" id="rcount"></span></div>
+    <div class="req-cond" id="reqCond"></div>
+    <div class="panel nomatch" id="nomatch"></div>
     <div class="picks" id="picks"></div>
 
-    <section class="panel">
+    <section class="panel" id="tablePanel">
       <div class="table-head">
         <h2>모델별 비교</h2>
         <div class="seg" id="sort" role="group" aria-label="정렬">
@@ -166,8 +199,8 @@
           <button type="button" data-sort="desc" aria-pressed="false">가격 높은순</button>
         </div>
       </div>
-      <table>
-        <thead><tr><th>모델</th><th>가격</th><th>쇼핑몰</th><th>별점</th><th>장점</th><th>단점</th><th></th></tr></thead>
+      <table id="table">
+        <thead><tr><th>모델</th><th class="fit-col">조건 적합도</th><th>가격</th><th>쇼핑몰</th><th>별점</th><th>장점</th><th>단점</th><th></th></tr></thead>
         <tbody id="tbody"></tbody>
       </table>
       <div class="meta" id="meta"></div>
@@ -184,6 +217,9 @@ const fmtPrice = (p, cur) => p == null ? null :
 const safeUrl = u => /^https?:\/\//i.test(u || "") ? u : null;
 const list = (arr, cls) => arr && arr.length ? `<ul class="pc ${cls}">${arr.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : NA;
 const hasPrice = p => typeof p.price === "number";
+const cleanCond = s => (s || "").trim().split(/\s+/).join(" ");
+const FIT_CLASS = { "높음": "high", "보통": "mid", "낮음": "low" };
+const fitBadge = f => f ? `<span class="fit ${FIT_CLASS[f] || "low"}">적합도 ${esc(f)}</span>` : "";
 
 // Flask가 직접 이 페이지를 띄웠으면 같은 주소, 아니면(GitHub Pages) config.js의 서버 주소로 요청
 const onFlask = location.port === "5000";
@@ -204,6 +240,18 @@ function showRemaining(d) {
   if (d && d.remaining != null) setStatus(`🟢 실시간 검색 가능 (오늘 남은 새 검색 ${d.remaining}회)`, "ok");
 }
 
+// ---------- 원하는 조건 ----------
+
+// 칩을 누르면 조건칸에 추가 (이미 있으면 그대로)
+$("condChips").addEventListener("click", e => {
+  const word = e.target.closest(".cond-chip")?.textContent;
+  if (!word) return;
+  const parts = $("c").value.split(",").map(x => x.trim()).filter(Boolean);
+  if (!parts.includes(word)) parts.push(word);
+  $("c").value = parts.join(", ").slice(0, 100);
+  $("c").focus();
+});
+
 // ---------- 최근 검색 ----------
 
 async function loadRecent() {
@@ -218,7 +266,7 @@ async function loadRecent() {
   if (!Array.isArray(recentList)) recentList = [];
   const short = s => (s || "").slice(5, 10).replace("-", "/");  // "2026-11-17 ..." → "11/17"
   $("chips").innerHTML = recentList.length
-    ? recentList.map((d, i) => `<button type="button" class="chip" data-i="${i}">${esc(d.query)}${d.searched_at ? `<small>${esc(short(d.searched_at))}</small>` : ""}</button>`).join("")
+    ? recentList.map((d, i) => `<button type="button" class="chip" data-i="${i}">${esc(d.query)}${d.condition ? `<span class="cond">· ${esc(d.condition)}</span>` : ""}${d.searched_at ? `<small>${esc(short(d.searched_at))}</small>` : ""}</button>`).join("")
     : '<span class="na">아직 저장된 검색이 없어요.</span>';
   $("recent").style.display = "block";
 }
@@ -240,6 +288,7 @@ $("chips").addEventListener("click", async e => {
   const item = recentList[Number(btn.dataset.i)];
   if (!item) return;
   $("q").value = item.query;
+  $("c").value = item.condition || "";
   hideError();
   try { render(await fetchSaved(item)); }
   catch (err) { showError("불러오기 실패: " + err.message); }
@@ -273,17 +322,19 @@ async function enterDemoMode() {
   await loadRecent();
 }
 
-async function fetchDemo(q) {
-  const hit = recentList.find(d => norm(d.query) === norm(q));
+async function fetchDemo(q, c) {
+  const hit = recentList.find(d => norm(d.query) === norm(q) && norm(d.condition || "") === norm(c));
   if (!hit) {
-    const names = recentList.map(d => `"${d.query}"`).join(", ");
+    const names = recentList.map(d => `"${d.query}${d.condition ? " · " + d.condition : ""}"`).join(", ");
     throw new Error(`데모 모드에서는 저장된 검색어만 볼 수 있어요${names ? ": " + names : "."}`);
   }
   return fetchSaved(hit);
 }
 
-async function fetchLive(q) {
-  const res = await fetch(API_BASE + "/search?q=" + encodeURIComponent(q), { headers: API_HEADERS });
+async function fetchLive(q, c) {
+  let url = API_BASE + "/search?q=" + encodeURIComponent(q);
+  if (c) url += "&c=" + encodeURIComponent(c);
+  const res = await fetch(url, { headers: API_HEADERS });
   const data = await res.json();
   if (res.status === 429) setStatus(`🟡 오늘 새 검색 횟수를 모두 썼어요 (최근 검색은 계속 볼 수 있어요)`, "bad");
   if (!res.ok) throw new Error(data.error || res.statusText);
@@ -306,10 +357,11 @@ let timer;
 $("f").addEventListener("submit", async e => {
   e.preventDefault();
   const q = $("q").value.trim();
+  const c = cleanCond($("c").value);
   if (!q) return;
   hideError();
   if (demoMode) {
-    try { render(await fetchDemo(q)); }
+    try { render(await fetchDemo(q, c)); }
     catch (err) { showError(err.message); }
     return;
   }
@@ -322,13 +374,13 @@ $("f").addEventListener("submit", async e => {
   try {
     let data;
     try {
-      data = await fetchLive(q);
+      data = await fetchLive(q, c);
       if (!data.cached) loadRecent();  // 새로 저장된 검색어를 목록에 반영
     } catch (err) {
       if (!(err instanceof TypeError)) throw err;  // TypeError = 서버 연결 자체가 안 됨
       setStatus("");
       await enterDemoMode();
-      data = await fetchDemo(q);
+      data = await fetchDemo(q, c);
     }
     render(data);
   } catch (err) {
@@ -355,8 +407,29 @@ $("sort").addEventListener("click", e => {
 
 function render(d) {
   const items = d.products || [];
-  if (!items.length) throw new Error("검색 결과가 없어요.");
+  const cond = cleanCond(d.condition);   // 조건 없이 검색한 결과(예전 캐시 포함)는 ""
+  if (!items.length && !cond) throw new Error("검색 결과가 없어요.");
   const label = p => `${p.brand} ${p.model}`;
+
+  $("rq").textContent = `“${d.query || $("q").value.trim()}” 비교 결과`;
+  $("rcount").textContent = `${items.length}개 모델`;
+  $("reqCond").innerHTML = cond ? `요청한 조건: <b>${esc(cond)}</b>` : "";
+  $("reqCond").style.display = cond ? "block" : "none";
+  $("meta").textContent = [
+    d.cached ? `저장된 결과 (검색 시각 ${d.searched_at})` : `방금 검색함 (${d.elapsed_sec}초)`,
+    d.notes, "가격은 수시로 바뀌니 구매 전 링크에서 다시 확인하세요.",
+  ].filter(Boolean).join(" · ");
+
+  // 조건에 맞는 상품이 없을 때: 지어낸 결과 대신 안내만
+  $("nomatch").style.display = items.length ? "none" : "block";
+  $("picks").style.display = items.length ? "grid" : "none";
+  $("tablePanel").style.display = items.length ? "block" : "none";
+  if (!items.length) {
+    $("nomatch").innerHTML = `<b>조건에 맞는 상품을 못 찾음</b><div class="meta">${esc($("meta").textContent)}</div>`;
+    current = null;
+    $("results").style.display = "block";
+    return;
+  }
 
   // 가성비·품질은 Claude 판단, 최저가는 확인된 가격 중 최솟값
   const findByModel = m => m ? items.find(p => p.model === m || label(p) === m || p.model.includes(m) || m.includes(p.model)) : null;
@@ -379,6 +452,7 @@ function render(d) {
     return `<div class="pick ${cls}"><span class="tag">${tag}</span>
       ${p ? `<div class="brand">${esc(p.brand)}</div>` : ""}
       <div class="name">${esc(p ? p.model : fallbackName)}</div>
+      ${cond && p ? fitBadge(p.fit) : ""}
       <div class="price">${price ?? '<span class="na" style="font-size:16px;font-weight:400">가격 확인 안 됨</span>'}</div>
       ${p?.store ? `<div class="store">${esc(p.store)}</div>` : ""}
       ${why ? `<p class="why">${esc(why)}</p>` : ""}
@@ -386,14 +460,8 @@ function render(d) {
   }).join("");
 
   current = { items, cheapest, valueP, qualityP, max: Math.max(...priced.map(p => p.price), 1) };
+  $("table").classList.toggle("no-fit", !cond);  // 조건 없으면 적합도 칸 숨김
   renderTable();
-
-  $("rq").textContent = `“${d.query || $("q").value.trim()}” 비교 결과`;
-  $("rcount").textContent = `${items.length}개 모델`;
-  $("meta").textContent = [
-    d.cached ? `저장된 결과 (검색 시각 ${d.searched_at})` : `방금 검색함 (${d.elapsed_sec}초)`,
-    d.notes, "가격은 수시로 바뀌니 구매 전 링크에서 다시 확인하세요.",
-  ].filter(Boolean).join(" · ");
   $("results").style.display = "block";
 }
 
@@ -418,6 +486,7 @@ function renderTable() {
     const price = fmtPrice(p.price, p.currency);
     return `<tr>
       <td class="model"><span class="brand">${esc(p.brand)}</span><b>${esc(p.model)}</b>${badges ? `<div class="badges">${badges}</div>` : ""}</td>
+      <td class="fit-c fit-col" data-label="적합도">${p.fit ? fitBadge(p.fit) : NA}${p.fit_reason ? `<span class="fit-why">${esc(p.fit_reason)}</span>` : ""}</td>
       <td class="price" data-label="가격">${price ?? NA}${price ? `<div class="mini"><i style="width:${Math.max(3, p.price / max * 100)}%"></i></div>` : ""}</td>
       <td class="store-c" data-label="쇼핑몰">${p.store ? esc(p.store) : NA}</td>
       <td class="rating" data-label="별점">${rating}</td>
