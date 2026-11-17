@@ -1,0 +1,163 @@
+{
+  "products": [
+    {
+      "brand": "로지텍",
+      "model": "G PRO X SUPERLIGHT 2 (정품) (블랙)",
+      "price": 149000,
+      "currency": "KRW",
+      "store": "주식회사 이지두컴 (다나와 최저가)",
+      "rating": 4.9,
+      "review_count": 152,
+      "pros": [
+        "60g 초경량",
+        "HERO 2 센서·2000Hz 폴링",
+        "2년 보증"
+      ],
+      "cons": [
+        "오른손 전용",
+        "판매처별 가격 편차 큼(18만~23만원대)"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=28481684"
+    },
+    {
+      "brand": "로지텍",
+      "model": "MX MASTER 4 (정품) (그래파이트)",
+      "price": 178980,
+      "currency": "KRW",
+      "store": "컴오아시스 (다나와 최저가, 배송비 4,000원)",
+      "rating": 4.9,
+      "review_count": 78,
+      "pros": [
+        "블루투스·로지볼트 멀티페어링",
+        "8버튼·상하좌우 휠, 햅틱 피드백",
+        "다크필드 8000DPI·저소음"
+      ],
+      "cons": [
+        "150g으로 무거운 편",
+        "오른손 전용",
+        "보증 1년"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=98766185"
+    },
+    {
+      "brand": "로지텍",
+      "model": "시그니처 M650 (정품) (그라파이트)",
+      "price": 44920,
+      "currency": "KRW",
+      "store": "G마켓/옥션 (다나와 최저가, 배송비 3,000원)",
+      "rating": 4.8,
+      "review_count": 218,
+      "pros": [
+        "저소음 클릭·휠",
+        "좌우 대칭형",
+        "보조버튼+휠 가로 스크롤"
+      ],
+      "cons": [
+        "멀티페어링 미지원"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=16221932"
+    },
+    {
+      "brand": "로지텍",
+      "model": "G304 LIGHTSPEED WIRELESS (정품) (블랙)",
+      "price": 39900,
+      "currency": "KRW",
+      "store": "오늘의집 (다나와 최저가, 무료배송)",
+      "rating": 4.9,
+      "review_count": null,
+      "pros": [
+        "99g 경량, HERO 12000DPI",
+        "1000Hz 폴링",
+        "2년 보증"
+      ],
+      "cons": [
+        "AA 건전지 사용(비충전식)",
+        "블루투스 미지원"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=6143401"
+    },
+    {
+      "brand": "로지텍",
+      "model": "LIFT VERTICAL (정품) (그라파이트)",
+      "price": 74630,
+      "currency": "KRW",
+      "store": "G마켓 (다나와 최저가, 무료배송)",
+      "rating": 4.9,
+      "review_count": null,
+      "pros": [
+        "버티컬 손목보호 설계",
+        "동글·블루투스 멀티페어링",
+        "저소음"
+      ],
+      "cons": [
+        "AA 건전지 사용",
+        "오른손 전용",
+        "부피가 커 휴대성 낮음"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=16909604"
+    },
+    {
+      "brand": "로지텍",
+      "model": "M331 (정품) (블랙)",
+      "price": 24420,
+      "currency": "KRW",
+      "store": "11번가 (다나와 최저가, 배송비 2,500원)",
+      "rating": 4.8,
+      "review_count": 619,
+      "pros": [
+        "무소음 클릭",
+        "90g 소형·경량",
+        "2.4GHz 동글 연결"
+      ],
+      "cons": [
+        "3버튼뿐(추가 버튼 없음)",
+        "AA 건전지 사용",
+        "수신기 분실 시 사용 불가"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=4554259"
+    },
+    {
+      "brand": "ATK",
+      "model": "VXE R1 SE+ 유무선 브라보텍 (블랙)",
+      "price": 25900,
+      "currency": "KRW",
+      "store": "딜리딜리스토어 (다나와 최저가, 무료배송)",
+      "rating": 4.8,
+      "review_count": 108,
+      "pros": [
+        "55g 초경량·PAW3395 SE 센서",
+        "유선·동글·블루투스 3모드",
+        "내장 충전 배터리"
+      ],
+      "cons": [
+        "오른손 전용",
+        "판매처별 가격 차이 큼(최대 35,900원)",
+        "보증 1년"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=91770953"
+    },
+    {
+      "brand": "로지텍",
+      "model": "M240 Silent 블루투스 (정품) (그라파이트)",
+      "price": 15630,
+      "currency": "KRW",
+      "store": "다나와 (최저가 판매처 미확인)",
+      "rating": 4.7,
+      "review_count": 176,
+      "pros": [],
+      "cons": [],
+      "url": "https://prod.danawa.com/info/?pcode=20312480"
+    }
+  ],
+  "value_pick": {
+    "model": "VXE R1 SE+ 유무선 브라보텍 (블랙)",
+    "reason": "25,900원으로 55g 무게, PAW3395 SE 센서, 유선·2.4GHz·블루투스 3모드, 충전식 배터리를 모두 갖췄습니다. 같은 가격대의 사무용 마우스(M331 등)보다 사양이 훨씬 높고 다나와 별점도 4.8점(108건)입니다."
+  },
+  "quality_pick": {
+    "model": "G PRO X SUPERLIGHT 2 (정품) (블랙)",
+    "reason": "다나와 별점 4.9점(152건), 컴퓨존 별점 5점(935건)으로 평가가 가장 좋고 60g, HERO 2 센서, 2000Hz, 2년 보증을 갖춘 최상급 무선 마우스입니다. 게임용이 아닌 업무·생산성 용도라면 MX MASTER 4(4.9점)가 최상급 대안입니다."
+  },
+  "notes": "가격은 2026-11-17에 다나와 검색·상품 페이지에서 확인한 최저가입니다(일부는 11/04~11/12 갱신분). 배송비와 카드 혜택은 반영하지 않았습니다. 별점과 리뷰 수는 다나와 검색 목록 기준입니다. G304와 LIFT VERTICAL은 리뷰 수가 '999+'로만 나와서 null로 두었습니다. 장단점은 사용자 리뷰가 아니라 주로 상품 스펙에서 정리했습니다. M240 Silent는 판매처와 장단점을 확인하지 못했습니다.",
+  "query": "무선 마우스",
+  "searched_at": "2026-11-17 11:50:25"
+}

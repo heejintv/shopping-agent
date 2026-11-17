@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>가격비교</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #6b7280; --line: #e5e7eb;
+    --accent: #2563eb; --accent-soft: #dbeafe; --good: #059669; --warn: #d97706; --bad: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1218; --card: #181c25; --text: #e6e8ee; --muted: #9aa3b2; --line: #2a303c;
+            --accent: #60a5fa; --accent-soft: #1e3a5f; --good: #34d399; --warn: #fbbf24; --bad: #f87171; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 -apple-system, "Segoe UI", "Noto Sans KR", "Malgun Gothic", sans-serif; }
+  main { max-width: 1080px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  form { display: flex; gap: 8px; }
+  input[type=search] { flex: 1; min-width: 0; padding: 12px 14px; font-size: 16px; border: 1px solid var(--line);
+         border-radius: 10px; background: var(--card); color: var(--text); }
+  button { padding: 0 20px; font-size: 16px; border: 0; border-radius: 10px; background: var(--accent);
+           color: #fff; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-top: 20px; }
+  h2 { font-size: 17px; margin: 0 0 12px; }
+  #loading { display: none; align-items: center; gap: 12px; }
+  .spinner { width: 22px; height: 22px; border: 3px solid var(--accent-soft); border-top-color: var(--accent);
+             border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #error { display: none; color: var(--bad); }
+  .meta { color: var(--muted); font-size: 13px; margin-top: 12px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+  .card { border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .card .tag { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 99px;
+               background: var(--accent-soft); color: var(--accent); }
+  .card .name { font-weight: 600; margin: 8px 0 2px; }
+  .card .price { font-size: 20px; font-weight: 700; }
+  .card .why { color: var(--muted); font-size: 14px; margin-top: 6px; }
+  .bars { display: grid; gap: 8px; }
+  .bar-row { display: grid; grid-template-columns: minmax(90px, 200px) 1fr; gap: 10px; align-items: center; font-size: 14px; }
+  .bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar-track { background: var(--bg); border-radius: 6px; height: 26px; position: relative; }
+  .bar { height: 100%; background: var(--accent); border-radius: 6px; min-width: 2px; }
+  .bar.min { background: var(--good); }
+  .bar-val { position: absolute; left: 8px; top: 3px; font-weight: 600; color: var(--text); mix-blend-mode: normal; }
+  .bar-row.na .bar-val { color: var(--muted); font-weight: 400; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 760px; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 13px; }
+  td.num { white-space: nowrap; font-weight: 600; }
+  ul.pc { margin: 0; padding-left: 16px; }
+  .pros li::marker { color: var(--good); }
+  .cons li::marker { color: var(--bad); }
+  .na { color: var(--muted); }
+  a { color: var(--accent); }
+  #results { display: none; }
+  #demo { display: none; margin-top: 16px; padding: 12px 14px; border-radius: 10px; font-size: 14px;
+          background: color-mix(in srgb, var(--warn) 14%, var(--card)); border: 1px solid var(--warn); }
+  #demo strong { color: var(--warn); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .chip { padding: 4px 10px; font-size: 13px; border-radius: 99px; border: 1px solid var(--line);
+          background: var(--card); color: var(--text); cursor: pointer; }
+</style>
+</head>
+<body>
+<main>
+  <h1>가격비교</h1>
+  <p class="sub">상품명을 입력하면 에이전트가 웹을 검색해 브랜드·모델별로 비교해 드려요.</p>
+
+  <form id="f">
+    <input type="search" id="q" placeholder="예: 무선 청소기, 에어팟 프로, 27인치 모니터" required maxlength="100" autofocus>
+    <button id="btn">검색</button>
+  </form>
+
+  <div id="demo">
+    <strong>데모 모드: 저장된 검색 결과를 보여주는 중</strong><br>
+    검색 서버(localhost:5000)에 연결할 수 없어서 미리 저장해 둔 결과만 볼 수 있어요. 아래 검색어를 눌러 보세요.
+    <div class="chips" id="chips"></div>
+  </div>
+
+  <div class="panel" id="loading">
+    <div class="spinner"></div>
+    <div>에이전트가 검색 중... <span class="na" id="elapsed"></span><br>
+      <span class="na" style="font-size:13px">여러 쇼핑몰을 확인하느라 1~5분 정도 걸릴 수 있어요.</span></div>
+  </div>
+  <div class="panel" id="error"></div>
+
+  <div id="results">
+    <section class="panel">
+      <h2>추천</h2>
+      <div class="cards" id="cards"></div>
+    </section>
+    <section class="panel">
+      <h2>가격 비교</h2>
+      <div class="bars" id="bars"></div>
+    </section>
+    <section class="panel">
+      <h2>브랜드별 비교표</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>브랜드</th><th>모델</th><th>가격</th><th>쇼핑몰</th><th>별점</th><th>장점</th><th>단점</th><th>링크</th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table></div>
+      <div class="meta" id="meta"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const NA = '<span class="na">확인 안 됨</span>';
+const fmtPrice = (p, cur) => p == null ? null :
+  (!cur || cur === "KRW" ? Number(p).toLocaleString("ko-KR") + "원" : Number(p).toLocaleString() + " " + esc(cur));
+const safeUrl = u => /^https?:\/\//i.test(u || "") ? u : null;
+const list = (arr, cls) => arr && arr.length ? `<ul class="pc ${cls}">${arr.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : NA;
+
+// Flask가 직접 이 페이지를 띄웠으면 같은 주소, 아니면(GitHub Pages 등) 내 PC의 서버로 요청
+const API = location.port === "5000" ? "" : "http://localhost:5000";
+let demoMode = false;
+let demoList = [];
+const norm = s => s.trim().split(/\s+/).join(" ").toLowerCase();
+
+async function checkServer() {
+  try {
+    const res = await fetch(API + "/health", { signal: AbortSignal.timeout(2500) });
+    if (res.ok) return true;
+  } catch (_) {}
+  return false;
+}
+
+async function enterDemoMode() {
+  if (demoMode) return;
+  demoMode = true;
+  try {
+    demoList = await (await fetch("demo/index.json")).json();
+  } catch (_) { demoList = []; }
+  $("chips").innerHTML = demoList.length
+    ? demoList.map(d => `<button type="button" class="chip" data-q="${esc(d.query)}">${esc(d.query)}</button>`).join("")
+    : '<span class="na">저장된 검색 결과가 없어요.</span>';
+  $("demo").style.display = "block";
+}
+
+$("chips").addEventListener("click", e => {
+  const q = e.target.dataset?.q;
+  if (q) { $("q").value = q; $("f").requestSubmit(); }
+});
+
+async function fetchDemo(q) {
+  const hit = demoList.find(d => norm(d.query) === norm(q));
+  if (!hit) {
+    const names = demoList.map(d => `"${d.query}"`).join(", ");
+    throw new Error(`데모 모드에서는 저장된 검색어만 볼 수 있어요${names ? ": " + names : "."}`);
+  }
+  const data = await (await fetch("demo/" + encodeURIComponent(hit.file))).json();
+  data.cached = true;
+  return data;
+}
+
+async function fetchLive(q) {
+  const res = await fetch(API + "/search?q=" + encodeURIComponent(q));
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+checkServer().then(ok => { if (!ok) enterDemoMode(); });
+
+let timer;
+$("f").addEventListener("submit", async e => {
+  e.preventDefault();
+  const q = $("q").value.trim();
+  if (!q) return;
+  if (demoMode) {
+    $("error").style.display = "none";
+    try { render(await fetchDemo(q)); }
+    catch (err) {
+      $("results").style.display = "none";
+      $("error").textContent = err.message;
+      $("error").style.display = "block";
+    }
+    return;
+  }
+  $("btn").disabled = true;
+  $("error").style.display = "none";
+  $("results").style.display = "none";
+  $("loading").style.display = "flex";
+  const t0 = Date.now();
+  $("elapsed").textContent = "";
+  timer = setInterval(() => $("elapsed").textContent = `(${Math.round((Date.now() - t0) / 1000)}초)`, 1000);
+  try {
+    let data;
+    try {
+      data = await fetchLive(q);
+    } catch (err) {
+      if (!(err instanceof TypeError)) throw err;  // TypeError = 서버 연결 자체가 안 됨
+      await enterDemoMode();
+      data = await fetchDemo(q);
+    }
+    render(data);
+  } catch (err) {
+    $("error").textContent = "검색 실패: " + err.message;
+    $("error").style.display = "block";
+  } finally {
+    clearInterval(timer);
+    $("loading").style.display = "none";
+    $("btn").disabled = false;
+  }
+});
+
+function render(d) {
+  const items = d.products || [];
+  if (!items.length) throw new Error("검색 결과가 없어요.");
+  const label = p => `${p.brand} ${p.model}`;
+
+  // 추천 카드: 가성비·품질은 Claude 판단, 최저가는 확인된 가격 중 최솟값
+  const findByModel = m => m && items.find(p => p.model === m || label(p) === m || p.model.includes(m) || m.includes(p.model));
+  const priced = items.filter(p => typeof p.price === "number");
+  const cheapest = priced.length ? priced.reduce((a, b) => b.price < a.price ? b : a) : null;
+  const picks = [
+    ["가성비 추천", d.value_pick && findByModel(d.value_pick.model), d.value_pick?.reason, d.value_pick?.model],
+    ["품질 추천", d.quality_pick && findByModel(d.quality_pick.model), d.quality_pick?.reason, d.quality_pick?.model],
+    ["최저가", cheapest, cheapest && `확인된 가격 중 가장 저렴해요${cheapest.store ? " (" + cheapest.store + ")" : ""}.`],
+  ];
+  $("cards").innerHTML = picks.map(([tag, p, why, fallbackName]) => {
+    if (!p && !fallbackName) return `<div class="card"><span class="tag">${tag}</span><div class="why">판단할 정보가 부족해요.</div></div>`;
+    const price = p ? fmtPrice(p.price, p.currency) : null;
+    const url = p && safeUrl(p.url);
+    return `<div class="card"><span class="tag">${tag}</span>
+      <div class="name">${esc(p ? label(p) : fallbackName)}</div>
+      <div class="price">${price ?? NA}</div>
+      <div class="why">${esc(why)}</div>
+      ${url ? `<div style="margin-top:8px"><a href="${esc(url)}" target="_blank" rel="noopener noreferrer">상품 보기 →</a></div>` : ""}</div>`;
+  }).join("");
+
+  // 가격 막대그래프 (가격 오름차순, 가격 없는 건 뒤에)
+  const max = Math.max(...priced.map(p => p.price), 1);
+  const sorted = [...priced].sort((a, b) => a.price - b.price).concat(items.filter(p => typeof p.price !== "number"));
+  $("bars").innerHTML = sorted.map(p => {
+    const has = typeof p.price === "number";
+    const w = has ? Math.max(2, p.price / max * 100) : 0;
+    return `<div class="bar-row${has ? "" : " na"}"><div class="bar-label" title="${esc(label(p))}">${esc(label(p))}</div>
+      <div class="bar-track">${has ? `<div class="bar${p === cheapest ? " min" : ""}" style="width:${w}%"></div>` : ""}
+      <span class="bar-val">${has ? fmtPrice(p.price, p.currency) : "가격 확인 안 됨"}</span></div></div>`;
+  }).join("");
+
+  // 비교표 (브랜드 순)
+  const byBrand = [...items].sort((a, b) => a.brand.localeCompare(b.brand, "ko"));
+  $("tbody").innerHTML = byBrand.map(p => {
+    const url = safeUrl(p.url);
+    const rating = p.rating == null ? NA : `★ ${esc(p.rating)}${p.review_count != null ? ` <span class="na">(${Number(p.review_count).toLocaleString()})</span>` : ""}`;
+    return `<tr><td>${esc(p.brand)}</td><td>${esc(p.model)}</td>
+      <td class="num">${fmtPrice(p.price, p.currency) ?? NA}</td><td>${p.store ? esc(p.store) : NA}</td>
+      <td class="num">${rating}</td><td>${list(p.pros, "pros")}</td><td>${list(p.cons, "cons")}</td>
+      <td>${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">열기</a>` : NA}</td></tr>`;
+  }).join("");
+
+  $("meta").textContent = [
+    demoMode ? `저장된 결과 (검색 시각 ${d.searched_at})`
+      : d.cached ? `캐시된 결과 (검색 시각 ${d.searched_at})` : `방금 검색함 (${d.elapsed_sec}초)`,
+    d.notes, "가격은 수시로 바뀌니 구매 전 링크에서 다시 확인하세요.",
+  ].filter(Boolean).join(" · ");
+  $("results").style.display = "block";
+}
+</script>
+</body>
+</html>

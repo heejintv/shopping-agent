@@ -1,0 +1,38 @@
+# 파이썬 가상환경 (각자 PC에서 다시 만들면 됨, 용량 큼)
+.venv/
+venv/
+env/
+
+# 파이썬 실행 시 자동 생성되는 파일
+__pycache__/
+*.py[cod]
+
+# 비밀번호·API 키 등 환경변수 파일
+.env
+.env.*
+*.pem
+*.key
+
+# 로컬 검색 캐시 (공개용 결과는 make_demo.py로 demo/에 복사해서 올림)
+cache/
+
+# 로그·임시 파일
+*.log
+*.tmp
+.pytest_cache/
+
+# Claude Code 로컬 설정
+.claude/settings.local.json
+
+# 에디터·OS가 만드는 파일
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*:Zone.Identifier
+
+# 큰 파일
+*.zip
+*.tar.gz
+*.mp4
+*.mov
