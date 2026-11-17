@@ -90,7 +90,8 @@ SCHEMA = {
 PROMPT = """상품 "{q}"의 한국 쇼핑몰(다나와·네이버쇼핑·쿠팡 등) 가격을 비교해.
 - 웹 검색은 최대 3번. 다나와 같은 가격비교 사이트 위주로 찾아.
 - 인기 상위 5개 모델만: price(원, 숫자), store, rating(5점), review_count, pros/cons(각 1~2개), url.
-- url: 검색 결과나 읽은 페이지에서 실제로 확인한 상품 페이지 주소를 그대로만. 주소를 만들거나 추측하지 말고, 확실하지 않으면 null.
+- url: 다나와 상품 상세(prod.danawa.com/info/?pcode=...) 또는 쇼핑몰의 그 상품 상세 페이지만. 검색·목록 페이지는 안 됨.
+  웹페이지 읽기로 실제로 열어서 확인한 주소만 쓰고, 추측해서 만들지 마. 확인 못 하면 null.
 - 확인 못 한 값은 null(목록은 빈 배열). 지어내지 마.
 - value_pick(가성비)·quality_pick(품질): products의 model 이름 그대로 + 이유 한 줄. 근거 없으면 null.
 - notes: 주의사항 한 문장 또는 null.
@@ -102,6 +103,30 @@ CONDITION_PROMPT = """
 - 조건에 맞는 모델을 우선 찾아. 각 상품마다 fit(조건 적합도: "높음"/"보통"/"낮음")과 fit_reason(이유 한 줄).
 - 조건에 맞는 상품이 하나도 없으면 지어내지 말고 products는 빈 배열, notes는 "조건에 맞는 상품을 못 찾음".
 """
+
+
+# 검증에 실패한 상품만 모아서 링크를 다시 찾게 하는 지시 (재시도는 한 번만)
+RETRY_PROMPT = """아래 상품들의 상세 페이지 주소를 찾아.
+- 다나와 상품 상세(prod.danawa.com/info/?pcode=...) 또는 쇼핑몰의 그 상품 상세 페이지만. 검색·목록 페이지는 안 됨.
+- 웹페이지 읽기로 직접 열어서 제목에 모델명이 있는 걸 확인한 주소만. 추측해서 만들지 마. 못 찾으면 null.
+- 웹 검색은 상품당 1번 이내.
+{items}
+"""
+RETRY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "links": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"no": {"type": "integer"}, "url": NULLABLE_STR},
+                "required": ["no", "url"],
+            },
+        },
+    },
+    "required": ["links"],
+}
+RETRY_TIMEOUT = 300  # 초
 
 
 def build_schema(with_condition: bool) -> dict:
@@ -165,17 +190,17 @@ def cache_path(q: str, c: str = "") -> Path:
     return CACHE_DIR / f"{key}.json"
 
 
-def run_claude(q: str, c: str = "") -> dict:
-    prompt = PROMPT.format(q=q) + (CONDITION_PROMPT.format(c=c) if c else "")
+def call_claude(prompt: str, schema: dict, timeout: int) -> dict:
+    """claude -p를 웹 도구만 허용해서 실행하고, 스키마 모양의 결과(dict)를 돌려준다."""
     cmd = [
         "claude", "-p", prompt,
         "--tools", WEB_TOOLS,            # 쓸 수 있는 도구를 웹 검색·웹페이지 읽기로만 제한
         "--allowedTools", WEB_TOOLS,     # 그 두 도구는 확인 없이 허용
         "--output-format", "json",
-        "--json-schema", json.dumps(build_schema(bool(c))),
+        "--json-schema", json.dumps(schema),
     ]
     proc = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=CLAUDE_TIMEOUT, cwd=BASE_DIR,
+        cmd, capture_output=True, text=True, timeout=timeout, cwd=BASE_DIR,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"claude 실행 실패 (코드 {proc.returncode}): {proc.stderr[-500:]}")
@@ -187,6 +212,25 @@ def run_claude(q: str, c: str = "") -> dict:
         data = json.loads(out["result"])
     data["cost_usd"] = out.get("total_cost_usd")
     return data
+
+
+def run_claude(q: str, c: str = "") -> dict:
+    prompt = PROMPT.format(q=q) + (CONDITION_PROMPT.format(c=c) if c else "")
+    return call_claude(prompt, build_schema(bool(c)), CLAUDE_TIMEOUT)
+
+
+def retry_links(failed: list[dict]) -> float | None:
+    """검증 실패한 상품들만 claude를 한 번 더 실행해 상세 페이지를 다시 찾고 검증한다. 비용(USD)을 돌려준다."""
+    items = "\n".join(f"{i}. {p['brand']} {p['model']}" for i, p in enumerate(failed, 1))
+    out = call_claude(RETRY_PROMPT.format(items=items), RETRY_SCHEMA, RETRY_TIMEOUT)
+    found = {x.get("no"): x.get("url") for x in out.get("links", [])}
+    retried = []
+    for i, p in enumerate(failed, 1):
+        if found.get(i):
+            p["url"] = found[i]
+            retried.append(p)
+    verify_links(retried)  # 다시 받은 주소도 똑같이 검증. 실패하면 링크 확인 안 됨으로 남음
+    return out.get("cost_usd")
 
 
 # ---------- 라우트 ----------
@@ -300,7 +344,16 @@ def search():
             app.logger.exception("search failed")
             return jsonify(error="검색 중 오류가 났어요. 서버 로그를 확인하세요."), 502
 
-        verify_links(data)  # 링크마다 실제 접속해서 확인, 실패하면 다나와 검색 링크로 교체
+        # 링크마다 실제 접속해서 확인 → 실패한 상품만 claude로 한 번 더 찾기 → 그래도 실패하면 링크 없음
+        failed = verify_links(data.get("products") or [])
+        if failed:
+            try:
+                cost = retry_links(failed)
+                if cost and data.get("cost_usd") is not None:
+                    data["cost_usd"] = round(data["cost_usd"] + cost, 4)
+            except Exception:  # 재시도가 실패해도 검색 결과는 그대로 돌려줌 (해당 상품은 링크 확인 안 됨)
+                app.logger.exception("link retry failed")
+        data["link_retry"] = len(failed)
         data["query"] = q
         data["condition"] = c or None
         data["searched_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
