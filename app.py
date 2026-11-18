@@ -4,7 +4,8 @@
 브랜드·모델별 가격 정보를 JSON으로 받아 돌려준다. 결과는 cache/에 저장한다.
 
 인터넷에 공개할 때를 위한 보호 장치:
-- 새 검색(claude 실행)은 하루 DAILY_LIMIT회(기본 10회)까지. 캐시된 결과는 제한 없음
+- ngrok을 거쳐 들어온 새 검색(claude 실행)은 하루 DAILY_LIMIT회(기본 10회)까지. 캐시된 결과는 제한 없음
+- 내 PC에서 직접 온 요청은 무제한 (is_local_request 참고)
 - CORS는 GitHub Pages 주소(ALLOWED_ORIGIN)만 허용
 """
 
@@ -177,6 +178,32 @@ def remaining() -> int:
         return max(0, DAILY_LIMIT - read_usage()["count"])
 
 
+# ngrok은 요청을 127.0.0.1로 전달하면서 이런 헤더를 붙인다. 하나라도 있으면 외부 요청
+PROXY_HEADERS = ("X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP", "Forwarded")
+LOCAL_ORIGINS = {ALLOWED_ORIGIN, "http://localhost:5000", "http://127.0.0.1:5000"}
+
+
+def is_local_request() -> bool:
+    """내 PC에서 직접 온 요청이면 True (무제한)."""
+    if request.remote_addr not in ("127.0.0.1", "::1"):
+        return False
+    if any(h in request.headers for h in PROXY_HEADERS):  # ngrok을 거쳐 왔음
+        return False
+    # 내 PC 브라우저로 아무 사이트나 보다가 그 사이트가 몰래 localhost:5000을 부르는 경우 막기:
+    # 다른 사이트에서 온 요청은 무제한으로 치지 않는다 (curl처럼 헤더가 없으면 내 PC로 봄)
+    origin = request.headers.get("Origin")
+    if origin:
+        return origin in LOCAL_ORIGINS
+    return request.headers.get("Sec-Fetch-Site", "none") in ("same-origin", "none")
+
+
+def limit_info() -> dict:
+    """응답에 붙이는 횟수 정보. 무제한이면 remaining은 null."""
+    if is_local_request():
+        return {"unlimited": True, "remaining": None, "limit": None}
+    return {"unlimited": False, "remaining": remaining(), "limit": DAILY_LIMIT}
+
+
 # ---------- 검색 ----------
 
 def normalize(q: str) -> str:
@@ -244,13 +271,16 @@ def cors(resp):
         resp.headers["Access-Control-Allow-Headers"] = "ngrok-skip-browser-warning"
         resp.headers["Access-Control-Allow-Methods"] = "GET"
         resp.headers["Access-Control-Max-Age"] = "600"
+        # GitHub Pages(공개 사이트)에서 http://localhost:5000 을 부를 때 크롬이 요구하는 헤더
+        if request.headers.get("Access-Control-Request-Private-Network") == "true":
+            resp.headers["Access-Control-Allow-Private-Network"] = "true"
     resp.headers["Vary"] = "Origin"
     return resp
 
 
 @app.get("/health")
 def health():
-    return jsonify(ok=True, remaining=remaining(), limit=DAILY_LIMIT)
+    return jsonify(ok=True, **limit_info())
 
 
 @app.get("/")
@@ -304,7 +334,7 @@ def history_item(name):
         return jsonify(error="저장된 검색 결과가 없어요."), 404
     data = json.loads(path.read_text(encoding="utf-8"))
     data.pop("cost_usd", None)
-    data.update(cached=True, remaining=remaining(), limit=DAILY_LIMIT)
+    data.update(cached=True, **limit_info())
     return jsonify(data)
 
 
@@ -327,13 +357,14 @@ def search():
         if path.exists():  # 캐시된 결과는 횟수 차감 없음
             data = json.loads(path.read_text(encoding="utf-8"))
             data.pop("cost_usd", None)
-            data.update(cached=True, remaining=remaining(), limit=DAILY_LIMIT)
+            data.update(cached=True, **limit_info())
             return jsonify(data)
 
-        left = try_use_one()
-        if left is None:
+        info = limit_info()
+        left = None if info["unlimited"] else try_use_one()
+        if not info["unlimited"] and left is None:
             return jsonify(error=f"오늘 새 검색 {DAILY_LIMIT}회를 모두 썼어요. 내일 다시 시도하세요.",
-                           remaining=0, limit=DAILY_LIMIT), 429
+                           unlimited=False, remaining=0, limit=DAILY_LIMIT), 429
 
         started = time.time()
         try:
@@ -360,7 +391,8 @@ def search():
         data["elapsed_sec"] = round(time.time() - started, 1)
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         data.pop("cost_usd", None)
-        data.update(cached=False, remaining=left, limit=DAILY_LIMIT)
+        info["remaining"] = left
+        data.update(cached=False, **info)
         return jsonify(data)
 
 

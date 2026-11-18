@@ -225,11 +225,13 @@ const cleanCond = s => (s || "").trim().split(/\s+/).join(" ");
 const FIT_CLASS = { "높음": "high", "보통": "mid", "낮음": "low" };
 const fitBadge = f => f ? `<span class="fit ${FIT_CLASS[f] || "low"}">적합도 ${esc(f)}</span>` : "";
 
-// Flask가 직접 이 페이지를 띄웠으면 같은 주소, 아니면(GitHub Pages) config.js의 서버 주소로 요청
-const onFlask = location.port === "5000";
-const API_BASE = onFlask ? "" : String(window.APP_CONFIG?.SERVER_URL || "").trim().replace(/\/+$/, "");
+// 연결 순서: ① 내 PC 서버(localhost:5000, 무제한) → ② config.js의 ngrok 주소(하루 제한) → ③ 데모 모드
+const LOCAL_URL = location.port === "5000" ? "" : "http://localhost:5000";  // Flask가 직접 띄웠으면 같은 주소
+const NGROK_URL = String(window.APP_CONFIG?.SERVER_URL || "").trim().replace(/\/+$/, "");
+let API_BASE = "";      // connect()에서 연결된 서버 주소로 정해짐
+let API_HEADERS = {};
 // ngrok 무료 도메인은 처음 접속 시 경고 페이지를 보여주는데, 이 헤더가 있으면 건너뜀
-const API_HEADERS = { "ngrok-skip-browser-warning": "1" };
+const NGROK_HEADERS = { "ngrok-skip-browser-warning": "1" };
 
 let demoMode = false;
 let recentList = [];  // [{query, file, searched_at, count}] — 서버 /history 또는 demo/index.json
@@ -241,7 +243,8 @@ function setStatus(text, cls = "") {
 }
 
 function showRemaining(d) {
-  if (d && d.remaining != null) setStatus(`🟢 실시간 검색 가능 (오늘 남은 새 검색 ${d.remaining}회)`, "ok");
+  if (d && d.unlimited) setStatus("🟢 내 PC 서버 연결됨 (무제한)", "ok");
+  else if (d && d.remaining != null) setStatus(`🟢 실시간 검색 가능 (오늘 남은 ${d.remaining}회)`, "ok");
 }
 
 // ---------- 원하는 조건 ----------
@@ -300,17 +303,27 @@ $("chips").addEventListener("click", async e => {
 
 // ---------- 서버 연결 ----------
 
-// 페이지가 열리면 자동으로 서버 연결 시도. 안 되면 데모 모드
+async function tryHealth(base, headers, ms) {
+  try {
+    const res = await fetch(base + "/health", { headers, signal: AbortSignal.timeout(ms) });
+    const d = res.ok ? await res.json() : null;
+    return d && d.ok ? d : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// 페이지가 열리면 내 PC 서버 → ngrok 순서로 연결 시도. 둘 다 안 되면 데모 모드
 async function connect() {
   setStatus("검색 서버 연결 확인 중...");
-  let d = null;
-  if (onFlask || API_BASE) {
-    try {
-      const res = await fetch(API_BASE + "/health", { headers: API_HEADERS, signal: AbortSignal.timeout(5000) });
-      if (res.ok) d = await res.json();
-    } catch (_) {}
-  }
-  if (!d || !d.ok) {
+  let d = await tryHealth(LOCAL_URL, {}, 2000);
+  if (d) {
+    API_BASE = LOCAL_URL;
+    API_HEADERS = {};
+  } else if (NGROK_URL && (d = await tryHealth(NGROK_URL, NGROK_HEADERS, 5000))) {
+    API_BASE = NGROK_URL;
+    API_HEADERS = NGROK_HEADERS;
+  } else {
     setStatus("");
     return enterDemoMode();
   }

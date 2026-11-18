@@ -43,7 +43,7 @@ GitHub Pages: https://heejintv.github.io/shopping-agent/
 | `GET /search?q=&c=` | 검색. `c`는 원하는 조건(선택). 검색어+조건 조합으로 캐시하고, 캐시에 없으면 Claude 실행(하루 횟수 차감) |
 | `GET /history` | `cache/`에 저장된 검색어 목록 (최근 순) |
 | `GET /history/<파일명>` | 저장된 결과 하나 (Claude 실행·횟수 차감 없음) |
-| `GET /health` | 서버 상태와 남은 검색 횟수 |
+| `GET /health` | 서버 상태, 무제한 여부(`unlimited`)와 남은 검색 횟수(`remaining`) |
 
 Claude에게는 **인기 상위 5개 모델만, 웹 검색은 최대 3번**까지 하도록 지시해서 검색 비용과 시간을 줄였습니다.
 
@@ -61,7 +61,9 @@ Claude에게는 **인기 상위 5개 모델만, 웹 검색은 최대 3번**까�
 | `.env.example` | 환경변수 예시 (`.env`로 복사해서 사용, `.env`는 올리지 않음) |
 
 ### 안전장치
-- **하루 검색 제한**: 새 검색(Claude 실행)은 하루 10회(`DAILY_LIMIT`)까지. 이미 검색한 단어(캐시)는 제한 없음.
+- **하루 검색 제한**: ngrok을 거쳐 들어온 새 검색(Claude 실행)만 하루 10회(`DAILY_LIMIT`)까지. 내 PC에서 직접 온 요청은 무제한이고, 이미 검색한 단어(캐시)는 누구나 제한 없음.
+  - ngrok 요청도 서버에는 127.0.0.1로 보이므로 `X-Forwarded-For` 같은 전달 헤더가 있으면 외부로 판단합니다.
+  - 페이지는 `http://localhost:5000` → `config.js`의 ngrok 주소 → 데모 모드 순서로 연결을 시도합니다.
 - **CORS**: `https://heejintv.github.io`에서 온 요청만 허용합니다.
 - Claude가 쓸 수 있는 도구를 **웹 검색(WebSearch)과 웹페이지 읽기(WebFetch)로만 제한**해서 파일 수정이나 명령 실행이 불가능합니다.
 - JSON 스키마로 출력 형식을 강제하고, 확인 못 한 값은 `null`로 두도록 지시합니다.
