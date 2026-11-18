@@ -171,6 +171,12 @@
         <div id="top"></div>
       </section>
     </div>
+
+    <section class="panel">
+      <div class="panel-head"><h2>사이트별 링크 확인 (오늘)</h2>
+        <div class="legend"><span><i style="background:var(--accent)"></i>성공</span><span><i style="background:var(--bad)"></i>차단 의심</span><span><i style="background:var(--muted)"></i>기타 실패</span></div></div>
+      <div id="linkSites"></div>
+    </section>
   </div>
 </main>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -270,6 +276,7 @@ function render(d) {
   renderLine(d.recent, d.now_ts);
   renderEngines(d.engines);
   renderTop(d.top_queries);
+  renderLinkSites(d.links || []);
 }
 
 // ---------- 최근 1시간 응답 시간 (선 그래프, 시리즈 1개) ----------
@@ -365,6 +372,28 @@ function renderTop(list) {
   const max = list[0].count;
   $("top").innerHTML = `<ol class="top">${list.map(q =>
     `<li><span class="q">${esc(q.query)}<i style="width:${q.count / max * 100}%"></i></span><span class="c">${q.count}회</span></li>`).join("")}</ol>`;
+}
+
+// ---------- 사이트별 링크 확인 ("danawa 0/5") ----------
+
+const REASON_LABEL = { http_403: "403 차단", http_401: "401", http_429: "429 요청 과다", captcha: "캡차", timeout: "시간 초과",
+                       title_mismatch: "제목 불일치", http_404: "404 없음", search_page: "검색 페이지", error: "연결 오류", not_html: "HTML 아님" };
+function renderLinkSites(list) {
+  if (!list.length) { $("linkSites").innerHTML = '<div class="empty">오늘 확인한 링크가 없어요.</div>'; return; }
+  const max = Math.max(...list.map(x => x.total), 1);
+  $("linkSites").innerHTML = list.map(x => {
+    const reasons = Object.entries(x.reasons || {}).sort((a, b) => b[1] - a[1])
+      .map(([k, n]) => `${REASON_LABEL[k] || esc(k)} ${n}`).join(" · ");
+    const warn = x.total >= 2 && x.ok === 0 && x.blocked >= 2;
+    return `<div class="eng">
+      <div class="eng-head"><b>${esc(x.site)}</b><span class="na">${x.ok}/${x.total} 성공${x.blocked ? ` · 차단 의심 ${x.blocked}` : ""}${warn ? " ⚠️" : ""}</span></div>
+      <div class="bar" title="${esc(x.text)}">
+        ${x.ok ? `<span class="ok" style="width:${x.ok / max * 100}%"></span>` : ""}
+        ${x.blocked ? `<span class="fail" style="width:${x.blocked / max * 100}%"></span>` : ""}
+        ${x.fail ? `<span style="background:var(--muted);width:${x.fail / max * 100}%"></span>` : ""}
+      </div>
+      <div class="eng-fail">${reasons ? `실패 내역: ${reasons}` : "실패 없음"}</div></div>`;
+  }).join("");
 }
 
 let resizeTimer;

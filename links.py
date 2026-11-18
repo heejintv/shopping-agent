@@ -15,6 +15,11 @@
       페이지 값이 있으면 AI 값보다 우선. 5점 만점으로 맞춤.
       product["rating_source"]  "page" = 상품 페이지에서 읽음, "ai" = AI가 준 값 (둘 다 없으면 없음)
 
+차단 대응: 링크마다 결과(ok / http_403 / http_429 / captcha / timeout / title_mismatch …)를 로그와 RESULT_HOOK(모니터링)에 남긴다.
+      Render(또는 LINK_BLOCK_MODE=1)에서 어떤 사이트가 차단으로 판단되면(최근 성공 없이 차단 신호 2번 이상),
+      그 사이트 링크는 지우지 않고 product["url_status"] = "unverifiable"(확인 불가)로 남긴다.
+      product["shop_url"](다른 쇼핑몰 상품 페이지)이 있으면 원래 링크가 안 될 때 그 주소로 확인한다.
+
 기존 캐시 다시 검증: python links.py            (cache/와 demo/를 다시 검사해서 저장. 재검색은 하지 않음)
 기존 캐시 별점만 채우기: python links.py ratings cache demo   (검증된 링크의 페이지에서 별점만 다시 읽음)
 """
@@ -22,15 +27,25 @@
 import html
 import ipaddress
 import json
+import logging
+import os
 import re
+import threading
 import socket
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+log = logging.getLogger("pickit.links")
+RESULT_HOOK = None        # app.py가 모니터링 기록 함수를 넣음: hook(사이트, 결과)
+BLOCK_REASONS = {"http_401", "http_403", "http_429", "captcha", "timeout"}   # 차단으로 의심하는 결과
+CAPTCHA_MARKS = ("captcha", "recaptcha", "hcaptcha", "cf-chl", "challenge-platform", "just a moment",
+                 "access denied", "비정상적인 접근", "접근이 차단", "자동입력 방지", "보안문자")
 
 TIMEOUT = 8            # 초. 링크 하나당
 MAX_BYTES = 400_000    # 제목만 보면 되므로 페이지 앞부분만 읽음
@@ -90,36 +105,95 @@ class SafeRedirect(urllib.request.HTTPRedirectHandler):
 _opener = urllib.request.build_opener(SafeRedirect)
 
 
-def fetch_page(url: str) -> str | None:
-    """정상(200) HTML이면 내용 앞부분, 아니면 None (오류·차단·시간 초과 포함).
+def fetch_page_info(url: str) -> tuple[str | None, str]:
+    """(정상 HTML이면 내용 앞부분 아니면 None, 결과). 결과: ok / http_403 / http_429 / timeout / error / not_html / internal.
     네트워크 오류·시간 초과·429·5xx 같은 일시적 실패는 잠깐 쉬고 한 번 더 시도한다."""
     if not is_public_url(url):
-        return None
+        return None, "internal"
     req = urllib.request.Request(url, headers={
         "User-Agent": USER_AGENT, "Accept": "text/html,*/*;q=0.8", "Accept-Language": "ko-KR,ko;q=0.9"})
+    reason = "error"
     for attempt in range(2):
         if attempt:
             time.sleep(1.5)
         try:
             with _opener.open(req, timeout=TIMEOUT) as r:
-                if r.status != 200 or "html" not in (r.headers.get("Content-Type") or "html"):
-                    return None
+                if r.status != 200:
+                    return None, f"http_{r.status}"
+                if "html" not in (r.headers.get("Content-Type") or "html"):
+                    return None, "not_html"
                 raw = r.read(MAX_BYTES)
                 charset = r.headers.get_content_charset()
             break
         except urllib.error.HTTPError as e:
+            reason = f"http_{e.code}"
             if e.code != 429 and e.code < 500:  # 404·403 등은 다시 해도 같음
-                return None
+                return None, reason
+        except (TimeoutError, socket.timeout):
+            reason = "timeout"
+        except urllib.error.URLError as e:
+            reason = "timeout" if isinstance(e.reason, (TimeoutError, socket.timeout)) else "error"
         except Exception:
-            pass  # 연결 오류·시간 초과 → 한 번 더
+            reason = "error"   # 연결 오류 → 한 번 더
     else:
-        return None
+        return None, reason
     for enc in filter(None, [charset, "utf-8", "cp949"]):
         try:
-            return raw.decode(enc)
+            return raw.decode(enc), "ok"
         except (LookupError, UnicodeDecodeError):
             continue
-    return raw.decode("utf-8", "ignore")
+    return raw.decode("utf-8", "ignore"), "ok"
+
+
+def fetch_page(url: str) -> str | None:
+    """정상(200) HTML이면 내용 앞부분, 아니면 None (오류·차단·시간 초과 포함)."""
+    return fetch_page_info(url)[0]
+
+
+def looks_like_captcha(page: str) -> bool:
+    head = page[:30000].lower()
+    return any(m in head for m in CAPTCHA_MARKS)
+
+
+# ---------- 사이트별 차단 판단 ----------
+
+def site_name(url_or_host: str) -> str:
+    """prod.danawa.com → danawa, item.gmarket.co.kr → gmarket, www.11st.co.kr → 11st"""
+    host = urllib.parse.urlsplit(url_or_host).hostname if "//" in url_or_host else url_or_host
+    parts = [x for x in (host or "").lower().split(".") if x]
+    while len(parts) > 1 and parts[-1] in ("kr", "com", "net", "co", "or", "org", "io", "shop", "jp"):
+        parts.pop()
+    return parts[-1] if parts else "unknown"
+
+
+def block_mode() -> bool:
+    """차단 대응은 Render(또는 LINK_BLOCK_MODE=1)에서만. 내 PC에서는 기존처럼 '검증 실패'로 처리."""
+    return os.environ.get("RENDER", "").lower() == "true" or os.environ.get("LINK_BLOCK_MODE") == "1"
+
+
+_recent: dict[str, deque] = {}   # 사이트 → 최근 결과 (ok / blocked / fail)
+_recent_lock = threading.Lock()
+
+
+def note_result(url: str, reason: str) -> None:
+    site = site_name(url)
+    kind = "ok" if reason == "ok" else "blocked" if reason in BLOCK_REASONS else "fail"
+    with _recent_lock:
+        _recent.setdefault(site, deque(maxlen=6)).append(kind)
+    if kind != "ok":
+        log.warning("링크 확인 %s: %s → %s", "차단 의심" if kind == "blocked" else "실패", url, reason)
+    if RESULT_HOOK:
+        try:
+            RESULT_HOOK(site, reason)
+        except Exception:   # 기록 실패가 검색에 영향을 주지 않게
+            pass
+
+
+def site_blocked(url: str) -> bool:
+    """최근 결과에 성공이 없고 차단 신호가 2번 이상이면 그 사이트는 차단된 것으로 본다."""
+    with _recent_lock:
+        recent = list(_recent.get(site_name(url), ()))
+    return recent.count("blocked") >= 2 and "ok" not in recent
 
 
 def looks_like_search_page(url: str) -> bool:
@@ -128,12 +202,22 @@ def looks_like_search_page(url: str) -> bool:
     return u.hostname is not None and (u.hostname.startswith("search.") or "search" in u.path.lower())
 
 
+def check_page_info(url: str, model: str) -> tuple[str | None, str]:
+    """(상품 상세 페이지가 맞으면 페이지 내용 아니면 None, 결과)."""
+    if not url:
+        return None, "no_url"
+    if looks_like_search_page(url):
+        return None, "search_page"
+    page, reason = fetch_page_info(url)
+    if page is not None and not title_has_model(page_titles(page), model):
+        page, reason = None, "captcha" if looks_like_captcha(page) else "title_mismatch"
+    note_result(url, reason)
+    return page, reason
+
+
 def check_page(url: str, model: str) -> str | None:
     """상품 상세 페이지가 맞으면 페이지 내용, 아니면 None."""
-    if not url or looks_like_search_page(url):
-        return None
-    page = fetch_page(url)
-    return page if page is not None and title_has_model(page_titles(page), model) else None
+    return check_page_info(url, model)[0]
 
 
 def check_url(url: str, model: str) -> bool:
@@ -255,21 +339,49 @@ def apply_rating(p: dict, page: str | None) -> bool:
 
 # ---------- 검증 ----------
 
-def verify_product(p: dict) -> bool:
-    """p["url"]을 검증해서 p를 고친다. 확인되면 True. 연 페이지에서 별점·리뷰 수도 읽는다."""
-    url = p.get("url")
-    page = check_page(url, p.get("model") or "")
+def _reject(p: dict, url: str | None) -> None:
+    if url:
+        rejected = p.setdefault("url_rejected", [])
+        if url not in rejected:
+            rejected.append(url)
+
+
+def verify_product(p: dict, finalize: bool = True) -> bool:
+    """p["url"]을 검증해서 p를 고친다. 확인되면 True. 연 페이지에서 별점·리뷰 수도 읽는다
+    (별점은 확인된 페이지에서만 → 차단된 사이트에서는 읽지 않음).
+    원래 링크가 안 되고 p["shop_url"](다른 쇼핑몰)이 있으면 그 주소로 확인한다.
+    finalize=False면 실패한 링크를 아직 지우지 않는다 (verify_links가 사이트 차단 여부를 보고 마무리)."""
+    url, alt, model = p.get("url"), p.get("shop_url"), p.get("model") or ""
+    p.pop("url_status", None)
+    page, reason = check_page_info(url, model)
+    if page is None and alt and alt != url:
+        page2, _ = check_page_info(alt, model)
+        if page2 is not None:
+            _reject(p, url)
+            p["url_original"] = url          # 원래 링크(예: 다나와)는 기록만
+            url, page, reason = alt, page2, "ok"
+            p["url"] = alt
     if page is not None:
         p["url_verified"] = True
         apply_rating(p, page)
         return True
     apply_rating(p, None)   # 페이지 값이 없으면 AI 값 유지 (rating_source="ai")
-    if url:
-        rejected = p.setdefault("url_rejected", [])
-        if url not in rejected:
-            rejected.append(url)
-    p["url"], p["url_verified"] = None, False
+    p["url_verified"] = False
+    p["_reason"] = reason
+    if finalize:
+        _finalize_failed(p)
     return False
+
+
+def _finalize_failed(p: dict) -> None:
+    """실패한 링크 마무리: Render에서 그 사이트가 차단된 것이면 링크를 남기고 '확인 불가', 아니면 지움."""
+    reason = p.pop("_reason", None)
+    url = p.get("url")
+    if url and block_mode() and reason in BLOCK_REASONS and site_blocked(url):
+        p["url_status"] = "unverifiable"   # 화면: 회색 '상품 보기 (미확인)'
+        return
+    _reject(p, url)
+    p["url"] = None
 
 
 def verify_links(products: list[dict], on_progress=None) -> list[dict]:
@@ -279,12 +391,17 @@ def verify_links(products: list[dict], on_progress=None) -> list[dict]:
         return []
     ok = [False] * len(products)
     with ThreadPoolExecutor(max_workers=4) as pool:  # 한 사이트에 너무 몰아서 접속하지 않도록
-        futures = {pool.submit(verify_product, p): i for i, p in enumerate(products)}
+        futures = {pool.submit(verify_product, p, False): i for i, p in enumerate(products)}
         for done, f in enumerate(as_completed(futures), 1):
             ok[futures[f]] = f.result()
             if on_progress:
                 on_progress(done, len(products))
-    return [p for p, good in zip(products, ok) if not good]
+    # 모두 확인한 뒤에 사이트별 차단 여부를 보고 실패한 링크를 마무리
+    for p, good in zip(products, ok):
+        if not good:
+            _finalize_failed(p)
+    # 확인 불가(차단된 사이트) 링크는 다시 찾아도 확인할 수 없으므로 재검색 대상에서 뺌
+    return [p for p, good in zip(products, ok) if not good and p.get("url_status") != "unverifiable"]
 
 
 def migrate_old(p: dict) -> None:

@@ -33,7 +33,8 @@ _day: dict | None = None
 def _empty(today: str) -> dict:
     return {"date": today, "events": [],
             "engines": {e: {"ok": 0, "fail": {c: 0 for c in (*FAIL_CODES, "other")}} for e in ("claude", "gemini")},
-            "counters": {"fallbacks": 0, "reasons_fixed": 0}}
+            "counters": {"fallbacks": 0, "reasons_fixed": 0},
+            "links": {}}   # 사이트별 링크 확인 {사이트: {ok, fail, blocked, reasons: {결과: 수}}}
 
 
 def _path(day: str) -> Path:
@@ -112,6 +113,21 @@ def record_engine(engine: str, ok: bool, code=None) -> None:
         _save()
 
 
+BLOCK_REASONS = {"http_401", "http_403", "http_429", "captcha", "timeout"}
+
+
+def record_link(site: str, reason: str) -> None:
+    """링크 확인 결과를 사이트별로 기록 (links.RESULT_HOOK)."""
+    with _lock:
+        day = _load_today()
+        s = day.setdefault("links", {}).setdefault(site, {"ok": 0, "fail": 0, "blocked": 0, "reasons": {}})
+        kind = "ok" if reason == "ok" else "blocked" if reason in BLOCK_REASONS else "fail"
+        s[kind] += 1
+        if kind != "ok":
+            s["reasons"][reason] = s["reasons"].get(reason, 0) + 1
+        _save()
+
+
 def bump(counter: str, n: int = 1) -> None:
     if not n:
         return
@@ -169,6 +185,11 @@ def summary() -> dict:
             "reasons_fixed": day["counters"].get("reasons_fixed", 0),
         },
         "engines": day["engines"],
+        # 사이트별 링크 확인: "danawa 0/5" (성공/전체), 차단 의심 수와 이유
+        "links": sorted(({"site": k, "ok": v["ok"], "total": v["ok"] + v["fail"] + v["blocked"], "blocked": v["blocked"],
+                          "fail": v["fail"], "reasons": v.get("reasons", {}),
+                          "text": f"{k} {v['ok']}/{v['ok'] + v['fail'] + v['blocked']}"}
+                         for k, v in day.get("links", {}).items()), key=lambda x: -x["total"]),
         "top_queries": [{"query": q, "count": n} for q, n in top],
         "recent": [{"t": e["t"], "ms": e["ms"], "kind": e["kind"], "ok": e["ok"]}
                    for e in real if now - e["t"] <= RECENT_SEC],

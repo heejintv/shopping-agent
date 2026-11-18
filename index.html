@@ -302,6 +302,9 @@
   .cons li::marker { color: var(--bad); }
   .meta { color: var(--muted); font-size: 12px; margin-top: 14px; }
   .nolink { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  a.uv-link, .pick .go a.uv-link { color: var(--muted); text-decoration: underline dashed; text-underline-offset: 3px; white-space: nowrap; }
+  a.uv-link small { font-size: 11px; }
+  a.uv-link:hover { color: var(--text); }
 
   /* 좁은 화면: 표를 카드 목록으로 */
   @media (max-width: 760px) {
@@ -691,6 +694,10 @@ const hasPrice = p => typeof p.price === "number";
 // 서버가 검증한 상품 페이지 링크만 버튼으로 보여줌. 검증 실패면 "링크 확인 안 됨"
 const productUrl = p => p && p.url_verified !== false ? safeUrl(p.url) : null;
 const NOLINK = '<span class="nolink">링크 확인 안 됨</span>';
+// 확인 불가: 서버에서 그 쇼핑몰이 차단돼 열어 보지 못한 링크 → 회색 '상품 보기 (미확인)', 누르기 전에 안내
+const UV_TIP = "서버에서 확인하지 못한 링크예요";
+const unverifiedUrl = p => p && p.url_status === "unverifiable" ? safeUrl(p.url) : null;
+const uvLink = (u, label) => `<a class="uv-link" href="${esc(u)}" target="_blank" rel="noopener noreferrer" title="${UV_TIP}">${label} <small>(미확인)</small></a>`;
 const cleanCond = s => (s || "").trim().split(/\s+/).join(" ");
 const FIT_CLASS = { "높음": "high", "보통": "mid", "낮음": "low" };
 const fitBadge = f => f ? `<span class="fit ${FIT_CLASS[f] || "low"}">적합도 ${esc(f)}</span>` : "";
@@ -1248,6 +1255,7 @@ function render(d) {
       ${p?.store ? `<div class="store">${esc(p.store)}</div>` : ""}
       ${whyHtml}
       ${url ? `<div class="go"><a href="${esc(url)}" target="_blank" rel="noopener noreferrer">상품 보기 →</a></div>`
+            : unverifiedUrl(p) ? `<div class="go">${uvLink(unverifiedUrl(p), "상품 보기")}</div>`
             : p ? `<div class="go">${NOLINK}</div>` : ""}</div>`;
   }).join("");
 
@@ -1288,7 +1296,7 @@ function renderTable() {
       <td class="rating rating-col" data-label="별점">${rating}</td>
       <td class="pc-cell" data-label="장점">${list(p.pros, "pros", DASH)}</td>
       <td class="pc-cell" data-label="단점">${list(p.cons, "cons", DASH)}</td>
-      <td class="link">${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">상품 보기</a>` : NOLINK}</td></tr>`;
+      <td class="link">${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">상품 보기</a>` : unverifiedUrl(p) ? uvLink(unverifiedUrl(p), "상품 보기") : NOLINK}</td></tr>`;
   }).join("") || `<tr class="filter-empty"><td colspan="7">필터 조건에 맞는 상품이 없어요 · <button type="button" class="text-btn" data-act="reset-filter">필터 초기화</button></td></tr>`;
   restoreAiBadge();   // 정렬로 표를 다시 그려도 "AI 추천" 배지 유지
 }
@@ -1714,6 +1722,12 @@ $("cmpAsk").addEventListener("click", () => {
 });
 
 refreshWish();
+
+// 확인 불가 링크: 열기 전에 안내
+document.addEventListener("click", e => {
+  const a = e.target.closest("a.uv-link");
+  if (a && !confirm(`${UV_TIP}.\n쇼핑몰이 서버 접속을 막아서 상품 페이지가 맞는지 확인하지 못했어요.\n열어서 직접 확인할까요?`)) e.preventDefault();
+});
 
 // ---------- 해외구매 배지 ----------
 

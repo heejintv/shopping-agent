@@ -37,6 +37,7 @@ import chat
 import stats
 from gemini import EngineError, call_gemini
 from gemini import model_name as gemini_model
+import links
 from links import verify_links
 from polish import polish_result
 
@@ -87,6 +88,18 @@ def seed_cache_from_demo() -> int:
 
 if ON_RENDER or os.environ.get("SEED_DEMO") == "1":
     seed_cache_from_demo()
+
+links.RESULT_HOOK = stats.record_link   # 링크 확인 결과를 사이트별로 /stats에 기록
+
+
+def shop_links() -> bool:
+    """Render(또는 SHOP_LINKS=1)에서는 다나와가 막힐 수 있어 다른 쇼핑몰 상품 링크(shop_url)도 같이 받는다."""
+    return ON_RENDER or os.environ.get("SHOP_LINKS") == "1"
+
+
+SHOP_URL_PROMPT = """- shop_url: 다나와가 아닌 쇼핑몰(G마켓, 11번가, 옥션, 컴퓨존, 브랜드 공식몰 등)의 같은 상품 상세 페이지 주소도 함께 찾아.
+  웹페이지 읽기로 직접 열어서 확인한 주소만. 검색·목록 페이지는 안 됨. 못 찾으면 null.
+"""
 
 CLAUDE_TIMEOUT = 600  # 초. 웹 검색을 여러 번 하므로 넉넉하게 10분
 WEB_TOOLS = "WebSearch,WebFetch"
@@ -174,11 +187,16 @@ RETRY_TIMEOUT = 300  # 초
 
 
 def build_schema(with_condition: bool) -> dict:
-    """조건이 있으면 상품마다 fit·fit_reason을 필수로 추가한 스키마."""
-    if not with_condition:
+    """조건이 있으면 상품마다 fit·fit_reason을 필수로, Render에서는 shop_url을 추가한 스키마."""
+    if not with_condition and not shop_links():
         return SCHEMA
     schema = json.loads(json.dumps(SCHEMA))  # 깊은 복사
     item = schema["properties"]["products"]["items"]
+    if shop_links():
+        item["properties"]["shop_url"] = NULLABLE_STR
+        item["required"] = item["required"] + ["shop_url"]
+    if not with_condition:
+        return schema
     item["properties"]["fit"] = {"type": "string", "enum": ["높음", "보통", "낮음"]}
     item["properties"]["fit_reason"] = {"type": "string"}
     item["required"] += ["fit", "fit_reason"]
@@ -378,7 +396,7 @@ def call_claude(prompt: str, schema: dict, timeout: int, job: Job | None = None)
 
 
 def run_search(q: str, c: str, engine: str, job: Job | None = None) -> dict:
-    prompt = PROMPT.format(q=q) + (CONDITION_PROMPT.format(c=c) if c else "")
+    prompt = PROMPT.format(q=q) + (SHOP_URL_PROMPT if shop_links() else "") + (CONDITION_PROMPT.format(c=c) if c else "")
     return call_engine(prompt, build_schema(bool(c)), CLAUDE_TIMEOUT, engine, job)
 
 
