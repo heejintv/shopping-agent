@@ -285,6 +285,11 @@
   .cmp-col dd.win, .cmp-col dd.win .pv { color: var(--accent); font-weight: 800; }
   .win-tag { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 99px; font-size: 11px; font-weight: 700;
              vertical-align: middle; background: var(--accent-soft); color: var(--accent); }
+  .cmp-answer { margin-bottom: 14px; padding: 12px 14px; border-radius: 12px; font-size: 14px; white-space: pre-wrap; word-break: break-word;
+                background: color-mix(in srgb, var(--accent) 6%, var(--card)); border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); }
+  .cmp-answer b { display: block; margin-bottom: 4px; color: var(--accent); font-size: 13px; }
+  .cmp-answer.wait { color: var(--muted); }
+  .cmp-answer.err { color: var(--bad); }
   @keyframes sheetUp { from { transform: translateY(100%); } }
   @media (max-width: 520px) {   /* 휴대폰: 아래에서 올라오는 시트, 비교는 위아래로 */
     .sheet.side, .sheet.center { top: auto; left: 0; right: 0; bottom: 0; width: 100%; max-width: none; max-height: 88vh; max-height: 88dvh;
@@ -373,7 +378,7 @@
   <div class="sheet-head"><b>⚖️ 1:1 비교</b>
     <button type="button" class="link-btn" id="cmpBack">← 찜 목록</button>
     <button type="button" class="sheet-x" data-close aria-label="닫기">×</button></div>
-  <div class="sheet-body"><div class="cmp" id="cmpBody"></div></div>
+  <div class="sheet-body"><div class="cmp-answer" id="cmpAnswer" hidden></div><div class="cmp" id="cmpBody"></div></div>
   <div class="sheet-foot"><span class="na" id="cmpHint">가격은 낮은 쪽, 별점은 높은 쪽을 표시해요.</span>
     <button type="button" class="primary" id="cmpAsk">🤖 AI에게 물어보기</button></div>
 </section>
@@ -772,6 +777,7 @@ async function chatAsk(question, opts = {}) {
     if (cmp) {   // 비교 답변: 상품명을 누르면 비교 화면에서 그 상품 강조 (검색 결과 대화 기록에는 넣지 않음)
       const i = Number.isInteger(data.pick_id) && cmp[data.pick_id] ? data.pick_id : null;
       chatAddAnswer(data.answer, i, k => openCompare(cmp, k), "👉 비교 화면에서 보기");
+      opts.onAnswer?.(data.answer, i);
       return;
     }
     const pick = validPick(data.pick_id);
@@ -782,7 +788,9 @@ async function chatAsk(question, opts = {}) {
   } catch (err) {
     if (sentFor !== chatResult) return;
     wait.remove();
-    chatAdd("err", err instanceof TypeError ? "서버에 연결할 수 없어요. 잠시 후 다시 시도해주세요." : err.message);
+    const msg = err instanceof TypeError ? "서버에 연결할 수 없어요. 잠시 후 다시 시도해주세요." : err.message;
+    chatAdd("err", msg);
+    opts.onError?.(msg);
   } finally {
     chatBusy = false; chatSetEnabled();
   }
@@ -1046,7 +1054,18 @@ let cmpItems = null;
 const compareProduct = w => ({ brand: w.brand, model: w.model, price: w.price, currency: w.currency, store: w.store,
   rating: w.rating, review_count: w.review_count, pros: w.pros, cons: w.cons, query: w.query });
 
+let cmpAnswered = null;   // 지금 답변 상자에 보이는 답변이 어떤 비교(items)의 것인지
+function setCmpAnswer(cls, title, text) {
+  const box = $("cmpAnswer");
+  box.className = "cmp-answer" + (cls ? " " + cls : "");
+  box.textContent = "";
+  if (title) { const b = document.createElement("b"); b.textContent = title; box.appendChild(b); }
+  box.append(text);   // 글자로만 넣어서 답변 속 HTML이 실행되지 않음
+  box.hidden = false;
+}
+
 function openCompare(items, pickIndex = null) {
+  if (items !== cmpAnswered) $("cmpAnswer").hidden = true;
   cmpItems = items;
   const [a, b] = items;
   const better = (x, y, cmp) => typeof x === "number" && typeof y === "number" && x !== y && cmp(x, y);
@@ -1090,9 +1109,21 @@ function markComparePick(i) {
 $("cmpBack").addEventListener("click", () => { renderWishSheet(); openSheet("wishSheet"); });
 $("cmpAsk").addEventListener("click", () => {
   if (!cmpItems || chatBusy || demoMode) return;
-  closeSheets();
-  $("chatBox").classList.add("open");
-  chatAsk("이 두 개 중에 뭐가 나아?", { compare: cmpItems });
+  const items = cmpItems;
+  const stillHere = () => $("cmpSheet").classList.contains("open") && cmpItems === items;
+  cmpAnswered = items;
+  setCmpAnswer("wait", "", "🤖 AI가 두 상품을 비교하는 중...");
+  $("cmpAnswer").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  // 비교 화면은 그대로 두고 답변을 위쪽 상자에 보여줌 (채팅창 대화 기록에도 같이 남음)
+  chatAsk("이 두 개 중에 뭐가 나아?", {
+    compare: items,
+    onAnswer: (text, i) => {
+      if (!stillHere()) return;
+      setCmpAnswer("", "🤖 AI 답변", text);
+      if (i != null) markComparePick(i);   // 답변이 오면 고른 상품을 바로 강조
+    },
+    onError: msg => { if (stillHere()) setCmpAnswer("err", "", msg); },
+  });
 });
 
 refreshWish();
