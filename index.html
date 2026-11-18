@@ -101,6 +101,26 @@
           border: 1px solid var(--line); background: var(--card); color: var(--text); }
   .chip:hover { border-color: var(--accent); color: var(--accent); }
   .chip small { color: var(--muted); font-size: 11px; }
+  /* 최근 검색: 칩 + 숨기기(✕) 버튼을 한 알약 안에 */
+  .chip-wrap { display: inline-flex; align-items: center; flex: none; border: 1px solid var(--line); border-radius: 99px; background: var(--card); }
+  .chip-wrap:hover, .chip-wrap.open { border-color: var(--accent); }
+  .chip-wrap .chip { border: 0; background: none; padding: 6px 4px 6px 12px; }
+  .chip-wrap.open .chip { color: var(--accent); }
+  .chip .cnt { font-size: 11px; font-weight: 700; color: var(--accent); background: var(--accent-soft); padding: 1px 7px; border-radius: 99px; }
+  .chip-x { border: 0; background: none; color: var(--muted); font-size: 11px; line-height: 1; padding: 8px 11px 8px 5px; border-radius: 0 99px 99px 0; }
+  .chip-x:hover { color: var(--bad); }
+  .recent-old { margin: 14px 0 0; font-size: 12px; font-weight: 600; color: var(--muted); }
+  .recent-ctl { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 8px; }
+  .text-btn { border: 0; background: none; padding: 2px 0; font-size: 13px; font-weight: 600; color: var(--accent); }
+  .text-btn.muted { color: var(--muted); font-weight: 500; }
+  .text-btn:hover { text-decoration: underline; }
+  .cond-menu { margin-top: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); box-shadow: var(--shadow); }
+  .cond-menu .t { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+  .cond-menu .opts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .cond-opt { padding: 6px 12px; font-size: 14px; border-radius: 99px; border: 1px solid var(--line); background: var(--soft); color: var(--text); }
+  .cond-opt:hover { border-color: var(--accent); color: var(--accent); }
+  .cond-opt small { margin-left: 6px; color: var(--muted); font-size: 11px; }
+  .cond-opt.none { color: var(--muted); }
   #demo { display: none; margin-top: 16px; padding: 12px 14px; border-radius: 12px; font-size: 14px;
           background: color-mix(in srgb, var(--warn) 12%, var(--card)); border: 1px solid color-mix(in srgb, var(--warn) 50%, transparent); }
   #demo strong { color: var(--warn); }
@@ -359,6 +379,13 @@
     .sheet.side { height: 80vh; height: 80dvh; }
     .cmp { grid-template-columns: 1fr; }
     .cmp-vs { justify-self: center; }
+    /* 최근 검색(접힌 상태): 한 줄 가로 스크롤, 스크롤바 숨김, 오른쪽 끝을 흐리게 해서 더 있다는 걸 표시 */
+    .chips.row { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; padding-bottom: 2px;
+                 -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 48px), transparent);
+                 mask-image: linear-gradient(to right, #000 calc(100% - 48px), transparent); }
+    .chips.row::-webkit-scrollbar { display: none; }
+    .chips.row.at-end { -webkit-mask-image: none; mask-image: none; }
+    #recent .hint { display: none; }
     .brand b { font-size: 21px; }
     .brand .logo { width: 30px; height: 30px; }
     .brand span { display: none; }
@@ -410,7 +437,7 @@
 
   <section id="recent">
     <div class="head"><h2>최근 검색</h2><span class="hint">누르면 저장된 결과를 바로 보여줘요 (검색 횟수 차감 없음)</span></div>
-    <div class="chips" id="chips"></div>
+    <div id="chips"></div>
   </section>
 
   <section class="features" id="features" aria-label="Pickit 소개">
@@ -558,11 +585,124 @@ async function loadRecent() {
     recentList = [];
   }
   if (!Array.isArray(recentList)) recentList = [];
-  const short = s => (s || "").slice(5, 10).replace("-", "/");  // "2026-11-17 ..." → "11/17"
-  $("chips").innerHTML = recentList.length
-    ? recentList.map((d, i) => `<button type="button" class="chip" data-i="${i}">${esc(d.query)}${d.condition ? `<span class="cond">· ${esc(d.condition)}</span>` : ""}${d.searched_at ? `<small>${esc(short(d.searched_at))}</small>` : ""}</button>`).join("")
-    : '<span class="na">아직 저장된 검색이 없어요.</span>';
+  recentGroups = groupRecent(recentList);
+  if (openGroup && !recentGroups.some(g => g.key === openGroup)) openGroup = null;
+  renderRecent();
   $("recent").style.display = "block";
+}
+
+// ---------- 최근 검색 정리 ----------
+// 같은 검색어는 조건이 달라도 칩 하나로 묶고, 최근 6개만 보여줌. ✕로 숨긴 검색어는 브라우저(localStorage)에 기억
+// (캐시 파일은 지우지 않으므로 같은 검색어로 다시 검색하면 저장된 결과가 바로 나옴)
+
+const RECENT_SHOW = 6;
+const OLD_DAYS = 7;
+const HIDE_KEY = "pickit:hiddenRecent";   // {검색어: 숨긴 시각(ms)}
+let recentGroups = [];      // [{key, query, items: [최근 검색 항목 + i], latest}]
+let recentExpanded = false;
+let openGroup = null;       // 조건 목록을 펼친 검색어
+
+function loadHidden() {
+  try {
+    const v = JSON.parse(localStorage.getItem(HIDE_KEY) || "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+  } catch (_) {
+    return {};
+  }
+}
+let hiddenRecent = loadHidden();
+function saveHidden() {
+  try { localStorage.setItem(HIDE_KEY, JSON.stringify(hiddenRecent)); } catch (_) { /* 저장 실패: 이번 화면에서만 숨김 */ }
+}
+
+const tsOf = s => { const t = Date.parse(String(s || "").replace(" ", "T")); return Number.isNaN(t) ? 0 : t; };
+const shortDate = s => (s || "").slice(5, 10).replace("-", "/");   // "2026-11-17 ..." → "11/17"
+
+function groupRecent(list) {
+  const map = new Map();
+  list.forEach((d, i) => {
+    const key = norm(String(d?.query || ""));
+    if (!key) return;
+    if (!map.has(key)) map.set(key, { key, query: d.query, items: [], latest: -1 });
+    const g = map.get(key);
+    g.items.push({ ...d, i });
+    const t = tsOf(d.searched_at);
+    if (t > g.latest) { g.latest = t; g.query = d.query; }
+  });
+  const groups = [...map.values()];
+  for (const g of groups) g.items.sort((a, b) => tsOf(b.searched_at) - tsOf(a.searched_at));
+  return groups.sort((a, b) => b.latest - a.latest);
+}
+
+// 숨긴 뒤에 같은 검색어로 새 기록이 생기면 다시 보여줌
+const isHidden = g => hiddenRecent[g.key] != null && g.latest <= hiddenRecent[g.key];
+
+function chipHtml(g) {
+  const n = g.items.length;
+  const one = n === 1 ? g.items[0] : null;
+  const extra = one?.condition ? `<span class="cond">· ${esc(one.condition)}</span>` : n > 1 ? `<span class="cnt">조건 ${n}</span>` : "";
+  const date = g.items[0].searched_at ? `<small>${esc(shortDate(g.items[0].searched_at))}</small>` : "";
+  const open = openGroup === g.key;
+  return `<span class="chip-wrap${open ? " open" : ""}"><button type="button" class="chip" data-key="${esc(g.key)}"${n > 1 ? ` aria-expanded="${open}"` : ""}
+    title="${n > 1 ? "조건별로 저장된 결과 보기" : "저장된 결과 보기"}">${esc(g.query)}${extra}${date}</button><button type="button" class="chip-x" data-key="${esc(g.key)}"
+    aria-label="${esc(g.query)} 목록에서 숨기기" title="목록에서 숨기기">✕</button></span>`;
+}
+
+function condMenuHtml() {
+  const g = recentGroups.find(x => x.key === openGroup);
+  if (!g || g.items.length < 2) return "";
+  return `<div class="cond-menu"><div class="t">“${esc(g.query)}” 어떤 조건으로 볼까요?</div><div class="opts">${
+    g.items.map(d => `<button type="button" class="cond-opt${d.condition ? "" : " none"}" data-i="${d.i}">${d.condition ? esc(d.condition) : "조건 없음"}${
+      d.searched_at ? `<small>${esc(shortDate(d.searched_at))}</small>` : ""}</button>`).join("")}</div></div>`;
+}
+
+function renderRecent() {
+  const visible = recentGroups.filter(g => !isHidden(g));
+  const hiddenCount = recentGroups.length - visible.length;
+  const more = Math.max(0, visible.length - RECENT_SHOW);
+  const restore = hiddenCount ? `<button type="button" class="text-btn muted" data-act="restore">숨긴 검색 다시 보기 (${hiddenCount})</button>` : "";
+  let html;
+  if (!visible.length) {
+    html = hiddenCount ? `<span class="na">최근 검색을 모두 숨겼어요.</span><div class="recent-ctl">${restore}</div>`
+                       : '<span class="na">아직 저장된 검색이 없어요.</span>';
+  } else if (!recentExpanded) {
+    html = `<div class="chips row" id="recentRow">${visible.slice(0, RECENT_SHOW).map(chipHtml).join("")}</div>`
+      + `<div class="recent-ctl">${more ? `<button type="button" class="text-btn" data-act="more" aria-expanded="false">더보기 (${more})</button>` : restore}</div>`;
+  } else {   // 펼침: 7일 안 / 이전 기록으로 나눔
+    const cut = Date.now() - OLD_DAYS * 86400000;
+    const fresh = visible.filter(g => g.latest >= cut), old = visible.filter(g => g.latest < cut);
+    html = (fresh.length ? `<div class="chips">${fresh.map(chipHtml).join("")}</div>` : "")
+      + (old.length ? `<h3 class="recent-old">이전 기록 (${OLD_DAYS}일 전)</h3><div class="chips">${old.map(chipHtml).join("")}</div>` : "")
+      + `<div class="recent-ctl"><button type="button" class="text-btn" data-act="less" aria-expanded="true">접기</button>${restore}</div>`;
+  }
+  $("chips").innerHTML = html + condMenuHtml();
+  updateRowFade();
+}
+
+// 가로 스크롤 줄: 끝까지 보면 오른쪽 흐림 효과를 없앰
+function updateRowFade() {
+  const row = $("recentRow");
+  if (!row) return;
+  row.classList.toggle("at-end", row.scrollLeft + row.clientWidth >= row.scrollWidth - 2);
+}
+$("chips").addEventListener("scroll", updateRowFade, true);
+addEventListener("resize", updateRowFade);
+
+function hideRecent(key) {
+  hiddenRecent[key] = Date.now();
+  const keys = Object.keys(hiddenRecent);   // 너무 쌓이지 않게 오래된 것부터 정리
+  if (keys.length > 300) keys.sort((a, b) => hiddenRecent[a] - hiddenRecent[b]).slice(0, keys.length - 300).forEach(k => delete hiddenRecent[k]);
+  if (openGroup === key) openGroup = null;
+  saveHidden();
+  renderRecent();
+}
+
+async function openSaved(item) {
+  $("q").value = item.query;
+  $("c").value = item.condition || "";
+  hideError();
+  try { render(await fetchSaved(item)); }
+  catch (err) { showError("불러오기 실패: " + err.message); }
 }
 
 // 저장된 결과 불러오기: Claude를 실행하지 않음
@@ -576,16 +716,26 @@ async function fetchSaved(item) {
   return data;
 }
 
-$("chips").addEventListener("click", async e => {
-  const btn = e.target.closest(".chip");
-  if (!btn) return;
-  const item = recentList[Number(btn.dataset.i)];
-  if (!item) return;
-  $("q").value = item.query;
-  $("c").value = item.condition || "";
-  hideError();
-  try { render(await fetchSaved(item)); }
-  catch (err) { showError("불러오기 실패: " + err.message); }
+$("chips").addEventListener("click", e => {
+  const x = e.target.closest(".chip-x");
+  if (x) return hideRecent(x.dataset.key);
+  const act = e.target.closest("[data-act]")?.dataset.act;
+  if (act === "more" || act === "less") { recentExpanded = act === "more"; return renderRecent(); }
+  if (act === "restore") { hiddenRecent = {}; saveHidden(); return renderRecent(); }
+  const opt = e.target.closest(".cond-opt");
+  if (opt) {
+    const item = recentList[Number(opt.dataset.i)];
+    openGroup = null;
+    renderRecent();
+    return item && openSaved(item);
+  }
+  const chip = e.target.closest(".chip");
+  if (!chip) return;
+  const g = recentGroups.find(x => x.key === chip.dataset.key);
+  if (!g) return;
+  if (g.items.length === 1) { openGroup = null; renderRecent(); return openSaved(g.items[0]); }
+  openGroup = openGroup === g.key ? null : g.key;   // 조건이 여러 개면 조건 목록 열기/닫기
+  renderRecent();
 });
 
 // ---------- 서버 연결 ----------
