@@ -451,10 +451,17 @@ def chat_api():
         return jsonify(error="질문을 입력하세요."), 400
     if len(question) > chat.MAX_QUESTION:
         return jsonify(error=f"질문이 너무 길어요 ({chat.MAX_QUESTION}자 이하)."), 400
-    results = chat.clean_results(body.get("results"))
-    if results is None:
-        return jsonify(error="먼저 상품을 검색해주세요."), 400
-    history = chat.clean_history(body.get("history"))
+    compare = body.get("mode") == "compare"   # 찜 목록 1:1 비교: 두 상품만 받아서 답함
+    if compare:
+        results = chat.clean_compare(body.get("results"))
+        if results is None:
+            return jsonify(error="비교할 상품 2개를 보내주세요."), 400
+        history = []   # 비교 질문은 이전 대화와 섞지 않음
+    else:
+        results = chat.clean_results(body.get("results"))
+        if results is None:
+            return jsonify(error="먼저 상품을 검색해주세요."), 400
+        history = chat.clean_history(body.get("history"))
 
     unlimited = is_local_request()
     left = None if unlimited else try_use_one("chat_count")
@@ -464,7 +471,7 @@ def chat_api():
     info = {"unlimited": unlimited, "remaining": left, "limit": None if unlimited else CHAT_DAILY_LIMIT}
 
     try:
-        out = chat.answer(question, results, history)
+        out = chat.answer(question, results, history, compare)
     except EngineError as e:
         app.logger.warning("chat failed: %s (%s)", e, e.__cause__)
         status = 503 if str(e) == chat.BUSY_MESSAGE else 502

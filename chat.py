@@ -61,6 +61,28 @@ def _num(v):
     return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
+COMPARE_NOTE = """[비교 모드]
+사용자가 찜 목록에서 고른 두 상품을 1:1로 비교하고 있어. 위 [검색 결과]의 두 상품만 보고 답해.
+- 반드시 이 두 상품 중 하나만 추천해. 다른 상품은 꺼내지 마. 답 모양은 똑같이 (추천 / 이유 두 줄 / 확인할 점 하나 / 추천ID).
+- 이유에는 두 상품의 차이(가격, 별점, 장단점)를 써.
+"""
+
+
+def clean_compare(results) -> dict | None:
+    """1:1 비교용: 상품이 정확히 2개일 때만 {"products": [두 상품]} (각 상품의 검색어 포함). 아니면 None."""
+    if not isinstance(results, dict) or not isinstance(results.get("products"), list):
+        return None
+    raw = results["products"]
+    if len(raw) != 2:
+        return None
+    cleaned = clean_results({"products": raw})
+    if not cleaned or len(cleaned["products"]) != 2:
+        return None
+    for item, p in zip(cleaned["products"], raw):
+        item["query"] = _text(p.get("query"), 100)   # 찜할 때의 검색어 (서로 다를 수 있음)
+    return {"products": cleaned["products"]}
+
+
 def clean_results(results) -> dict | None:
     """브라우저가 보낸 검색 결과에서 답변에 필요한 값만 꺼낸다 (크기 제한, 링크 등 제외)."""
     if not isinstance(results, dict) or not isinstance(results.get("products"), list):
@@ -110,10 +132,11 @@ def clean_history(history) -> list[dict]:
     return out
 
 
-def build_prompt(question: str, results: dict, history: list[dict]) -> str:
+def build_prompt(question: str, results: dict, history: list[dict], compare: bool = False) -> str:
     talk = "\n".join(f"{'사용자' if h['role'] == 'user' else '도우미'}: {h['text']}" for h in history)
     return (
         "[검색 결과]\n" + json.dumps(results, ensure_ascii=False, indent=1) + "\n\n"
+        + (COMPARE_NOTE + "\n" if compare else "")
         + "[최근 대화]\n" + (talk or "(없음)") + "\n\n"
         + "[질문]\n" + question
     )
@@ -163,17 +186,16 @@ def split_pick(text: str, results: dict) -> tuple[str, int | None]:
     return clean, pick_id
 
 
-def answer(question: str, results: dict, history: list[dict]) -> dict:
+def answer(question: str, results: dict, history: list[dict], compare: bool = False) -> dict:
     """{"answer", "pick_id", "engine", "fallback"}를 돌려준다. 실패하면 EngineError (메시지는 화면용)."""
-    out = _answer(question, results, history)
+    out = _answer(build_prompt(question, results, history, compare))
     out["answer"], out["pick_id"] = split_pick(out["answer"], results)
     if not out["answer"]:
         raise EngineError("빈 답변을 받았어요. 다시 시도해 주세요.")
     return out
 
 
-def _answer(question: str, results: dict, history: list[dict]) -> dict:
-    prompt = build_prompt(question, results, history)
+def _answer(prompt: str) -> dict:
     if chat_engine() == "claude":
         return {"answer": chat_claude(SYSTEM, prompt, CLAUDE_TIMEOUT), "engine": "claude", "fallback": False}
     try:
