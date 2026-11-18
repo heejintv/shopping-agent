@@ -6,7 +6,7 @@
       "price": 149000,
       "currency": "KRW",
       "store": "주식회사 이지두컴 (다나와 최저가)",
-      "rating": 4.9,
+      "rating": 4.8,
       "review_count": 152,
       "pros": [
         "60g 초경량",
@@ -18,7 +18,8 @@
         "판매처별 가격 편차 큼(18만~23만원대)"
       ],
       "url": "https://prod.danawa.com/info/?pcode=28481684",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "로지텍",
@@ -26,7 +27,7 @@
       "price": 178980,
       "currency": "KRW",
       "store": "컴오아시스 (다나와 최저가, 배송비 4,000원)",
-      "rating": 4.9,
+      "rating": 4.8,
       "review_count": 78,
       "pros": [
         "블루투스·로지볼트 멀티페어링",
@@ -39,7 +40,8 @@
         "보증 1년"
       ],
       "url": "https://prod.danawa.com/info/?pcode=98766185",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "로지텍",
@@ -47,7 +49,7 @@
       "price": 44920,
       "currency": "KRW",
       "store": "G마켓/옥션 (다나와 최저가, 배송비 3,000원)",
-      "rating": 4.8,
+      "rating": 4.7,
       "review_count": 218,
       "pros": [
         "저소음 클릭·휠",
@@ -58,7 +60,8 @@
         "멀티페어링 미지원"
       ],
       "url": "https://prod.danawa.com/info/?pcode=16221932",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "로지텍",
@@ -66,8 +69,8 @@
       "price": 39900,
       "currency": "KRW",
       "store": "오늘의집 (다나와 최저가, 무료배송)",
-      "rating": 4.9,
-      "review_count": null,
+      "rating": 4.8,
+      "review_count": 2340,
       "pros": [
         "99g 경량, HERO 12000DPI",
         "1000Hz 폴링",
@@ -78,7 +81,8 @@
         "블루투스 미지원"
       ],
       "url": "https://prod.danawa.com/info/?pcode=6143401",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "로지텍",
@@ -86,8 +90,8 @@
       "price": 74630,
       "currency": "KRW",
       "store": "G마켓 (다나와 최저가, 무료배송)",
-      "rating": 4.9,
-      "review_count": null,
+      "rating": 4.8,
+      "review_count": 1532,
       "pros": [
         "버티컬 손목보호 설계",
         "동글·블루투스 멀티페어링",
@@ -99,7 +103,8 @@
         "부피가 커 휴대성 낮음"
       ],
       "url": "https://prod.danawa.com/info/?pcode=16909604",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "로지텍",
@@ -120,7 +125,8 @@
         "수신기 분실 시 사용 불가"
       ],
       "url": "https://prod.danawa.com/info/?pcode=4554259",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "ATK",
@@ -128,7 +134,7 @@
       "price": 25900,
       "currency": "KRW",
       "store": "딜리딜리스토어 (다나와 최저가, 무료배송)",
-      "rating": 4.8,
+      "rating": 4.7,
       "review_count": 108,
       "pros": [
         "55g 초경량·PAW3395 SE 센서",
@@ -141,7 +147,8 @@
         "보증 1년"
       ],
       "url": "https://prod.danawa.com/info/?pcode=91770953",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "로지텍",
@@ -149,12 +156,13 @@
       "price": 15630,
       "currency": "KRW",
       "store": "다나와 (최저가 판매처 미확인)",
-      "rating": 4.7,
+      "rating": 4.6,
       "review_count": 176,
       "pros": [],
       "cons": [],
       "url": "https://prod.danawa.com/info/?pcode=20312480",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     }
   ],
   "value_pick": {

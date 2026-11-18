@@ -87,9 +87,10 @@ IRREGULAR = {
 
 
 NOUN_END = ("게임", "프레임", "타임", "결함", "소음", "마음", "처음", "느낌", "포함")   # 명사 (음·함·임 규칙에서 제외)
-HADA_NOUN = ("지원", "제공", "탑재", "추천", "가능", "우수", "저렴", "편리", "적합", "충분", "호환", "내장", "확인")
+HADA_NOUN = ("지원", "제공", "탑재", "추천", "가능", "우수", "저렴", "편리", "적합", "충분", "호환", "내장", "확인",
+             "사용", "조절", "연결", "작동", "측정", "세척", "보관", "차단", "유지", "절약")
 # 이 글자로 끝나면 문장이 덜 끝난 것(연결형·조사)으로 보고 그대로 둠
-OPEN_END = set("고며서지나만도는은을를에의로와과게니면데랑든여")
+OPEN_END = set("고며는은을를에의와과게니랑든여만")   # (서·면·도로 끝나는 명사가 많아서 제외: 센서, 대화면, 별도)
 
 
 def _polite_clause(s: str) -> str:
@@ -97,10 +98,14 @@ def _polite_clause(s: str) -> str:
     t = s.rstrip()
     if not t or t.endswith(("요", "죠")):
         return s
-    if t.endswith("포함"):                                # "케이블 포함" → "케이블 포함돼요"
+    if t.endswith("포함") and not t.endswith("미포함"):   # "케이블 포함" → "케이블 포함돼요"
         return t + "돼요"
     if t.endswith("아님"):
         return t[:-2] + "아니에요"
+    if re.search(r"미(지원|포함|탑재|제공|사용)$", t) or t.endswith("불가"):   # "블루투스 미지원" → "미지원이에요"
+        return t + _copula(t)
+    if t.endswith(("어감", "아감", "라감", "러감", "나감")):              # "케이스에 들어감" → "들어가요" (그립감·착용감은 명사)
+        return t[:-1] + "가요"
     if t.endswith(HADA_NOUN):                             # "AI 2.0 지원" → "AI 2.0 지원해요"
         return t + "해요"
     if t.endswith(NOUN_END):
@@ -177,8 +182,17 @@ def polite(text: str | None) -> str | None:
     return "".join(out)
 
 
+# 사실상 정보가 없는 장단점 항목 ("확인 안 됨", "리뷰 기반 단점은 확인하지 못함" 등) → 목록에서 빼고 화면엔 "–"
+PLACEHOLDER = re.compile(r"(리뷰\s*기반\s*)?(장점|단점)?\s*[은는이가]?\s*(정보\s*)?"
+                         r"(확인\s*안\s*됨|확인하지\s*못함|확인하지\s*못했어요|확인\s*못\s*함|확인되지\s*않음|없음|정보\s*없음|없어요)\.?")
+
+
+def is_placeholder(text) -> bool:
+    return isinstance(text, str) and bool(PLACEHOLDER.fullmatch(text.strip()))
+
+
 def polish_result(data: dict) -> dict:
-    """검색 결과의 추천 이유(가성비·품질)와 조건 적합 이유를 다듬는다. data를 고쳐서 돌려줌."""
+    """검색 결과의 추천 이유(가성비·품질), 조건 적합 이유, 장점·단점을 다듬는다. data를 고쳐서 돌려줌."""
     if not isinstance(data, dict):
         return data
     for k in ("value_pick", "quality_pick"):
@@ -186,8 +200,13 @@ def polish_result(data: dict) -> dict:
         if isinstance(pick, dict) and pick.get("reason"):
             pick["reason"] = polite(pick["reason"])
     for p in data.get("products") or []:
-        if isinstance(p, dict) and p.get("fit_reason"):
+        if not isinstance(p, dict):
+            continue
+        if p.get("fit_reason"):
             p["fit_reason"] = polite(p["fit_reason"])
+        for k in ("pros", "cons"):
+            if isinstance(p.get(k), list):
+                p[k] = [polite(t) for t in p[k] if isinstance(t, str) and t.strip() and not is_placeholder(t)]
     return data
 
 

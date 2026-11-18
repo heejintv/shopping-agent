@@ -6,8 +6,8 @@
       "price": 4497990,
       "currency": "KRW",
       "store": "옥션",
-      "rating": null,
-      "review_count": null,
+      "rating": 5.0,
+      "review_count": 5,
       "pros": [
         "16.2인치 miniLED 120Hz 대화면",
         "100Wh 배터리, 최대 24시간 사용"
@@ -17,7 +17,8 @@
         "무게 2.14kg으로 무거움"
       ],
       "url": "https://prod.danawa.com/info/?pcode=106756001",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "APPLE",
@@ -25,8 +26,8 @@
       "price": 3879680,
       "currency": "KRW",
       "store": "옥션",
-      "rating": null,
-      "review_count": null,
+      "rating": 4.6,
+      "review_count": 16,
       "pros": [
         "M5 Pro 15코어 CPU에 1.6kg으로 휴대성 좋음",
         "무료배송"
@@ -35,7 +36,8 @@
         "최저가가 출시가 3,490,000원보다 높음"
       ],
       "url": "https://prod.danawa.com/info/?pcode=106755515",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "APPLE",
@@ -43,8 +45,8 @@
       "price": 3844440,
       "currency": "KRW",
       "store": "G마켓",
-      "rating": null,
-      "review_count": null,
+      "rating": 4.9,
+      "review_count": 15,
       "pros": [
         "같은 사양 실버보다 약 3.5만 원 저렴",
         "Wi-Fi 7·블루투스 6.0, 최대 24개월 무이자"
@@ -53,7 +55,8 @@
         "최저가가 출시가 3,490,000원보다 높음"
       ],
       "url": "https://prod.danawa.com/info/?pcode=106755434",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "APPLE",
@@ -61,8 +64,8 @@
       "price": 3290000,
       "currency": "KRW",
       "store": "더현대닷컴",
-      "rating": null,
-      "review_count": null,
+      "rating": 5.0,
+      "review_count": 1,
       "pros": [
         "최신 M6 칩인데 5개 중 가장 저렴",
         "1.55kg 가볍고 최대 24시간 사용"
@@ -72,7 +75,8 @@
         "가격이 출시가 그대로라 할인 없음"
       ],
       "url": "https://prod.danawa.com/info/?pcode=124697684",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "APPLE",

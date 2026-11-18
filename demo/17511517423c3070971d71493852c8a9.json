@@ -6,8 +6,8 @@
       "price": 121830,
       "currency": "KRW",
       "store": "G마켓",
-      "rating": null,
-      "review_count": null,
+      "rating": 4.9,
+      "review_count": 21,
       "pros": [
         "무게 0.6kg으로 확인한 모델 중 가장 가벼움",
         "차량·원룸용 핸디 청소기로 소개됨"
@@ -18,7 +18,8 @@
       "url": "https://prod.danawa.com/info/?pcode=10058121&cate=102207",
       "fit": "높음",
       "fit_reason": "무게 0.6kg 초경량 핸디형이에요",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "샤오미",
@@ -26,8 +27,8 @@
       "price": 132240,
       "currency": "KRW",
       "store": "옥션",
-      "rating": null,
-      "review_count": null,
+      "rating": 4.9,
+      "review_count": 571,
       "pros": [
         "1.5kg으로 가벼운 스틱형",
         "흡입력 22,000Pa, 13만 원대 가격"
@@ -38,7 +39,8 @@
       "url": "https://prod.danawa.com/info/?pcode=18868094&cate=102207",
       "fit": "높음",
       "fit_reason": "스틱형 중 가장 가벼운 1.5kg이에요",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "샤크닌자",
@@ -46,8 +48,8 @@
       "price": 699010,
       "currency": "KRW",
       "store": "G마켓",
-      "rating": null,
-      "review_count": null,
+      "rating": 5.0,
+      "review_count": 55,
       "pros": [
         "1.7kg으로 가벼움",
         "관절형 파이프와 자동 먼지비움 거치대"
@@ -58,7 +60,8 @@
       "url": "https://prod.danawa.com/info/?pcode=98230349&cate=102207",
       "fit": "높음",
       "fit_reason": "무게 1.7kg으로 가볍고 자동 먼지비움 기능도 있어요",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "LG전자",
@@ -66,8 +69,8 @@
       "price": 362150,
       "currency": "KRW",
       "store": "11번가",
-      "rating": null,
-      "review_count": null,
+      "rating": 4.8,
+      "review_count": 285,
       "pros": [
         "다나와 실측 1.96kg",
         "물세척 필터, 최대 40분 사용"
@@ -78,7 +81,8 @@
       "url": "https://prod.danawa.com/info/?pcode=123803664&cate=102207",
       "fit": "보통",
       "fit_reason": "2kg 미만이지만 1.5~1.7kg 모델보다 무거워요",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "다이슨",
@@ -86,8 +90,8 @@
       "price": 295000,
       "currency": "KRW",
       "store": "G마켓",
-      "rating": null,
-      "review_count": null,
+      "rating": 4.7,
+      "review_count": 1240,
       "pros": [
         "초경량 바디와 Slim Fluffy 헤드로 손목 부담을 줄였다고 소개됨"
       ],
@@ -97,7 +101,8 @@
       "url": "https://prod.danawa.com/info/?pcode=17785652&cate=102207",
       "fit": "보통",
       "fit_reason": "경량형으로 소개되지만 실제 무게는 확인하지 못해요",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     }
   ],
   "value_pick": {

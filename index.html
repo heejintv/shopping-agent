@@ -84,6 +84,10 @@
   td.fit-c .fit-why { display: block; color: var(--muted); margin-top: 4px; }
   .pick .fit { align-self: flex-start; margin-top: 8px; }
   table.no-fit .fit-col { display: none !important; }
+  table.no-rating .rating-col { display: none !important; }
+  .rating-note { font-size: 13px; margin-top: 10px; }
+  td.model { min-width: 180px; }
+  td.pc-cell { width: 30%; }   /* 장점·단점이 남는 공간을 나눠 씀 */
   #status { margin-top: 10px; font-size: 13px; color: var(--muted); min-height: 20px; }
   #status.ok { color: var(--value); }
   #status.bad { color: var(--bad); }
@@ -291,7 +295,7 @@
   td.price { white-space: nowrap; font-weight: 700; min-width: 120px; }
   .mini { height: 4px; background: var(--soft); border-radius: 4px; margin-top: 6px; }
   .mini i { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
-  td.store-c { color: var(--muted); font-size: 13px; max-width: 160px; }
+  td.price .store-sub { color: var(--muted); font-size: 12px; font-weight: 400; white-space: nowrap; }   /* 가격 아래(옆) 쇼핑몰 */
   td.rating, td.link { white-space: nowrap; }
   ul.pc { margin: 0; padding-left: 16px; }
   .pros li::marker { color: var(--value); }
@@ -617,9 +621,10 @@
       </div>
       <div class="f-foot" id="filterFoot" hidden><span id="filterCount"></span><button type="button" class="text-btn" id="filterReset">필터 초기화</button></div>
       <table id="table">
-        <thead><tr><th>모델</th><th class="fit-col">조건 적합도</th><th>가격</th><th>쇼핑몰</th><th>별점</th><th>장점</th><th>단점</th><th></th></tr></thead>
+        <thead><tr><th>모델</th><th class="fit-col">조건 적합도</th><th>가격</th><th class="rating-col">별점</th><th>장점</th><th>단점</th><th></th></tr></thead>
         <tbody id="tbody"></tbody>
       </table>
+      <div class="na rating-note" id="ratingNote" hidden>이번 검색에서는 별점 정보를 확인하지 못했어요</div>
       <div class="meta" id="meta"></div>
     </section>
   </div>
@@ -679,7 +684,9 @@ const NA = '<span class="na">확인 안 됨</span>';
 const fmtPrice = (p, cur) => p == null ? null :
   (!cur || cur === "KRW" ? Number(p).toLocaleString("ko-KR") + "원" : Number(p).toLocaleString() + " " + esc(cur));
 const safeUrl = u => /^https?:\/\//i.test(u || "") ? u : null;
-const list = (arr, cls) => arr && arr.length ? `<ul class="pc ${cls}">${arr.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : NA;
+const DASH = '<span class="na" aria-label="정보 없음">–</span>';
+const list = (arr, cls, empty = NA) => arr && arr.length ? `<ul class="pc ${cls}">${arr.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : empty;
+const hasRating = p => typeof p.rating === "number";
 const hasPrice = p => typeof p.price === "number";
 // 서버가 검증한 상품 페이지 링크만 버튼으로 보여줌. 검증 실패면 "링크 확인 안 됨"
 const productUrl = p => p && p.url_verified !== false ? safeUrl(p.url) : null;
@@ -1246,6 +1253,9 @@ function render(d) {
 
   current = { items, cheapest, valueP, qualityP, max: Math.max(...priced.map(p => p.price), 1) };
   $("table").classList.toggle("no-fit", !cond);  // 조건 없으면 적합도 칸 숨김
+  const anyRating = items.some(hasRating);   // 별점이 하나도 없으면 별점 칸을 숨기고 표 아래에 안내
+  $("table").classList.toggle("no-rating", !anyRating);
+  $("ratingNote").hidden = anyRating;
   initFilters(items);   // 새 검색·최근 검색으로 결과가 바뀌면 필터 초기화
   renderTable();
   $("results").style.display = "block";
@@ -1268,19 +1278,18 @@ function renderTable() {
       p === qualityP && '<span class="badge quality">품질</span>',
       p === cheapest && '<span class="badge cheap">최저가</span>',
     ].filter(Boolean).join("");
-    const rating = p.rating == null ? NA
+    const rating = p.rating == null ? DASH
       : `★ ${esc(p.rating)}${p.review_count != null ? ` <span class="na">(${Number(p.review_count).toLocaleString()})</span>` : ""}`;
     const price = fmtPrice(p.price, p.currency);
     return `<tr data-pid="${items.indexOf(p)}">
       <td class="model">${heartBtn(p, items.indexOf(p))}<span class="brand">${esc(p.brand)}</span><b>${esc(p.model)}</b>${isOverseas(p) ? OVS_BADGE : ""}${badges ? `<div class="badges">${badges}</div>` : ""}</td>
       <td class="fit-c fit-col" data-label="적합도">${p.fit ? fitBadge(p.fit) : NA}${p.fit_reason ? `<span class="fit-why">${esc(p.fit_reason)}</span>` : ""}</td>
-      <td class="price" data-label="가격">${price ?? NA}${price ? `<div class="mini"><i style="width:${Math.max(3, p.price / max * 100)}%"></i></div>` : ""}</td>
-      <td class="store-c" data-label="쇼핑몰">${p.store ? esc(p.store) : NA}</td>
-      <td class="rating" data-label="별점">${rating}</td>
-      <td class="pc-cell" data-label="장점">${list(p.pros, "pros")}</td>
-      <td class="pc-cell" data-label="단점">${list(p.cons, "cons")}</td>
+      <td class="price" data-label="가격">${price ?? NA}${p.store ? `<span class="store-sub"> / ${esc(p.store)}</span>` : ""}${price ? `<div class="mini"><i style="width:${Math.max(3, p.price / max * 100)}%"></i></div>` : ""}</td>
+      <td class="rating rating-col" data-label="별점">${rating}</td>
+      <td class="pc-cell" data-label="장점">${list(p.pros, "pros", DASH)}</td>
+      <td class="pc-cell" data-label="단점">${list(p.cons, "cons", DASH)}</td>
       <td class="link">${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">상품 보기</a>` : NOLINK}</td></tr>`;
-  }).join("") || `<tr class="filter-empty"><td colspan="8">필터 조건에 맞는 상품이 없어요 · <button type="button" class="text-btn" data-act="reset-filter">필터 초기화</button></td></tr>`;
+  }).join("") || `<tr class="filter-empty"><td colspan="7">필터 조건에 맞는 상품이 없어요 · <button type="button" class="text-btn" data-act="reset-filter">필터 초기화</button></td></tr>`;
   restoreAiBadge();   // 정렬로 표를 다시 그려도 "AI 추천" 배지 유지
 }
 
@@ -1753,6 +1762,7 @@ function initFilters(items) {
   filter.allBrands = [...new Set(items.map(brandOf))].sort((a, b) => a.localeCompare(b, "ko"));
   filter.on = items.length > 3;                       // 결과가 3개 이하면 필터 칩 숨김 (정렬은 그대로)
   $("fchips").hidden = !filter.on;
+  $("fRating").hidden = !items.some(hasRating);   // 별점 있는 상품이 없으면 '⭐ 4.5 이상' 칩 숨김
   const canPrice = prices.length >= 2 && filter.min < filter.max;
   $("fPrice").hidden = !canPrice;
   for (const id of ["priceMin", "priceMax"]) {

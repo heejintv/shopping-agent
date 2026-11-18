@@ -6,8 +6,8 @@
       "price": 49890,
       "currency": "KRW",
       "store": "다나와 최저가",
-      "rating": null,
-      "review_count": null,
+      "rating": 4.6,
+      "review_count": 8,
       "pros": [
         "산리오 쿠로미 캐릭터 디자인",
         "178g 경량 무선으로 휴대 편리"
@@ -19,7 +19,8 @@
       "url": "https://prod.danawa.com/info/?pcode=28887164",
       "fit": "높음",
       "fit_reason": "산리오 캐릭터 디자인이라 '귀여운 디자인' 조건에 가장 잘 맞아요",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "로이체",
@@ -62,7 +63,8 @@
       "url_verified": false,
       "url_rejected": [
         "https://search.danawa.com/dsearch.php?query=%ED%9C%B4%EB%8C%80%EC%9A%A9%EA%B3%A0%EB%8D%B0%EA%B8%B0"
-      ]
+      ],
+      "rating_source": "ai"
     },
     {
       "brand": "디하우트",
@@ -85,7 +87,8 @@
       "url_verified": false,
       "url_rejected": [
         "https://search.danawa.com/dsearch.php?query=%ED%9C%B4%EB%8C%80%EC%9A%A9%EA%B3%A0%EB%8D%B0%EA%B8%B0"
-      ]
+      ],
+      "rating_source": "ai"
     },
     {
       "brand": "오브룸",
@@ -108,7 +111,8 @@
       "url_verified": false,
       "url_rejected": [
         "https://search.danawa.com/dsearch.php?query=%ED%9C%B4%EB%8C%80%EC%9A%A9%EA%B3%A0%EB%8D%B0%EA%B8%B0"
-      ]
+      ],
+      "rating_source": "ai"
     }
   ],
   "value_pick": {

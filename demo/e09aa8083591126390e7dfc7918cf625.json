@@ -7,7 +7,7 @@
       "currency": "KRW",
       "store": "다나와 (최저가 기준)",
       "rating": 4.5,
-      "review_count": 480,
+      "review_count": 481,
       "pros": [
         "다나와 최저가 1만 원대로 가장 저렴",
         "판매몰 999곳 이상으로 구하기 쉬움"
@@ -16,7 +16,8 @@
         "별점 4.5로 비교 대상 중 가장 낮음"
       ],
       "url": "https://prod.danawa.com/info/?pcode=2617184&keyword=%EA%B3%A0%EB%8D%B0%EA%B8%B0&cate=10348569",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "필립스",
@@ -33,7 +34,8 @@
         "상품 상세 페이지 URL 확인 못 함"
       ],
       "url": null,
-      "url_verified": false
+      "url_verified": false,
+      "rating_source": "ai"
     },
     {
       "brand": "오아",
@@ -50,7 +52,8 @@
         "별점 4.6으로 상위 모델보다 조금 낮음"
       ],
       "url": "https://prod.danawa.com/info/?pcode=17499902&keyword=%EA%B3%A0%EB%8D%B0%EA%B8%B0&cate=10348569",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "JMW",
@@ -68,7 +71,8 @@
         "리뷰 81건으로 적은 편"
       ],
       "url": "https://prod.danawa.com/info/?pcode=2131145&keyword=%EA%B3%A0%EB%8D%B0%EA%B8%B0&cate=10348569",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "그리에이트",
@@ -87,7 +91,8 @@
         "리뷰 55건으로 적음"
       ],
       "url": "https://prod.danawa.com/info/?pcode=13131455&keyword=%EA%B3%A0%EB%8D%B0%EA%B8%B0&cate=10348569",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     }
   ],
   "value_pick": {

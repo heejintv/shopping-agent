@@ -6,8 +6,8 @@
       "price": 754860,
       "currency": "KRW",
       "store": "11번가",
-      "rating": null,
-      "review_count": null,
+      "rating": 4.9,
+      "review_count": 96,
       "pros": [
         "제로팬(0dB)과 백플레이트가 있음",
         "길이 220.5mm의 짧은 2팬 구조라 작은 케이스에도 들어감"
@@ -16,7 +16,8 @@
         "VRAM이 8GB"
       ],
       "url": "https://prod.danawa.com/info/?pcode=85410707&cate=112753",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "MSI",
@@ -24,8 +25,8 @@
       "price": 1449000,
       "currency": "KRW",
       "store": "샵다나와",
-      "rating": null,
-      "review_count": null,
+      "rating": 4.9,
+      "review_count": 60,
       "pros": [
         "3팬 쿨링, 제로팬, DrMOS 탑재",
         "A/S 기간 3년"
@@ -35,7 +36,8 @@
         "권장 파워 650W 이상"
       ],
       "url": "https://prod.danawa.com/info/?pcode=77379380&cate=112753",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "MSI",
@@ -43,8 +45,8 @@
       "price": 698990,
       "currency": "KRW",
       "store": "옥션",
-      "rating": null,
-      "review_count": null,
+      "rating": 4.8,
+      "review_count": 5,
       "pros": [
         "상위 5개 중 가장 저렴함",
         "사용전력 145W로 가장 낮음"
@@ -53,7 +55,8 @@
         "VRAM이 8GB"
       ],
       "url": "https://prod.danawa.com/info/?pcode=122676813&cate=112753",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "MSI",
@@ -61,8 +64,8 @@
       "price": 756000,
       "currency": "KRW",
       "store": "옥션",
-      "rating": null,
-      "review_count": null,
+      "rating": 4.9,
+      "review_count": 25,
       "pros": [
         "제로팬, 백플레이트, DrMOS 탑재"
       ],
@@ -71,7 +74,8 @@
         "최저가 판매처에 배송비 3,000원이 따로 붙음"
       ],
       "url": "https://prod.danawa.com/info/?pcode=86814989&cate=112753",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     },
     {
       "brand": "PALIT",
@@ -79,8 +83,8 @@
       "price": 2142430,
       "currency": "KRW",
       "store": "컴오아시스",
-      "rating": null,
-      "review_count": null,
+      "rating": 5.0,
+      "review_count": 13,
       "pros": [
         "상위 5개 중 유일한 16GB VRAM, 3팬 쿨링",
         "A/S 기간 3년"
@@ -90,7 +94,8 @@
         "권장 파워 750W 이상, 가격이 가장 높음"
       ],
       "url": "https://prod.danawa.com/info/?pcode=91768979&cate=112753",
-      "url_verified": true
+      "url_verified": true,
+      "rating_source": "page"
     }
   ],
   "value_pick": {
