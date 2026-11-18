@@ -479,6 +479,8 @@ def chat_api():
     except Exception:
         app.logger.exception("chat failed")
         return jsonify(error="답변 중 오류가 났어요. 잠시 후 다시 시도해주세요.", **info), 502
+    if out.get("reasons_fixed"):
+        app.logger.info("chat compare: 이유 %d줄을 일반 장점 문장으로 바꿈", out["reasons_fixed"])
     if out["fallback"]:
         app.logger.info("chat: gemini busy → claude로 재시도함")
     return jsonify(**out, **info)

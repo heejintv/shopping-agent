@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 
+import compare
 from gemini import EngineError, chat_gemini
 
 MAX_QUESTION = 300
@@ -64,22 +65,13 @@ def _num(v):
 COMPARE_NOTE = """[비교 모드]
 사용자가 찜 목록에서 고른 두 상품을 1:1로 비교하고 있어. 위 [검색 결과]의 두 상품만 보고 답해.
 - 반드시 이 두 상품 중 하나만 추천해. 다른 상품은 꺼내지 마. 답 모양은 똑같이 (추천 / 이유 두 줄 / 확인할 점 하나 / 추천ID).
-- 이유 두 줄에는 추천한 상품이 상대 상품보다 더 나은 점만 써. 단점이나 아쉬운 점은 이유에 절대 쓰지 마.
-- 이유는 상대 상품 이름을 넣어 구체적으로 비교해. 검색 결과에 있는 숫자(가격, 별점, 무게 등)를 써.
-  좋은 예: "M240보다 9g 가벼워요", "G304보다 24,270원 저렴해요", "별점이 4.9점으로 M240(4.7점)보다 높아요"
-  나쁜 예: "블루투스를 지원하지 않아요" (단점), "성능이 좋아요" (비교 없음)
-- 상대보다 낮거나 같은 값(예: 별점이 더 낮음)은 "비슷해요"처럼 포장하지 말고 이유에서 빼.
-- 두 상품 모두 숫자가 있는 항목(가격, 별점, 장점·단점 문장 속 무게 등)을 먼저 비교해서, 추천 상품이 더 나은 것을 골라.
-- "~와 달리"는 상대 상품 정보에 그 반대 내용이 실제로 적혀 있을 때만 써. 상대 정보가 비어 있다고 그 기능이 없다고 단정하지 마.
-- 상대가 더 나은 항목(예: 상대가 더 가벼움, 별점이 더 높음)은 이유 두 줄 어디에도 쓰지 마. 둘째 줄도 마찬가지야.
-- 상대보다 더 나은 점이 하나뿐이면, 둘째 줄은 상대와 비교하지 않는 일반적인 장점으로 써. 숫자나 비교 표현은 넣지 마.
-  좋은 예: "가격 차이에 비해 기본 성능은 충분해요", "일상적인 사무용으로 쓰기에 무난해요"
-  나쁜 예: "99g으로 가벼워요" (상대가 60g으로 더 가벼우면 오해를 줌)
-- 이유와 확인할 점은 모두 "~해요"로 끝나는 자연스러운 문장으로 써. 목록 글귀를 그대로 붙여 넣지 마.
-- "단점이 적혀 있지 않아요"처럼 정보가 없는 것을 장점으로 쓰지 마.
-- 한 문장에 "보다"를 두 번 쓰지 마 (좋은 예: "별점이 4.9점으로 M240(4.7점)보다 높아요").
+- 추천할 상품을 정한 뒤, 이유 두 줄은 아래 [서버가 직접 비교한 숫자]의 그 상품 "확실히 나은 점" 목록에서만 골라 자연스러운 문장으로 써.
+  예: "가격이 109,100원 저렴함 (39,900원 vs 149,000원)" → "G PRO X SUPERLIGHT 2보다 109,100원 저렴해요"
+- "확실히 나은 점"이 1개뿐이면, 둘째 줄은 숫자와 비교 표현이 없는 일반적인 장점으로 써 (예: "가격 차이에 비해 기본 성능은 충분해요", "일상적인 용도로 쓰기에 무난해요").
+  0개면 두 줄 모두 일반적인 장점으로 써.
+- "같은 점"과 상대 상품이 확실히 나은 점은 이유에 절대 쓰지 마.
 - 추천한 상품의 단점이나 주의할 점은 "확인할 점"에만 써.
-- 계산한 차이는 검색 결과의 숫자로만 구해. 검색 결과에 없는 숫자는 지어내지 마.
+- 이유와 확인할 점은 모두 "~해요"로 끝나는 자연스러운 문장으로 써. 숫자는 목록에 있는 것만 써.
 """
 
 
@@ -147,11 +139,11 @@ def clean_history(history) -> list[dict]:
     return out
 
 
-def build_prompt(question: str, results: dict, history: list[dict], compare: bool = False) -> str:
+def build_prompt(question: str, results: dict, history: list[dict], cmp: dict | None = None) -> str:
     talk = "\n".join(f"{'사용자' if h['role'] == 'user' else '도우미'}: {h['text']}" for h in history)
     return (
         "[검색 결과]\n" + json.dumps(results, ensure_ascii=False, indent=1) + "\n\n"
-        + (COMPARE_NOTE + "\n" if compare else "")
+        + (COMPARE_NOTE + "\n" + compare.facts_prompt(cmp) + "\n" if cmp else "")
         + "[최근 대화]\n" + (talk or "(없음)") + "\n\n"
         + "[질문]\n" + question
     )
@@ -201,10 +193,14 @@ def split_pick(text: str, results: dict) -> tuple[str, int | None]:
     return clean, pick_id
 
 
-def answer(question: str, results: dict, history: list[dict], compare: bool = False) -> dict:
-    """{"answer", "pick_id", "engine", "fallback"}를 돌려준다. 실패하면 EngineError (메시지는 화면용)."""
-    out = _answer(build_prompt(question, results, history, compare))
+def answer(question: str, results: dict, history: list[dict], is_compare: bool = False) -> dict:
+    """{"answer", "pick_id", "engine", "fallback"}를 돌려준다. 실패하면 EngineError (메시지는 화면용).
+    비교 모드면 서버가 두 상품의 숫자를 먼저 비교해서 프롬프트에 넣고, 답을 받은 뒤 이유 줄을 숫자로 검사한다."""
+    cmp = compare.compare_facts(results["products"]) if is_compare else None
+    out = _answer(build_prompt(question, results, history, cmp))
     out["answer"], out["pick_id"] = split_pick(out["answer"], results)
+    if cmp:   # "같은 점"·"상대가 나은 점"을 말하는 이유 줄은 일반 장점 문장으로 교체
+        out["answer"], out["reasons_fixed"] = compare.fix_reasons(out["answer"], out["pick_id"], cmp)
     if not out["answer"]:
         raise EngineError("빈 답변을 받았어요. 다시 시도해 주세요.")
     return out
