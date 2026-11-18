@@ -13,6 +13,7 @@
 - 상담 챗봇(/chat, chat.py)은 외부 요청만 하루 CHAT_DAILY_LIMIT회(기본 30회)까지
 - CORS는 GitHub Pages 주소(ALLOWED_ORIGIN)만 허용
 - /search/stream: 새 검색의 진행 단계를 실시간으로 보냄 (Server-Sent Events). 취소하면 claude를 멈추고 횟수를 되돌림
+- Render 배포(환경변수 RENDER=true): 모든 요청을 외부로 보고 하루 제한 적용, 처음 켜질 때 demo/ 결과를 캐시로 불러옴
 - /stats: 모니터링 요약 (stats.py, 화면은 status.html). 질문 원문·IP는 기록하지 않음
 """
 
@@ -22,6 +23,7 @@ import os
 import queue
 import re
 import secrets
+import shutil
 import signal
 import subprocess
 import threading
@@ -39,9 +41,6 @@ from links import verify_links
 from polish import polish_result
 
 BASE_DIR = Path(__file__).resolve().parent
-CACHE_DIR = BASE_DIR / "cache"
-CACHE_DIR.mkdir(exist_ok=True)
-USAGE_FILE = BASE_DIR / "usage.json"
 
 
 def load_env(path: Path) -> None:
@@ -56,11 +55,38 @@ def load_env(path: Path) -> None:
         os.environ.setdefault(key.strip(), value.strip().strip("'\""))
 
 
-load_env(BASE_DIR / ".env")
+# Render는 실행 환경에 RENDER=true를 자동으로 넣는다. 그때는 내 PC가 아니므로 모든 요청을 외부로 본다
+ON_RENDER = os.environ.get("RENDER", "").lower() == "true"
+if not ON_RENDER:   # Render에서는 설정을 전부 Render 환경변수로만 받음
+    load_env(BASE_DIR / ".env")
+# 캐시·하루 횟수·모니터링 기록을 둘 폴더 (기본: 프로젝트 폴더)
+DATA_DIR = Path(os.environ.get("DATA_DIR") or BASE_DIR)
+CACHE_DIR = DATA_DIR / "cache"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+USAGE_FILE = DATA_DIR / "usage.json"
 
-DAILY_LIMIT = int(os.environ.get("DAILY_LIMIT", "10"))
-CHAT_DAILY_LIMIT = int(os.environ.get("CHAT_DAILY_LIMIT", "30"))
+DAILY_LIMIT = int(os.environ.get("DAILY_LIMIT") or ("5" if ON_RENDER else "10"))
+CHAT_DAILY_LIMIT = int(os.environ.get("CHAT_DAILY_LIMIT") or "30")
 ALLOWED_ORIGIN = "https://heejintv.github.io"
+# Render 주소로 페이지를 직접 열었을 때의 출처 (Render가 RENDER_EXTERNAL_URL을 자동으로 넣음)
+PUBLIC_URL = (os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("PUBLIC_URL") or "").rstrip("/")
+
+
+def seed_cache_from_demo() -> int:
+    """demo/의 검색 결과를 캐시에 없을 때만 복사한다 (Render는 재시작하면 캐시가 비므로 기본 결과를 채움)."""
+    copied = 0
+    for f in (BASE_DIR / "demo").glob("*.json"):
+        if f.name == "index.json":
+            continue
+        target = CACHE_DIR / f.name
+        if not target.exists():
+            target.write_bytes(f.read_bytes())
+            copied += 1
+    return copied
+
+
+if ON_RENDER or os.environ.get("SEED_DEMO") == "1":
+    seed_cache_from_demo()
 
 CLAUDE_TIMEOUT = 600  # 초. 웹 검색을 여러 번 하므로 넉넉하게 10분
 WEB_TOOLS = "WebSearch,WebFetch"
@@ -213,11 +239,13 @@ def remaining(kind: str = "count") -> int:
 
 # ngrok은 요청을 127.0.0.1로 전달하면서 이런 헤더를 붙인다. 하나라도 있으면 외부 요청
 PROXY_HEADERS = ("X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP", "Forwarded")
-LOCAL_ORIGINS = {ALLOWED_ORIGIN, "http://localhost:5000", "http://127.0.0.1:5000"}
+LOCAL_ORIGINS = {ALLOWED_ORIGIN, "http://localhost:5000", "http://127.0.0.1:5000"} | ({PUBLIC_URL} if PUBLIC_URL else set())
 
 
 def is_local_request() -> bool:
-    """내 PC에서 직접 온 요청이면 True (무제한)."""
+    """내 PC에서 직접 온 요청이면 True (무제한). Render에서 돌 때는 항상 False (모두 외부 요청)."""
+    if ON_RENDER:
+        return False
     if request.remote_addr not in ("127.0.0.1", "::1"):
         return False
     if any(h in request.headers for h in PROXY_HEADERS):  # ngrok을 거쳐 왔음
@@ -307,11 +335,17 @@ def _kill(proc: subprocess.Popen) -> None:
     proc.communicate()
 
 
+def claude_bin() -> str:
+    """claude 실행 파일: CLAUDE_BIN 환경변수 → PATH → 프로젝트의 bin/claude (Render 빌드에서 복사해 둔 것)."""
+    local = BASE_DIR / "bin" / "claude"
+    return os.environ.get("CLAUDE_BIN") or shutil.which("claude") or (str(local) if local.exists() else "claude")
+
+
 def call_claude(prompt: str, schema: dict, timeout: int, job: Job | None = None) -> dict:
     """claude -p를 웹 도구만 허용해서 실행하고, 스키마 모양의 결과(dict)를 돌려준다.
     job이 있으면 0.5초마다 취소 여부를 확인해서, 취소되면 프로세스를 멈추고 Cancelled를 낸다."""
     cmd = [
-        "claude", "-p", prompt,
+        claude_bin(), "-p", prompt,
         "--tools", WEB_TOOLS,            # 쓸 수 있는 도구를 웹 검색·웹페이지 읽기로만 제한
         "--allowedTools", WEB_TOOLS,     # 그 두 도구는 확인 없이 허용
         "--output-format", "json",

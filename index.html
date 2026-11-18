@@ -688,9 +688,13 @@ const cleanCond = s => (s || "").trim().split(/\s+/).join(" ");
 const FIT_CLASS = { "높음": "high", "보통": "mid", "낮음": "low" };
 const fitBadge = f => f ? `<span class="fit ${FIT_CLASS[f] || "low"}">적합도 ${esc(f)}</span>` : "";
 
-// 연결 순서: ① 내 PC 서버(localhost:5000, 무제한) → ② config.js의 ngrok 주소(하루 제한) → ③ 데모 모드
-const LOCAL_URL = location.port === "5000" ? "" : "http://localhost:5000";  // Flask가 직접 띄웠으면 같은 주소
-const NGROK_URL = String(window.APP_CONFIG?.SERVER_URL || "").trim().replace(/\/+$/, "");
+// 연결 순서: ① 내 PC 서버(localhost:5000, 무제한) → ② Render(하루 제한) → ③ ngrok(하루 제한) → ④ 데모 모드
+const cfgUrl = k => String(window.APP_CONFIG?.[k] || "").trim().replace(/\/+$/, "");
+const RENDER_URL = cfgUrl("RENDER_URL");
+const NGROK_URL = cfgUrl("SERVER_URL");
+// 이 페이지를 Flask(내 PC 5000번 또는 Render)가 직접 띄웠으면 같은 주소로 먼저 연결
+const LOCAL_URL = location.port === "5000" || (RENDER_URL && location.origin === RENDER_URL) ? "" : "http://localhost:5000";
+const RENDER_WAKE_MS = 60000;   // Render 무료 서버는 잠들면 깨는 데 최대 1분
 let API_BASE = "";      // connect()에서 연결된 서버 주소로 정해짐
 let API_HEADERS = {};
 // ngrok 무료 도메인은 처음 접속 시 경고 페이지를 보여주는데, 이 헤더가 있으면 건너뜀
@@ -899,12 +903,22 @@ async function tryHealth(base, headers, ms) {
   }
 }
 
-// 페이지가 열리면 내 PC 서버 → ngrok 순서로 연결 시도. 둘 다 안 되면 데모 모드
+// Render 무료 서버는 한동안 요청이 없으면 잠듦 → 응답이 늦으면 깨우는 중이라고 안내하고 최대 1분 기다림
+async function tryRender() {
+  const wake = setTimeout(() => setStatus("⏳ 서버를 깨우는 중이에요 (최대 1분)"), 2500);
+  try { return await tryHealth(RENDER_URL, {}, RENDER_WAKE_MS); }
+  finally { clearTimeout(wake); }
+}
+
+// 페이지가 열리면 내 PC 서버 → Render → ngrok 순서로 연결 시도. 모두 안 되면 데모 모드
 async function connect() {
   setStatus("검색 서버 연결 확인 중...");
   let d = await tryHealth(LOCAL_URL, {}, 2000);
   if (d) {
     API_BASE = LOCAL_URL;
+    API_HEADERS = {};
+  } else if (RENDER_URL && (d = await tryRender())) {
+    API_BASE = RENDER_URL;
     API_HEADERS = {};
   } else if (NGROK_URL && (d = await tryHealth(NGROK_URL, NGROK_HEADERS, 5000))) {
     API_BASE = NGROK_URL;

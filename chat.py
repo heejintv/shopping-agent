@@ -169,10 +169,18 @@ def chat_engine() -> str:
     return engine if engine in ("gemini", "claude") else "gemini"
 
 
+def claude_bin() -> str:
+    """claude 실행 파일: CLAUDE_BIN → PATH → 프로젝트의 bin/claude."""
+    import shutil
+    from pathlib import Path
+    local = Path(__file__).resolve().parent / "bin" / "claude"
+    return os.environ.get("CLAUDE_BIN") or shutil.which("claude") or (str(local) if local.exists() else "claude")
+
+
 def chat_claude(system: str, prompt: str, timeout: int) -> str:
     """claude -p를 도구 없이(답변만) 실행한다."""
     cmd = [
-        "claude", "-p", prompt,
+        claude_bin(), "-p", prompt,
         "--system-prompt", system,
         "--tools", "",                 # 내장 도구 전부 끔
         "--strict-mcp-config",         # MCP 서버도 안 씀

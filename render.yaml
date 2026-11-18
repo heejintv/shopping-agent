@@ -1,0 +1,37 @@
+# Render 블루프린트: Pickit 서버를 무료 웹 서비스로 배포
+# Render 대시보드 → New → Blueprint → 이 저장소 선택. 비밀 값(sync: false)은 대시보드에서 직접 입력
+services:
+  - type: web
+    name: pickit
+    runtime: python
+    plan: free
+    region: singapore            # 한국에서 가장 가까운 지역
+    buildCommand: |
+      set -e
+      curl -fsSL https://claude.ai/install.sh | bash
+      mkdir -p bin
+      cp -L "$HOME/.local/bin/claude" bin/claude   # 실행할 때도 남도록 프로젝트 안으로 복사
+      ./bin/claude --version
+      pip install -r requirements.txt
+    startCommand: PATH="$PWD/bin:$PATH" gunicorn app:app   # 설정은 gunicorn.conf.py (워커 1 + 스레드 8, timeout 300)
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      - key: SEARCH_ENGINE        # claude: claude -p로 검색 (CLAUDE_CODE_OAUTH_TOKEN 필요)
+        value: claude
+      - key: CHAT_ENGINE          # 상담 챗봇: gemini (429·503·504면 claude로 재시도)
+        value: gemini
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash-lite
+      - key: DAILY_LIMIT          # 새 검색 하루 최대 횟수 (Render에서는 모든 요청에 적용)
+        value: "5"
+      - key: CHAT_DAILY_LIMIT
+        value: "30"
+      - key: DISABLE_AUTOUPDATER  # 서버에서 Claude CLI가 스스로 업데이트하지 않게
+        value: "1"
+      - key: GEMINI_API_KEY       # 비밀: 대시보드에서 입력
+        sync: false
+      - key: CLAUDE_CODE_OAUTH_TOKEN   # 비밀: 내 PC에서 `claude setup-token`으로 발급해서 입력
+        sync: false

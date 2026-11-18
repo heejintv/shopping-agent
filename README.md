@@ -165,6 +165,7 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | 백엔드 | Python 3, **Flask** | API 서버 (`app.py`), 캐시·하루 제한·출처 확인 |
 | 검색 AI | **Claude Code CLI** (`claude -p`) | 웹 검색으로 상품 정보 수집, JSON 스키마 출력 |
 | 상담 AI | **Gemini API** (`google-genai`) | 상담 챗봇 답변, (선택) Google 검색 연동 검색 |
+| 배포 | **Render** (무료 웹 서비스) + **gunicorn** | 내 PC 없이 서버 실행 (`render.yaml`, `gunicorn.conf.py`) |
 | 외부 공개 | **ngrok** (무료 고정 도메인) | 내 PC의 `localhost:5000`을 인터넷에 연결 |
 | 프론트엔드 | **GitHub Pages**, HTML·CSS·JavaScript | 화면 호스팅. 프레임워크 없이 한 파일(`index.html`) |
 | 링크 검증 | Python 표준 라이브러리 (`urllib`) | 상품 페이지에 직접 접속해 확인 (`links.py`) |
@@ -186,7 +187,7 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 
 | 항목 | 외부 접속 (ngrok) | 내 PC | 설정 |
 |---|---|---|---|
-| 새 검색 (AI 실행) | 하루 10회 | 무제한 | `DAILY_LIMIT` |
+| 새 검색 (AI 실행) | 하루 10회 (Render는 5회) | 무제한 (Render는 내 PC 구분 없이 모두 외부) | `DAILY_LIMIT` |
 | 저장된 검색 결과 보기 | 무제한 | 무제한 | — |
 | 상담 챗봇 | 하루 30회 | 무제한 | `CHAT_DAILY_LIMIT` |
 
@@ -216,7 +217,9 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | 파일 | 역할 |
 |---|---|
 | `index.html` | 화면 (Pickit 로고·첫 화면, 검색창, 원하는 조건, 최근 검색, 추천 카드, 비교표, 상담 챗봇, 찜 목록·1:1 비교, 데모 모드) |
-| `config.js` | 검색 서버 주소 (ngrok 고정 도메인) |
+| `config.js` | 검색 서버 주소 (`RENDER_URL`, `SERVER_URL`=ngrok). 연결 순서: 내 PC → Render → ngrok → 데모 |
+| `render.yaml` | Render 배포 설정 (빌드 때 Claude CLI 설치, 시작 명령, 헬스체크, 환경변수) |
+| `gunicorn.conf.py` | 배포용 서버 설정 (워커 1 + 스레드 8, timeout 300초) |
 | `app.py` | Flask 백엔드. 검색·챗봇 API, 캐시, 하루 제한, 출처 확인 |
 | `chat.py` | 상담 챗봇. 지시문, 입력 정리, Gemini/Claude 호출과 자동 재시도 |
 | `polish.py` | 추천 이유 끝맺음을 "~해요/~예요"로 다듬기 (응답할 때 적용, `python polish.py demo`로 데모 파일 정리) |
@@ -244,6 +247,12 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Gemini 모델 이름 |
 | `DAILY_LIMIT` | `10` | 외부 접속 새 검색 하루 최대 횟수 |
 | `CHAT_DAILY_LIMIT` | `30` | 외부 접속 챗봇 대화 하루 최대 횟수 |
+| `CLAUDE_CODE_OAUTH_TOKEN` | — | (Render) `claude -p` 로그인 토큰. 내 PC에서 `claude setup-token`으로 발급 |
+| `DATA_DIR` | 프로젝트 폴더 | 캐시·하루 횟수·모니터링 기록을 둘 폴더 |
+| `SEED_DEMO` | — | `1`이면 처음 켜질 때 `demo/` 결과를 캐시로 불러옴 (Render에서는 자동) |
+| `RENDER`, `RENDER_EXTERNAL_URL` | (Render가 자동 설정) | Render에서 도는지 판별, Render 주소를 허용 출처에 추가 |
+
+Render에서는 `.env`를 읽지 않고 Render 대시보드의 환경변수만 씁니다. `DAILY_LIMIT` 기본값은 Render에서 `5`입니다.
 
 ## 실행 방법
 
@@ -284,6 +293,30 @@ ngrok http --url=<내도메인>.ngrok-free.app 5000  # 터미널 2
 
 `config.js`의 `SERVER_URL`을 내 고정 도메인으로 바꿔 push하면, GitHub Pages가 그 주소로 자동 연결합니다.
 도메인이 고정이라 터널을 다시 켜도 설정을 바꿀 필요가 없습니다.
+
+### Render 배포 (내 PC 없이)
+
+`render.yaml`(블루프린트)로 무료 웹 서비스를 만듭니다.
+
+- **빌드:** Claude Code CLI 설치(`curl -fsSL https://claude.ai/install.sh | bash`) → 실행 파일을 프로젝트의 `bin/`으로 복사 → `pip install -r requirements.txt`
+- **시작:** `PATH="$PWD/bin:$PATH" gunicorn app:app` (설정은 `gunicorn.conf.py`: 워커 1개 + 스레드 8개, timeout 300초. 진행 상황 스트림은 1초마다 ping을 보내 연결을 유지)
+- **헬스체크:** `/health`
+- **Render에서 달라지는 점:** 모든 요청을 외부로 보고 하루 제한 적용(검색 5회, 채팅 30회). 처음 켜질 때 `demo/` 결과를 캐시로 불러와서 재시작해도 기본 결과가 보임. CORS는 `https://heejintv.github.io` 그대로
+
+직접 해야 하는 단계:
+
+1. **Claude 토큰 발급 (내 PC):** 터미널에서 `claude setup-token` 실행 → 브라우저에서 로그인 → 출력된 토큰(`sk-ant-oat…`)을 복사해 둡니다. 비밀번호처럼 다루고 저장소·채팅에 붙여 넣지 마세요.
+2. **Render 가입:** https://render.com 에서 GitHub 계정으로 가입하고, 이 저장소 접근을 허용합니다.
+3. **블루프린트로 만들기:** 대시보드 → **New → Blueprint** → 이 저장소 선택 → `render.yaml`을 읽어 `pickit` 서비스가 나옵니다.
+4. **비밀 환경변수 입력:** 만드는 화면(또는 서비스 → **Environment**)에서 `CLAUDE_CODE_OAUTH_TOKEN`(1번 토큰)과 `GEMINI_API_KEY`를 입력합니다. 나머지(`SEARCH_ENGINE`, `CHAT_ENGINE`, `GEMINI_MODEL`, 하루 제한)는 `render.yaml` 값이 들어가 있고 필요하면 바꿉니다.
+5. **배포 확인:** 빌드 로그에 `claude --version` 결과가 찍히고, 서비스 주소(`https://pickit-xxxx.onrender.com`)의 `/health`가 `{"ok": true, ...}`를 돌려주면 성공입니다.
+6. **화면 연결:** `config.js`의 `RENDER_URL`에 그 주소(끝에 `/` 없이)를 넣고 push하면 GitHub Pages가 Render로 연결합니다.
+
+알아둘 점 (무료 플랜):
+- 15분 동안 요청이 없으면 잠들고, 다음 접속 때 깨는 데 최대 1분 걸립니다. 화면에 "서버를 깨우는 중이에요 (최대 1분)"이 뜹니다.
+- 디스크가 유지되지 않아서 다시 켜지면 새로 검색한 캐시·하루 횟수·모니터링 기록이 초기화됩니다 (`demo/` 결과는 다시 불러옴).
+- 메모리가 512MB라 검색을 동시에 여러 개 돌리면 부족할 수 있습니다.
+- 검색은 내 Claude 구독 사용량을 씁니다. 토큰을 공개 서비스에 써도 되는지 Anthropic 이용 약관을 확인하세요.
 
 ### 데모 데이터 갱신
 

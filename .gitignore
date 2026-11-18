@@ -46,3 +46,6 @@ cloudflared
 
 # 모니터링 기록 (stats.py)
 logs/
+
+# Render 빌드 때 복사하는 Claude CLI 실행 파일
+/bin/

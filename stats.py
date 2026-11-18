@@ -15,7 +15,9 @@ from collections import Counter
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-LOG_DIR = Path(__file__).resolve().parent / "logs"
+import os
+
+LOG_DIR = Path(os.environ.get("DATA_DIR") or Path(__file__).resolve().parent) / "logs"
 KEEP_DAYS = 30          # 이보다 오래된 기록 파일은 지움
 MAX_EVENTS = 20000      # 하루 이벤트 상한 (파일이 너무 커지지 않게)
 RECENT_SEC = 3600       # 최근 1시간 (그래프·주의 판단)
