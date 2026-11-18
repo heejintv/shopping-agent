@@ -3,7 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>가격비교</title>
+<title>Pickit · AI 쇼핑 비교</title>
+<meta name="description" content="AI가 웹을 검색해 인기 모델 5개를 비교하고, 딱 맞는 하나를 골라드려요.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Pickit">
+<meta property="og:title" content="Pickit · AI 쇼핑 비교">
+<meta property="og:description" content="고민은 짧게, 선택은 정확하게. AI가 웹을 검색해 인기 모델 5개를 비교하고, 딱 맞는 하나를 골라드려요.">
+<meta property="og:url" content="https://heejintv.github.io/shopping-agent/">
+<meta property="og:locale" content="ko_KR">
+<meta name="twitter:card" content="summary">
+<meta name="theme-color" content="#2563eb">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%232563eb'/%3E%3Cstop offset='1' stop-color='%237c3aed'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M11 11V9a5 5 0 0 1 10 0v2' fill='none' stroke='url(%23g)' stroke-width='2.6' stroke-linecap='round'/%3E%3Cpath d='M6 11h20l-1.4 15.3A3 3 0 0 1 21.6 29H10.4a3 3 0 0 1-3-2.7z' fill='url(%23g)'/%3E%3Cpath d='M11.4 19.6l3.3 3.3 6-6.5' fill='none' stroke='%23fff' stroke-width='2.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
 <script src="config.js"></script>
 <style>
   :root {
@@ -17,6 +28,9 @@
     /* 챗봇 추천 강조: 메인 색(--accent) 하나로. near=가까운 진한 빛, far=멀리 퍼지는 연한 빛 */
     --ai-near: rgba(37,99,235,.55); --ai-far: rgba(37,99,235,.22); --ai-rest: rgba(37,99,235,.14);
     --ai-shine: rgba(255,255,255,.55);
+    /* 히어로: 메인 파란색 → 연보라 그라데이션 + 흐릿한 빛 */
+    --hero-a: #e8f0ff; --hero-b: #f3ecff; --glow-1: rgba(37,99,235,.28); --glow-2: rgba(139,92,246,.26); --glow-3: rgba(96,165,250,.22);
+    --search-shadow: 0 2px 6px rgba(16,24,40,.06), 0 12px 32px rgba(37,99,235,.14);
   }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #0e1117; --card: #171b23; --text: #e8eaf0; --muted: #9aa3b2; --line: #272d38; --soft: #1f242e;
@@ -26,12 +40,14 @@
             --cheap: #fb923c; --cheap-soft: #3d2414;
             --warn: #fbbf24; --bad: #f87171; --shadow: none;
             --ai-near: rgba(110,162,255,.75); --ai-far: rgba(110,162,255,.35); --ai-rest: rgba(110,162,255,.24);
-            --ai-shine: rgba(255,255,255,.18); }   /* 다크 모드: 글로우를 조금 더 밝게 */
+            --ai-shine: rgba(255,255,255,.18);   /* 다크 모드: 글로우를 조금 더 밝게 */
+            --hero-a: #121c33; --hero-b: #1e1735; --glow-1: rgba(110,162,255,.22); --glow-2: rgba(167,139,250,.2); --glow-3: rgba(96,165,250,.14);
+            --search-shadow: 0 2px 6px rgba(0,0,0,.3), 0 12px 32px rgba(0,0,0,.35); }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
-         font: 15px/1.55 -apple-system, "Segoe UI", "Noto Sans KR", "Malgun Gothic", sans-serif; }
-  main { max-width: 1080px; margin: 0 auto; padding: 36px 16px 72px; }
+         font: 15px/1.55 "Pretendard Variable", Pretendard, -apple-system, "Segoe UI", "Noto Sans KR", "Malgun Gothic", sans-serif; }
+  main { max-width: 1080px; margin: 0 auto; padding: 20px 16px 48px; }
   h1 { font-size: 28px; margin: 0 0 4px; letter-spacing: -.02em; }
   .sub { color: var(--muted); margin: 0 0 20px; }
   form { display: flex; gap: 8px; }
@@ -223,6 +239,45 @@
     #chatBox.open + #chatFab, #chatBox.open ~ #chatFab { display: none; }
   }
 
+  /* Pickit 로고 */
+  .brand { display: inline-flex; align-items: center; gap: 8px; color: var(--text); text-decoration: none; }
+  .brand .logo { width: 34px; height: 34px; flex: none; }
+  .brand b { font-size: 24px; font-weight: 800; letter-spacing: -.03em; }
+  .brand span { font-size: 13px; color: var(--muted); font-weight: 500; align-self: flex-end; margin-bottom: 4px; }
+  .chat-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .chat-title .logo { width: 26px; height: 26px; flex: none; }
+
+  /* 첫 화면 (히어로) */
+  .hero { position: relative; isolation: isolate; overflow: hidden; margin-top: 18px; padding: 64px 28px 36px; border-radius: 28px;
+          background: linear-gradient(135deg, var(--hero-a) 0%, var(--hero-b) 100%); border: 1px solid var(--line); }
+  .hero .glow { position: absolute; z-index: -1; border-radius: 50%; filter: blur(48px); pointer-events: none; }
+  .hero .g1 { width: 320px; height: 320px; left: -80px; top: -120px; background: var(--glow-1); }
+  .hero .g2 { width: 280px; height: 280px; right: -60px; top: -40px; background: var(--glow-2); }
+  .hero .g3 { width: 240px; height: 240px; left: 40%; bottom: -150px; background: var(--glow-3); }
+  .hero h1 { margin: 0; text-align: center; font-size: clamp(30px, 5.2vw, 48px); font-weight: 800; line-height: 1.2; letter-spacing: -.035em; }
+  .hero .lead { margin: 12px auto 28px; max-width: 560px; text-align: center; color: var(--muted); font-size: clamp(15px, 2vw, 17px); }
+  .hero form, .hero .cond-row { max-width: 720px; margin-left: auto; margin-right: auto; }
+  .hero form { position: relative; gap: 0; }
+  .hero input[type=search] { padding: 19px 130px 19px 26px; font-size: 18px; border-radius: 999px; border: 1px solid var(--line);
+                             background: var(--card); box-shadow: var(--search-shadow); }
+  .hero input[type=search]:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+  .hero #btn { position: absolute; right: 7px; top: 7px; bottom: 7px; padding: 0 26px; border-radius: 999px; font-size: 16px; font-weight: 700;
+               background: linear-gradient(135deg, #2563eb, #6d4ff0); box-shadow: 0 4px 14px rgba(37,99,235,.35); }
+  .hero .cond-row { margin-top: 12px; }
+  .hero #c { border-radius: 999px; padding: 12px 20px; background: color-mix(in srgb, var(--card) 85%, transparent); }
+  .hero .cond-chips { justify-content: center; }
+  .hero .cond-chip { background: color-mix(in srgb, var(--card) 60%, transparent); }
+
+  /* 기능 소개 카드 (검색 결과가 없을 때만) */
+  .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 24px; }
+  .feature { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 20px; box-shadow: var(--shadow); }
+  .feature .ic { width: 44px; height: 44px; display: grid; place-items: center; font-size: 22px; border-radius: 12px; margin-bottom: 12px;
+                 background: linear-gradient(135deg, var(--hero-a), var(--hero-b)); }
+  .feature b { display: block; font-size: 17px; font-weight: 700; letter-spacing: -.02em; }
+  .feature p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+
+  .foot { max-width: 1080px; margin: 0 auto; padding: 8px 16px 96px; text-align: center; color: var(--muted); font-size: 12px; }
+
   /* 찜하기 */
   .top-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .wish-btn { padding: 8px 14px; border-radius: 99px; border: 1px solid var(--line); background: var(--card); color: var(--text);
@@ -299,24 +354,36 @@
     .sheet.side { height: 80vh; height: 80dvh; }
     .cmp { grid-template-columns: 1fr; }
     .cmp-vs { justify-self: center; }
-    .top-row h1 { font-size: 24px; }
+    .brand b { font-size: 21px; }
+    .brand .logo { width: 30px; height: 30px; }
+    .brand span { display: none; }
+    .hero { padding: 40px 16px 24px; border-radius: 22px; }
+    .hero input[type=search] { padding: 16px 96px 16px 20px; font-size: 16px; }
+    .hero #btn { padding: 0 18px; }
+    .features { grid-template-columns: 1fr; gap: 10px; }
+    .feature { display: grid; grid-template-columns: 44px 1fr; column-gap: 12px; padding: 14px 16px; }
+    .feature .ic { grid-row: span 2; margin: 0; }
   }
   @media (prefers-reduced-motion: reduce) { .sheet { animation: none !important; } }
 </style>
 </head>
 <body>
 <main>
-  <div class="top-row">
-    <h1>가격비교</h1>
+  <header class="top-row">
+    <a class="brand" href="./" aria-label="Pickit 홈"><svg class="logo" aria-hidden="true"><use href="#pk-logo"/></svg><b>Pickit</b><span>픽잇</span></a>
     <div class="top-actions">
       <a class="wish-btn status-link" href="status.html">📊 서버 상태</a>
       <button type="button" id="wishBtn" class="wish-btn"><span class="hc">♥</span> 찜 목록 (<span id="wishCount">0</span>)</button>
     </div>
-  </div>
-  <p class="sub">상품명을 입력하면 에이전트가 웹을 검색해 인기 모델 5개를 비교해 드려요.</p>
+  </header>
+
+  <section class="hero">
+    <span class="glow g1"></span><span class="glow g2"></span><span class="glow g3"></span>
+    <h1>고민은 짧게, 선택은 정확하게</h1>
+    <p class="lead">AI가 웹을 검색해 인기 모델 5개를 비교하고, 딱 맞는 하나를 골라드려요</p>
 
   <form id="f">
-    <input type="search" id="q" placeholder="예: 무선 청소기, 에어팟 프로, 27인치 모니터" required maxlength="100" autofocus>
+    <input type="search" id="q" placeholder="예: 무선 청소기" aria-label="상품명 검색" required maxlength="100" autofocus>
     <button id="btn">검색</button>
   </form>
   <div class="cond-row">
@@ -329,6 +396,7 @@
       <button type="button" class="cond-chip">화이트</button>
     </div>
   </div>
+  </section>
   <div id="status"></div>
 
   <div id="demo">
@@ -338,6 +406,12 @@
   <section id="recent">
     <div class="head"><h2>최근 검색</h2><span class="hint">누르면 저장된 결과를 바로 보여줘요 (검색 횟수 차감 없음)</span></div>
     <div class="chips" id="chips"></div>
+  </section>
+
+  <section class="features" id="features" aria-label="Pickit 소개">
+    <div class="feature"><div class="ic">🔍</div><b>AI가 찾고</b><p>쇼핑몰과 가격비교 사이트를 직접 검색해 인기 모델을 모아요</p></div>
+    <div class="feature"><div class="ic">⚖️</div><b>꼼꼼히 비교하고</b><p>가격·별점·장단점을 한눈에, 링크는 진짜 상품 페이지만 보여줘요</p></div>
+    <div class="feature"><div class="ic">💬</div><b>딱 하나 골라줘요</b><p>예산과 용도를 말하면 상담 챗봇이 맞는 하나를 추천해요</p></div>
   </section>
 
   <div class="panel" id="loading">
@@ -370,6 +444,17 @@
     </section>
   </div>
 </main>
+<footer class="foot">Made by 정희진 · Claude + Gemini</footer>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="pk-grad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2563eb"/><stop offset="1" stop-color="#7c3aed"/></linearGradient>
+    <symbol id="pk-logo" viewBox="0 0 32 32">
+      <path d="M11 11V9a5 5 0 0 1 10 0v2" fill="none" stroke="url(#pk-grad)" stroke-width="2.6" stroke-linecap="round"/>
+      <path d="M6 11h20l-1.4 15.3A3 3 0 0 1 21.6 29H10.4a3 3 0 0 1-3-2.7z" fill="url(#pk-grad)"/>
+      <path d="M11.4 19.6l3.3 3.3 6-6.5" fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+</svg>
 
 <div class="sheet-bg" id="sheetBg"></div>
 <section class="sheet side" id="wishSheet" role="dialog" aria-label="찜 목록">
@@ -388,8 +473,9 @@
     <button type="button" class="primary" id="cmpAsk">🤖 AI에게 물어보기</button></div>
 </section>
 
-<div id="chatBox" role="dialog" aria-label="상담 챗봇">
-  <div class="chat-head"><b>🛍️ 쇼핑 상담<small>지금 보고 있는 검색 결과 안에서 골라 드려요</small></b>
+<div id="chatBox" role="dialog" aria-label="Pickit 상담">
+  <div class="chat-head"><div class="chat-title"><svg class="logo" aria-hidden="true"><use href="#pk-logo"/></svg>
+    <b>Pickit 상담<small>지금 보고 있는 검색 결과 안에서 골라 드려요</small></b></div>
     <button type="button" id="chatClose" aria-label="닫기">×</button></div>
   <div id="chatLog"></div>
   <div id="chatEx">
@@ -1132,6 +1218,39 @@ $("cmpAsk").addEventListener("click", () => {
 });
 
 refreshWish();
+
+// ---------- 첫 화면 ----------
+
+// 기능 소개 카드: 검색 결과·로딩 화면이 보이면 숨김
+function syncFeatures() {
+  const busy = $("results").style.display === "block" || $("loading").style.display === "flex";
+  $("features").style.display = busy ? "none" : "";
+}
+const featureWatch = new MutationObserver(syncFeatures);
+featureWatch.observe($("results"), { attributes: true, attributeFilter: ["style"] });
+featureWatch.observe($("loading"), { attributes: true, attributeFilter: ["style"] });
+syncFeatures();
+
+// 검색창 안내 문구: "무선 청소기 → 에어팟 프로 → 27인치 모니터"를 타이핑하듯 바꿈
+(function typePlaceholder() {
+  const words = ["무선 청소기", "에어팟 프로", "27인치 모니터"];
+  const el = $("q");
+  let i = 0;
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) {   // 움직임 줄이기: 글자 단위 대신 통째로 바꿈
+    setInterval(() => { i = (i + 1) % words.length; el.placeholder = "예: " + words[i]; }, 2500);
+    return;
+  }
+  let n = 0, deleting = false;
+  const step = () => {
+    const w = words[i];
+    n += deleting ? -1 : 1;
+    el.placeholder = "예: " + w.slice(0, n);
+    if (!deleting && n === w.length) { deleting = true; return setTimeout(step, 1600); }   // 다 쓰면 잠깐 멈춤
+    if (deleting && n === 0) { deleting = false; i = (i + 1) % words.length; return setTimeout(step, 350); }
+    setTimeout(step, deleting ? 45 : 120);
+  };
+  step();
+})();
 </script>
 </body>
 </html>

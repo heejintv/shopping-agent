@@ -3,7 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>서버 상태</title>
+<title>서버 상태 · Pickit</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%232563eb'/%3E%3Cstop offset='1' stop-color='%237c3aed'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M11 11V9a5 5 0 0 1 10 0v2' fill='none' stroke='url(%23g)' stroke-width='2.6' stroke-linecap='round'/%3E%3Cpath d='M6 11h20l-1.4 15.3A3 3 0 0 1 21.6 29H10.4a3 3 0 0 1-3-2.7z' fill='url(%23g)'/%3E%3Cpath d='M11.4 19.6l3.3 3.3 6-6.5' fill='none' stroke='%23fff' stroke-width='2.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
 <script src="config.js"></script>
 <style>
   :root {
@@ -25,9 +27,16 @@
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
-         font: 15px/1.55 -apple-system, "Segoe UI", "Noto Sans KR", "Malgun Gothic", sans-serif; }
+         font: 15px/1.55 "Pretendard Variable", Pretendard, -apple-system, "Segoe UI", "Noto Sans KR", "Malgun Gothic", sans-serif; }
   main { max-width: 1080px; margin: 0 auto; padding: 32px 16px 64px; }
   a { color: var(--accent); }
+
+  /* Pickit 로고 */
+  .brand { display: inline-flex; align-items: center; gap: 8px; color: var(--text); text-decoration: none; }
+  .brand .logo { width: 34px; height: 34px; flex: none; }
+  .brand b { font-size: 24px; font-weight: 800; letter-spacing: -.03em; }
+  .brand span { font-size: 13px; color: var(--muted); font-weight: 500; align-self: flex-end; margin-bottom: 4px; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
   .back { font-size: 14px; text-decoration: none; }
   .back:hover { text-decoration: underline; }
   .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
@@ -112,13 +121,17 @@
     .tiles, .tiles.small { grid-template-columns: repeat(2, 1fr); }
     .grid2 { grid-template-columns: 1fr; gap: 0; }
     h1 { font-size: 24px; }
+    .brand span { display: none; }
     .tile .v { font-size: 24px; }
   }
 </style>
 </head>
 <body>
 <main>
-  <a class="back" href="./">← 가격비교로 돌아가기</a>
+  <header class="topbar">
+    <a class="brand" href="./" aria-label="Pickit 홈"><svg class="logo" aria-hidden="true"><use href="#pk-logo"/></svg><b>Pickit</b><span>픽잇</span></a>
+    <a class="back" href="./">← Pickit으로 돌아가기</a>
+  </header>
   <div class="head">
     <h1>📊 서버 상태</h1>
     <span class="pill" id="pill" role="status"><span class="dot"></span><span id="pillText">연결 확인 중...</span></span>
@@ -160,6 +173,16 @@
     </div>
   </div>
 </main>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="pk-grad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2563eb"/><stop offset="1" stop-color="#7c3aed"/></linearGradient>
+    <symbol id="pk-logo" viewBox="0 0 32 32">
+      <path d="M11 11V9a5 5 0 0 1 10 0v2" fill="none" stroke="url(#pk-grad)" stroke-width="2.6" stroke-linecap="round"/>
+      <path d="M6 11h20l-1.4 15.3A3 3 0 0 1 21.6 29H10.4a3 3 0 0 1-3-2.7z" fill="url(#pk-grad)"/>
+      <path d="M11.4 19.6l3.3 3.3 6-6.5" fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+</svg>
 
 <script>
 const $ = id => document.getElementById(id);
