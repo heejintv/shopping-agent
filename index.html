@@ -522,12 +522,107 @@
     .feature .ic { grid-row: span 2; margin: 0; }
   }
   @media (prefers-reduced-motion: reduce) { .sheet { animation: none !important; } }
+
+  /* ===================== 움직임 (transform·opacity 위주, 등장은 translate/scale 개별 속성 → 기울기·강조 transform과 안 겹침) ===================== */
+  /* 첫 화면: 오로라 (빛 덩어리가 20초 주기로 천천히 움직임) */
+  @keyframes aurora1 { 0% { transform: translate(0, 0) scale(1); } 50% { transform: translate(140px, 60px) scale(1.15); } 100% { transform: translate(40px, 120px) scale(.95); } }
+  @keyframes aurora2 { 0% { transform: translate(0, 0) scale(1); } 50% { transform: translate(-160px, 80px) scale(1.2); } 100% { transform: translate(-60px, -30px) scale(1); } }
+  @keyframes aurora3 { 0% { transform: translate(0, 0) scale(1); } 50% { transform: translate(-120px, -70px) scale(1.1); } 100% { transform: translate(90px, -40px) scale(1.05); } }
+  .hero .glow { will-change: transform; }
+  .hero .g1 { animation: aurora1 20s ease-in-out infinite alternate; }
+  .hero .g2 { animation: aurora2 20s ease-in-out infinite alternate; }
+  .hero .g3 { animation: aurora3 20s ease-in-out infinite alternate; }
+
+  /* 로고: 쇼핑백이 톡 튀고 체크가 그려짐 (1회) */
+  @keyframes bagPop { 0% { transform: translateY(6px) scale(.7); opacity: 0; } 55% { transform: translateY(-4px) scale(1.08); opacity: 1; }
+                      75% { transform: translateY(1px) scale(.97); } 100% { transform: none; } }
+  @keyframes drawCheck { to { stroke-dashoffset: 0; } }
+  .brand .logo.anim { transform-origin: 50% 80%; animation: bagPop .7s cubic-bezier(.3, 1.4, .5, 1) both; }
+  .brand .logo.anim .logo-check { stroke-dasharray: 16; stroke-dashoffset: 16; animation: drawCheck .45s ease-out .55s forwards; }
+
+  /* 큰 제목: 단어가 하나씩 아래에서 올라옴 */
+  @keyframes wordUp { from { opacity: 0; translate: 0 .6em; } to { opacity: 1; translate: 0 0; } }
+  .hero h1 .w { display: inline-block; animation: wordUp .7s cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(150ms + var(--i) * 110ms); }
+  .hero .lead, .hero form, .hero .cond-row { animation: wordUp .7s cubic-bezier(.2, .8, .2, 1) both; }
+  .hero .lead { animation-delay: .55s; }
+  .hero form { animation-delay: .65s; }
+  .hero .cond-row { animation-delay: .75s; }
+
+  /* 기능 소개 카드: 순서대로 떠오르고, 마우스를 올리면 살짝 떠오르며 아이콘이 흔들림 */
+  @keyframes riseIn { from { opacity: 0; translate: 0 18px; } to { opacity: 1; translate: 0 0; } }
+  @keyframes wiggle { 0%, 100% { transform: rotate(0); } 25% { transform: rotate(-12deg); } 50% { transform: rotate(10deg); } 75% { transform: rotate(-5deg); } }
+  .feature { animation: riseIn .6s cubic-bezier(.2, .8, .2, 1) both; transition: transform .25s ease, box-shadow .25s ease; }
+  .feature:nth-child(1) { animation-delay: .85s; }
+  .feature:nth-child(2) { animation-delay: .97s; }
+  .feature:nth-child(3) { animation-delay: 1.09s; }
+  .feature:hover { transform: translateY(-4px); box-shadow: 0 10px 28px rgba(16,24,40,.12); }
+  .feature:hover .ic { animation: wiggle .6s ease-in-out; }
+
+  /* 검색 버튼: 눌리는 느낌 + 물결 */
+  #btn { overflow: hidden; transition: transform .12s ease; }
+  #btn:active:not(:disabled) { transform: scale(.95); }
+  .ripple { position: absolute; border-radius: 50%; pointer-events: none; background: rgba(255,255,255,.45);
+            transform: translate(-50%, -50%) scale(0); animation: ripple .6s ease-out forwards; }
+  @keyframes ripple { to { transform: translate(-50%, -50%) scale(1); opacity: 0; } }
+
+  /* 로딩: 카드 모양 뼈대(스켈레톤) + 반짝임 */
+  .skeleton { margin-top: 16px; }
+  .sk-picks { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+  .sk-card, .sk-table { position: relative; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); }
+  .sk-card { padding: 20px; height: 230px; display: flex; flex-direction: column; gap: 12px; }
+  .sk-table { margin-top: 16px; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+  .sk-line { height: 12px; border-radius: 6px; background: var(--soft); }
+  .sk-line.tag { width: 34%; height: 22px; border-radius: 99px; }
+  .sk-line.title { width: 75%; height: 16px; }
+  .sk-line.price { width: 52%; height: 30px; margin-top: 4px; }
+  .sk-line.short { width: 40%; }
+  .sk-line.row { height: 14px; }
+  .sk-card::after, .sk-table::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+      background: linear-gradient(100deg, transparent 20%, color-mix(in srgb, var(--card) 70%, #fff) 50%, transparent 80%);
+      opacity: .7; animation: skShine 1.4s ease-in-out infinite; }
+  @keyframes skShine { to { transform: translateX(100%); } }
+  @media (max-width: 760px) { .sk-picks { grid-template-columns: 1fr; } .sk-card:nth-child(n+2) { display: none; } }
+
+  /* 진행 단계: 얇은 진행 막대가 단계마다 차오름 */
+  .step-bar { height: 4px; margin: 0 0 0 38px; border-radius: 4px; background: var(--soft); overflow: hidden; }
+  .step-bar i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--accent), #8b5cf6);
+                transform-origin: left; transform: scaleX(0); transition: transform .5s cubic-bezier(.2, .8, .2, 1); }
+  @media (max-width: 520px) { .step-bar { margin-left: 4px; } }
+
+  /* 결과: 추천 카드 0.1초 간격으로 떠오름, 배지 톡, 표 행 순서대로, 가격 막대 차오름 */
+  @keyframes cardIn { from { opacity: 0; translate: 0 28px; } to { opacity: 1; translate: 0 0; } }
+  @keyframes popIn { 0% { scale: .4; opacity: 0; } 70% { scale: 1.15; opacity: 1; } 100% { scale: 1; } }
+  @keyframes rowIn { from { opacity: 0; translate: 0 10px; } to { opacity: 1; translate: 0 0; } }
+  @keyframes barFill { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+  .pick.enter { animation: cardIn .6s cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(var(--i, 0) * 100ms); }
+  .pick.enter .tag { animation: popIn .45s cubic-bezier(.3, 1.5, .5, 1) both; animation-delay: calc(var(--i, 0) * 100ms + 350ms); }
+  #tbody tr.row-in { animation: rowIn .45s cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(250ms + var(--i, 0) * 60ms); }
+  #tbody tr.row-in .badge { animation: popIn .4s cubic-bezier(.3, 1.5, .5, 1) both; animation-delay: calc(500ms + var(--i, 0) * 60ms); }
+  #tbody tr.row-in .mini i { transform-origin: left; animation: barFill .7s cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(400ms + var(--i, 0) * 60ms); }
+  .badge { display: inline-block; }
+
+  /* 마우스: 추천 카드 3D 기울기(최대 4도) + 그림자, 비교표 행 배경 */
+  .pick { transition: transform .2s ease-out, box-shadow .25s ease; }
+  .pick.tilting { box-shadow: 0 18px 40px rgba(16,24,40,.16); z-index: 1; }
+  #tbody tr { transition: background-color .2s ease; }
+  #tbody tr:hover { background-color: color-mix(in srgb, var(--accent) 5%, transparent); }
+
+  /* 움직임 줄이기: 모든 애니메이션을 끄고 끝난 모습으로 바로 표시 */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .001ms !important; animation-delay: 0s !important;
+                             animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+    .sk-card::after, .sk-table::after { display: none; }
+  }
 </style>
 </head>
 <body>
 <main>
   <header class="top-row">
-    <a class="brand" href="./" aria-label="Pickit 홈"><svg class="logo" aria-hidden="true"><use href="#pk-logo"/></svg><b>Pickit</b><span>픽잇</span></a>
+    <a class="brand" href="./" aria-label="Pickit 홈"><svg class="logo anim" viewBox="0 0 32 32" aria-hidden="true">
+      <path d="M11 11V9a5 5 0 0 1 10 0v2" fill="none" stroke="url(#pk-grad)" stroke-width="2.6" stroke-linecap="round"/>
+      <path d="M6 11h20l-1.4 15.3A3 3 0 0 1 21.6 29H10.4a3 3 0 0 1-3-2.7z" fill="url(#pk-grad)"/>
+      <path class="logo-check" d="M11.4 19.6l3.3 3.3 6-6.5" fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg><b>Pickit</b><span>픽잇</span></a>
     <div class="top-actions">
       <a class="wish-btn status-link" href="status.html">📊 서버 상태</a>
       <button type="button" id="wishBtn" class="wish-btn"><span class="hc">♥</span> 찜 목록 (<span id="wishCount">0</span>)</button>
@@ -536,7 +631,7 @@
 
   <section class="hero">
     <span class="glow g1"></span><span class="glow g2"></span><span class="glow g3"></span>
-    <h1>고민은 짧게, 선택은 정확하게</h1>
+    <h1 aria-label="고민은 짧게, 선택은 정확하게"><span class="w" style="--i:0" aria-hidden="true">고민은</span> <span class="w" style="--i:1" aria-hidden="true">짧게,</span> <span class="w" style="--i:2" aria-hidden="true">선택은</span> <span class="w" style="--i:3" aria-hidden="true">정확하게</span></h1>
     <p class="lead">AI가 웹을 검색해 인기 모델 5개를 비교하고, 딱 맞는 하나를 골라드려요</p>
 
   <form id="f">
@@ -586,6 +681,15 @@
       <li data-step="finalize"><i></i><span>결과 정리 중</span></li>
       <li data-step="done"><i></i><span>완료</span></li>
     </ol>
+    <div class="step-bar" aria-hidden="true"><i id="stepFill"></i></div>
+  </div>
+  <div class="skeleton" id="skeleton" hidden aria-hidden="true">
+    <div class="sk-picks">
+      <div class="sk-card"><div class="sk-line tag"></div><div class="sk-line short"></div><div class="sk-line title"></div><div class="sk-line price"></div><div class="sk-line"></div></div>
+      <div class="sk-card"><div class="sk-line tag"></div><div class="sk-line short"></div><div class="sk-line title"></div><div class="sk-line price"></div><div class="sk-line"></div></div>
+      <div class="sk-card"><div class="sk-line tag"></div><div class="sk-line short"></div><div class="sk-line title"></div><div class="sk-line price"></div><div class="sk-line"></div></div>
+    </div>
+    <div class="sk-table"><div class="sk-line short"></div><div class="sk-line row"></div><div class="sk-line row"></div><div class="sk-line row"></div><div class="sk-line row"></div></div>
   </div>
   <div class="panel" id="error"></div>
 
@@ -1053,6 +1157,7 @@ let searchCtl = null;   // 진행 중인 검색 {abort, jobId, cancelled, mode}
 const STEP_ORDER = ["cache", "search", "links", "finalize", "done"];
 
 function resetSteps() {
+  $("stepFill").style.transform = "scaleX(0)";
   for (const li of $("steps").children) {
     li.className = "";
     li.querySelector(".cnt") && (li.querySelector(".cnt").textContent = "");
@@ -1072,6 +1177,10 @@ function setStep(d) {
   if (d.label && d.step !== "done") cur.querySelector("span").textContent = d.label;
   const cnt = cur.querySelector(".cnt");
   if (cnt) cnt.textContent = d.total ? ` (${d.done}/${d.total})` : "";
+  // 진행 막대: 단계마다 차오르고, 링크 확인은 개수만큼 조금씩
+  const part = d.total ? d.done / d.total : 0;
+  const frac = d.step === "done" ? 1 : Math.min(1, (idx + part) / (STEP_ORDER.length - 1));
+  $("stepFill").style.transform = `scaleX(${frac})`;
 }
 
 async function fetchSearch(q, c, ctl) {
@@ -1251,7 +1360,7 @@ function render(d) {
       <div class="name">${esc(p ? p.model : name)}</div>
       ${p && isOverseas(p) ? `<div class="ovs-row">${OVS_BADGE}</div>` : ""}
       ${cond && p ? fitBadge(p.fit) : ""}
-      <div class="price">${price ?? '<span class="na" style="font-size:16px;font-weight:400">가격 확인 안 됨</span>'}</div>
+      <div class="price"${p && hasPrice(p) ? ` data-count="${p.price}" data-cur="${esc(p.currency || "")}"` : ""}>${price ?? '<span class="na" style="font-size:16px;font-weight:400">가격 확인 안 됨</span>'}</div>
       ${p?.store ? `<div class="store">${esc(p.store)}</div>` : ""}
       ${whyHtml}
       ${url ? `<div class="go"><a href="${esc(url)}" target="_blank" rel="noopener noreferrer">상품 보기 →</a></div>`
@@ -1265,11 +1374,16 @@ function render(d) {
   $("table").classList.toggle("no-rating", !anyRating);
   $("ratingNote").hidden = anyRating;
   initFilters(items);   // 새 검색·최근 검색으로 결과가 바뀌면 필터 초기화
+  rowsEnter = true;     // 이번 한 번만 표 행 등장 효과 (정렬·필터로 다시 그릴 땐 없음)
   renderTable();
   $("results").style.display = "block";
+  playResultMotion();
 }
 
+let rowsEnter = false;
 function renderTable() {
+  const enter = rowsEnter && !REDUCE_MOTION;
+  rowsEnter = false;
   if (!current) return;
   const { items, cheapest, valueP, qualityP, max } = current;
   let rows = items.filter(passFilter);   // 필터는 비교표에만 적용 (추천 카드는 그대로)
@@ -1289,7 +1403,7 @@ function renderTable() {
     const rating = p.rating == null ? DASH
       : `★ ${esc(p.rating)}${p.review_count != null ? ` <span class="na">(${Number(p.review_count).toLocaleString()})</span>` : ""}`;
     const price = fmtPrice(p.price, p.currency);
-    return `<tr data-pid="${items.indexOf(p)}">
+    return `<tr data-pid="${items.indexOf(p)}"${enter ? ` class="row-in" style="--i:${Math.min(rows.indexOf(p), 12)}"` : ""}>
       <td class="model">${heartBtn(p, items.indexOf(p))}<span class="brand">${esc(p.brand)}</span><b>${esc(p.model)}</b>${isOverseas(p) ? OVS_BADGE : ""}${badges ? `<div class="badges">${badges}</div>` : ""}</td>
       <td class="fit-c fit-col" data-label="적합도">${p.fit ? fitBadge(p.fit) : NA}${p.fit_reason ? `<span class="fit-why">${esc(p.fit_reason)}</span>` : ""}</td>
       <td class="price" data-label="가격">${price ?? NA}${p.store ? `<span class="store-sub"> / ${esc(p.store)}</span>` : ""}${price ? `<div class="mini"><i style="width:${Math.max(3, p.price / max * 100)}%"></i></div>` : ""}</td>
@@ -1992,12 +2106,74 @@ $("shareMenu").addEventListener("click", e => {
 document.addEventListener("click", e => { if (!e.target.closest(".share-wrap")) closeShareMenu(); });
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeShareMenu(); });
 
+// ---------- 움직임 ----------
+// 움직임 줄이기 설정이면 JS 효과(카운트업·기울기·물결)도 끔. CSS 쪽은 미디어 쿼리로 끔
+
+const REDUCE_MOTION = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const easeOut = t => 1 - Math.pow(1 - t, 3);
+
+// 결과가 뜰 때: 추천 카드 0.1초 간격으로 떠오르기 + 가격 카운트업(0.8초)
+function playResultMotion() {
+  if (REDUCE_MOTION) return;
+  [...$("picks").children].forEach((card, i) => {
+    card.style.setProperty("--i", i);
+    card.classList.add("enter");
+  });
+  for (const el of $("picks").querySelectorAll(".price[data-count]")) countUp(el, Number(el.dataset.count), el.dataset.cur);
+}
+// 등장 효과가 끝나면 클래스를 지움 (챗봇 강조 애니메이션과 겹치지 않게)
+$("picks").addEventListener("animationend", e => { if (e.animationName === "cardIn") e.target.classList.remove("enter"); });
+$("tbody").addEventListener("animationend", e => { if (e.animationName === "rowIn") e.target.classList.remove("row-in"); });
+
+function countUp(el, target, cur) {
+  const t0 = performance.now(), dur = 800;
+  const step = now => {
+    const k = Math.min(1, (now - t0) / dur);
+    const v = k < 1 ? Math.round(target * easeOut(k)) : target;
+    el.textContent = fmtPrice(v, cur || null);
+    if (k < 1 && el.isConnected) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+// 검색 버튼: 누른 자리에서 물결
+$("btn").addEventListener("pointerdown", e => {
+  if (REDUCE_MOTION || $("btn").disabled) return;
+  const r = $("btn").getBoundingClientRect(), size = Math.max(r.width, r.height) * 2.2;
+  const dot = document.createElement("span");
+  dot.className = "ripple";
+  dot.style.cssText = `width:${size}px;height:${size}px;left:${e.clientX - r.left}px;top:${e.clientY - r.top}px`;
+  $("btn").appendChild(dot);
+  dot.addEventListener("animationend", () => dot.remove());
+});
+
+// 추천 카드 3D 기울기: 마우스 위치에 따라 최대 4도 (마우스가 있는 큰 화면에서만)
+const canTilt = () => !REDUCE_MOTION && matchMedia("(hover: hover) and (pointer: fine) and (min-width: 761px)").matches;
+let tiltCard = null;
+function untilt(card) {
+  if (!card) return;
+  card.style.transform = "";
+  card.classList.remove("tilting");
+}
+$("picks").addEventListener("pointermove", e => {
+  const card = e.target.closest(".pick");
+  if (card !== tiltCard) { untilt(tiltCard); tiltCard = card; }
+  if (!card || !canTilt() || card.classList.contains("empty")) return;
+  const r = card.getBoundingClientRect();
+  const x = (e.clientX - r.left) / r.width - .5, y = (e.clientY - r.top) / r.height - .5;
+  card.style.transform = `perspective(900px) rotateX(${(-y * 8).toFixed(2)}deg) rotateY(${(x * 8).toFixed(2)}deg)`;
+  card.classList.add("tilting");
+});
+$("picks").addEventListener("pointerleave", () => { untilt(tiltCard); tiltCard = null; });
+
 // ---------- 첫 화면 ----------
 
 // 기능 소개 카드: 검색 결과·로딩 화면이 보이면 숨김
 function syncFeatures() {
-  const busy = $("results").style.display === "block" || $("loading").style.display === "flex";
+  const loading = $("loading").style.display === "flex";
+  const busy = $("results").style.display === "block" || loading;
   $("features").style.display = busy ? "none" : "";
+  $("skeleton").hidden = !loading;   // 로딩 중에는 결과 자리에 카드 모양 뼈대
 }
 const featureWatch = new MutationObserver(syncFeatures);
 featureWatch.observe($("results"), { attributes: true, attributeFilter: ["style"] });
