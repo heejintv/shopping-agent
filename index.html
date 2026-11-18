@@ -134,6 +134,24 @@
   /* 추천 카드 */
   #results { display: none; }
   .result-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin: 28px 0 0; }
+  /* 결과 공유 */
+  .share-wrap { position: relative; margin-left: auto; align-self: center; }
+  .share-btn { padding: 6px 14px; border-radius: 99px; border: 1px solid var(--line); background: var(--card); color: var(--text);
+               font-size: 13px; font-weight: 600; box-shadow: var(--shadow); }
+  .share-btn:hover, .share-btn[aria-expanded=true] { border-color: var(--accent); color: var(--accent); }
+  .share-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 15; min-width: 170px; padding: 6px; border-radius: 12px;
+                background: var(--card); border: 1px solid var(--line); box-shadow: 0 8px 28px rgba(0,0,0,.16); }
+  .share-menu button { display: block; width: 100%; text-align: left; padding: 9px 12px; border: 0; border-radius: 8px; background: none;
+                       color: var(--text); font-size: 14px; }
+  .share-menu button:hover { background: var(--soft); color: var(--accent); }
+  .toast { position: fixed; left: 50%; bottom: 96px; z-index: 50; transform: translate(-50%, 12px); opacity: 0; pointer-events: none;
+           padding: 10px 18px; border-radius: 99px; background: var(--text); color: var(--bg); font-size: 14px; font-weight: 600;
+           box-shadow: 0 6px 20px rgba(0,0,0,.2); transition: opacity .2s, transform .2s; }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+  @media (prefers-reduced-motion: reduce) { .toast { transition: none; } }
+  .notice { display: none; margin-top: 10px; padding: 10px 14px; border-radius: 12px; font-size: 14px;
+            background: var(--accent-soft); color: var(--text); }
+  .notice b { color: var(--accent); }
   .few { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, var(--card));
          padding: 2px 10px; border-radius: 99px; }
   .result-title h2 { font-size: 20px; }
@@ -449,6 +467,7 @@
   </div>
   </section>
   <div id="status"></div>
+  <div class="notice" id="notice" role="status"></div>
 
   <div id="demo">
     <strong>데모 모드</strong> · 검색 서버에 연결할 수 없어서 저장된 결과만 볼 수 있어요. 아래 최근 검색을 눌러 보세요.
@@ -473,7 +492,12 @@
   <div class="panel" id="error"></div>
 
   <div id="results">
-    <div class="result-title"><h2 id="rq"></h2><span class="na" id="rcount"></span><span class="few" id="rfew" hidden>찾은 모델이 적어요 · 다른 검색어로도 찾아보세요</span></div>
+    <div class="result-title"><h2 id="rq"></h2><span class="na" id="rcount"></span><span class="few" id="rfew" hidden>찾은 모델이 적어요 · 다른 검색어로도 찾아보세요</span>
+      <div class="share-wrap"><button type="button" class="share-btn" id="shareBtn" aria-haspopup="menu" aria-expanded="false">🔗 공유</button>
+        <div class="share-menu" id="shareMenu" role="menu" hidden>
+          <button type="button" role="menuitem" data-share="link">🔗 링크 복사</button>
+          <button type="button" role="menuitem" data-share="text">📝 요약 텍스트 복사</button>
+        </div></div></div>
     <div class="req-cond" id="reqCond"></div>
     <div class="panel nomatch" id="nomatch"></div>
     <div class="picks" id="picks"></div>
@@ -495,6 +519,7 @@
     </section>
   </div>
 </main>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 <footer class="foot">Made by 정희진 · Claude + Gemini</footer>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>
@@ -781,12 +806,14 @@ async function connect() {
     API_HEADERS = NGROK_HEADERS;
   } else {
     setStatus("");
-    return enterDemoMode();
+    await enterDemoMode();
+    return openFromUrl();
   }
   demoMode = false;
   $("demo").style.display = "none";
   showRemaining(d);
   loadRecent();
+  openFromUrl();
 }
 
 async function enterDemoMode() {
@@ -889,6 +916,9 @@ function render(d) {
   const label = p => `${p.brand} ${p.model}`;
 
   $("rq").textContent = `“${d.query || $("q").value.trim()}” 비교 결과`;
+  syncUrl(d.query || $("q").value.trim(), cond);
+  $("notice").style.display = "none";
+  closeShareMenu();
   $("rcount").textContent = `${items.length}개 모델`;
   $("rfew").hidden = !(items.length > 0 && items.length <= 3);   // 3개 이하면 다른 검색어 안내
   $("reqCond").innerHTML = cond ? `요청한 조건: <b>${esc(cond)}</b>` : "";
@@ -1415,6 +1445,127 @@ $("cmpAsk").addEventListener("click", () => {
 });
 
 refreshWish();
+
+// ---------- 결과 공유 ----------
+// 링크: 이 주소로 들어오면 저장된 결과(캐시·데모)만 보여주고 새 검색은 하지 않음
+
+const SHARE_BASE = "https://heejintv.github.io/shopping-agent/";
+const shareParams = (q, c) => { const u = new URLSearchParams({ q }); if (c) u.set("c", c); return u.toString(); };
+const shareLink = (q, c) => SHARE_BASE + "?" + shareParams(q, c);
+
+function syncUrl(q, c) {   // 새로고침해도 같은 결과가 나오게 주소창을 맞춤 (기록은 쌓지 않음)
+  if (!q || !/^https?:$/.test(location.protocol)) return;
+  try { history.replaceState(null, "", "?" + shareParams(q, c)); } catch (_) { /* 무시 */ }
+}
+
+let urlHandled = false;
+async function openFromUrl() {
+  if (urlHandled) return;
+  urlHandled = true;
+  const params = new URLSearchParams(location.search);
+  const q = (params.get("q") || "").trim().slice(0, 100);
+  const c = cleanCond(params.get("c") || "").slice(0, 100);
+  if (!q) return;
+  $("q").value = q;
+  $("c").value = c;
+  hideError();
+  let data = null;
+  try {
+    if (demoMode) {
+      data = await fetchDemo(q, c).catch(() => null);
+    } else {
+      const res = await fetch(`${API_BASE}/cached?${shareParams(q, c)}`, { headers: API_HEADERS });   // 저장된 결과만, 없으면 404
+      if (res.ok) data = await res.json();
+    }
+  } catch (_) { data = null; }
+  if (data) return render(data);
+  $("notice").innerHTML = `<b>“${esc(q)}${c ? ` · ${esc(c)}` : ""}”</b> 저장된 결과가 없어요. <b>검색</b> 버튼을 눌러주세요.`;
+  $("notice").style.display = "block";
+  $("btn").focus({ preventScroll: true });
+}
+
+// 요약 텍스트: [Pickit] 검색어 추천 / 가성비·품질·최저가 / 링크
+function coreName(p) {
+  const model = (p.model || "").replace(/\([^)]*\)|\[[^\]]*\]/g, " ").split(/\s+/).filter(Boolean).join(" ");
+  const brand = (p.brand || "").trim();
+  return brand && !model.toLowerCase().startsWith(brand.toLowerCase()) ? `${brand} ${model}` : model;
+}
+function shareSummary() {
+  const d = shownResult, cur = current;
+  if (!d || !cur) return "";
+  const cond = cleanCond(d.condition);
+  const line = (icon, label, p) => p ? `${icon} ${label}: ${coreName(p)} · ${fmtPrice(p.price, p.currency) ?? "가격 확인 안 됨"}` : null;
+  return [
+    `[Pickit] ${d.query}${cond ? ` (${cond})` : ""} 추천`,
+    line("💰", "가성비", cur.valueP), line("⭐", "품질", cur.qualityP), line("🏷️", "최저가", cur.cheapest),
+    `👉 ${shareLink(d.query, cond)}`,
+  ].filter(Boolean).join("\n");
+}
+
+let toastTimer;
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("show"), 2000);
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (_) {   // 권한이 없거나 오래된 브라우저: 숨긴 입력칸으로 복사
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.cssText = "position:fixed;top:-1000px;opacity:0";
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
+    ta.remove();
+    return ok;
+  }
+}
+
+// 휴대폰(터치 화면)이고 공유 시트가 되면 공유 시트, 아니면 복사
+const useShareSheet = () => typeof navigator.share === "function" && matchMedia("(pointer: coarse)").matches;
+
+async function doShare(kind) {
+  const d = shownResult;
+  if (!d) return;
+  const link = shareLink(d.query, cleanCond(d.condition));
+  const text = kind === "text" ? shareSummary() : link;
+  if (useShareSheet()) {
+    try {
+      await navigator.share(kind === "text" ? { title: "Pickit", text } : { title: `Pickit · ${d.query} 비교`, url: link });
+      return;
+    } catch (e) {
+      if (e && e.name === "AbortError") return;   // 사용자가 공유 시트를 닫음
+    }
+  }
+  toast(await copyText(text) ? "복사했어요" : "복사하지 못했어요. 다시 시도해 주세요");
+}
+
+function closeShareMenu() {
+  $("shareMenu").hidden = true;
+  $("shareBtn").setAttribute("aria-expanded", "false");
+}
+$("shareBtn").addEventListener("click", e => {
+  e.stopPropagation();
+  const open = $("shareMenu").hidden;
+  $("shareMenu").hidden = !open;
+  $("shareBtn").setAttribute("aria-expanded", String(open));
+});
+$("shareMenu").addEventListener("click", e => {
+  const b = e.target.closest("[data-share]");
+  if (!b) return;
+  closeShareMenu();
+  doShare(b.dataset.share);
+});
+document.addEventListener("click", e => { if (!e.target.closest(".share-wrap")) closeShareMenu(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeShareMenu(); });
 
 // ---------- 첫 화면 ----------
 

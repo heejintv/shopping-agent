@@ -396,6 +396,22 @@ def history_item(name):
     return jsonify(data)
 
 
+@app.get("/cached")
+def cached():
+    """공유 링크용: 검색어+조건의 저장된 결과만 돌려준다. 없으면 404 (새 검색은 절대 하지 않고 횟수도 차감 안 함)."""
+    q = (request.args.get("q") or "").strip()
+    c = " ".join((request.args.get("c") or "").split())
+    if not q or len(q) > 100 or len(c) > 100:
+        return jsonify(error="검색어를 확인해 주세요."), 400
+    path = cache_path(q, c)
+    if not path.exists():
+        return jsonify(error="저장된 결과가 없어요.", **limit_info()), 404
+    data = polish_result(json.loads(path.read_text(encoding="utf-8")))
+    data.pop("cost_usd", None)
+    data.update(cached=True, **limit_info())
+    return jsonify(data)
+
+
 @app.get("/search")
 def search():
     q = (request.args.get("q") or "").strip()
