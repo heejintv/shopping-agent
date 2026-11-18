@@ -50,6 +50,7 @@
             --search-shadow: 0 2px 6px rgba(0,0,0,.3), 0 12px 32px rgba(0,0,0,.35); }
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }   /* display를 지정한 클래스가 hidden 속성을 덮지 않게 */
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 15px/1.55 "Pretendard Variable", Pretendard, -apple-system, "Segoe UI", "Noto Sans KR", "Malgun Gothic", sans-serif; }
   main { max-width: 1080px; margin: 0 auto; padding: 20px 16px 48px; }
@@ -149,15 +150,21 @@
   td.model .ovs { margin-top: 4px; }
   .wish-info .ovs, .cmp-col .ovs { margin-top: 4px; }
 
-  /* 비교표 필터 (받아온 결과 안에서만 거름) */
-  .filters { margin: 4px 0 12px; }
-  .filter-toggle { display: none; align-items: center; gap: 6px; padding: 7px 14px; border-radius: 99px; border: 1px solid var(--line);
-                   background: var(--card); color: var(--text); font-size: 13px; font-weight: 600; }
-  .filter-toggle .fb { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 99px; background: var(--accent); color: #fff; }
-  .filter-body { display: grid; grid-template-columns: minmax(220px, 1.3fr) auto minmax(200px, 1.4fr); gap: 14px 24px; align-items: start;
-                 padding: 14px 16px; border-radius: 14px; background: var(--soft); }
-  .f-label { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 8px; }
-  .f-label b { color: var(--text); font-weight: 700; margin-left: 6px; font-variant-numeric: tabular-nums; }
+  /* 비교표 도구 줄: [가격 범위] [⭐ 4.5 이상] [🌏 해외구매 제외] | [브랜드 칩…]  ……  [정렬] */
+  .table-tools { display: flex; align-items: center; gap: 10px; margin: 2px 0 10px; }
+  .fchips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex: 1; min-width: 0; }
+  .table-tools .seg { flex: none; margin-left: auto; }
+  .fchip { display: inline-flex; align-items: center; gap: 4px; padding: 6px 12px; border-radius: 99px; font-size: 13px; font-weight: 600;
+           white-space: nowrap; border: 1px solid var(--line); background: var(--card); color: var(--text); transition: background .12s, color .12s; }
+  .fchip:hover { border-color: var(--accent); color: var(--accent); }
+  .fchip[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .fchip[aria-expanded=true] { border-color: var(--accent); color: var(--accent); }
+  .fchip.on:not([aria-pressed]) { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }   /* 가격 범위를 좁힘 */
+  .fchip .caret { font-size: 10px; opacity: .7; }
+  .fsep { width: 1px; height: 20px; margin: 0 4px; background: var(--line); flex: none; }
+  .price-panel { margin: 0 0 12px; padding: 14px 16px 10px; border-radius: 14px; background: var(--soft); max-width: 520px; }
+  .price-panel .f-label { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 4px; }
+  .price-panel .f-label b { color: var(--text); font-size: 14px; font-variant-numeric: tabular-nums; }
   .range { position: relative; height: 28px; }
   .range-track { position: absolute; left: 0; right: 0; top: 12px; height: 4px; border-radius: 4px; background: var(--line); }
   .range-fill { position: absolute; top: 0; bottom: 0; border-radius: 4px; background: var(--accent); }
@@ -170,30 +177,19 @@
   .range input::-moz-range-thumb { pointer-events: auto; width: 16px; height: 16px; border-radius: 50%; background: var(--card);
                                    border: 2px solid var(--accent); box-shadow: 0 1px 4px rgba(0,0,0,.2); cursor: grab; }
   .range input:focus-visible::-webkit-slider-thumb { outline: 3px solid color-mix(in srgb, var(--accent) 40%, transparent); }
-  .f-toggles { display: flex; flex-direction: column; gap: 10px; padding-top: 20px; }
-  .switch { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; white-space: nowrap; }
-  .switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
-  .switch i { position: relative; flex: none; width: 34px; height: 20px; border-radius: 99px; background: var(--line); transition: background .15s; }
-  .switch i::after { content: ""; position: absolute; left: 2px; top: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff;
-                     box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .15s; }
-  .switch input:checked + i { background: var(--accent); }
-  .switch input:checked + i::after { transform: translateX(14px); }
-  .switch input:focus-visible + i { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .brand-list { display: flex; flex-wrap: wrap; gap: 6px; }
-  .brand-list label { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 99px; font-size: 13px; cursor: pointer;
-                      border: 1px solid var(--line); background: var(--card); }
-  .brand-list label:has(input:checked) { border-color: var(--accent); color: var(--accent); }
-  .brand-list input { accent-color: var(--accent); margin: 0; }
-  .f-foot { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 10px;
-            padding-top: 10px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+  .range-ends { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .f-foot { display: flex; align-items: center; gap: 10px; margin: -2px 0 10px; font-size: 13px; color: var(--muted); }
   .f-foot b { color: var(--text); }
   .filter-empty td { padding: 28px 8px; text-align: center; color: var(--muted); }
-  @media (prefers-reduced-motion: reduce) { .switch i, .switch i::after { transition: none; } }
-  @media (max-width: 760px) {   /* 휴대폰: "필터" 버튼으로 펼치기 (기본은 접힘) */
-    .filter-toggle { display: inline-flex; }
-    .filter-body { display: none; grid-template-columns: 1fr; margin-top: 10px; }
-    .filters.open .filter-body { display: grid; }
-    .f-toggles { padding-top: 0; flex-direction: row; flex-wrap: wrap; gap: 10px 18px; }
+  @media (prefers-reduced-motion: reduce) { .fchip { transition: none; } }
+  @media (max-width: 760px) {   /* 휴대폰: 정렬은 위 줄, 칩은 한 줄 가로 스크롤 */
+    .table-tools { flex-direction: column-reverse; align-items: stretch; gap: 8px; }
+    .table-tools .seg { align-self: flex-start; margin-left: 0; }
+    .fchips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px;
+              -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
+              mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); }
+    .fchips::-webkit-scrollbar { display: none; }
+    .price-panel { max-width: none; }
   }
 
   /* 결과 공유 */
@@ -565,30 +561,28 @@
     <div class="picks" id="picks"></div>
 
     <section class="panel" id="tablePanel">
-      <div class="table-head">
-        <h2>모델별 비교</h2>
+      <div class="table-head"><h2>모델별 비교</h2></div>
+      <div class="table-tools">
+        <div class="fchips" id="fchips" role="group" aria-label="비교표 필터">
+          <button type="button" class="fchip" id="fPrice" aria-expanded="false" aria-controls="pricePanel">💰 <span id="priceChipLabel">가격 범위</span> <span class="caret">▾</span></button>
+          <button type="button" class="fchip" id="fRating" aria-pressed="false">⭐ 4.5 이상</button>
+          <button type="button" class="fchip" id="fOverseas" aria-pressed="false">🌏 해외구매 제외</button>
+          <span class="fsep" aria-hidden="true"></span>
+          <span class="fchips-brands" id="brandList" style="display:contents"></span>
+        </div>
         <div class="seg" id="sort" role="group" aria-label="정렬">
           <button type="button" data-sort="default" aria-pressed="true">기본</button>
           <button type="button" data-sort="asc" aria-pressed="false">가격 낮은순</button>
           <button type="button" data-sort="desc" aria-pressed="false">가격 높은순</button>
         </div>
       </div>
-      <div class="filters" id="filters">
-        <button type="button" class="filter-toggle" id="filterToggle" aria-expanded="false" aria-controls="filterBody">⚙️ 필터 <span class="fb" id="filterBadge" hidden></span></button>
-        <div class="filter-body" id="filterBody">
-          <div class="f-price">
-            <div class="f-label">가격<b id="priceLabel"></b></div>
-            <div class="range"><div class="range-track"><div class="range-fill" id="rangeFill"></div></div>
-              <input type="range" id="priceMin" aria-label="최저 가격"><input type="range" id="priceMax" aria-label="최고 가격"></div>
-          </div>
-          <div class="f-toggles">
-            <label class="switch"><input type="checkbox" id="fRating"><i></i>별점 4.5 이상만</label>
-            <label class="switch"><input type="checkbox" id="fOverseas"><i></i>해외구매 제외</label>
-          </div>
-          <div class="f-brands"><div class="f-label">브랜드</div><div class="brand-list" id="brandList"></div></div>
-          <div class="f-foot"><span id="filterCount"></span><button type="button" class="text-btn" id="filterReset">필터 초기화</button></div>
-        </div>
+      <div class="price-panel" id="pricePanel" hidden>
+        <div class="f-label">가격 범위 <b id="priceLabel"></b></div>
+        <div class="range"><div class="range-track"><div class="range-fill" id="rangeFill"></div></div>
+          <input type="range" id="priceMin" aria-label="최저 가격"><input type="range" id="priceMax" aria-label="최고 가격"></div>
+        <div class="range-ends"><span id="priceEndMin"></span><span id="priceEndMax"></span></div>
       </div>
+      <div class="f-foot" id="filterFoot" hidden><span id="filterCount"></span><button type="button" class="text-btn" id="filterReset">필터 초기화</button></div>
       <table id="table">
         <thead><tr><th>모델</th><th class="fit-col">조건 적합도</th><th>가격</th><th>쇼핑몰</th><th>별점</th><th>장점</th><th>단점</th><th></th></tr></thead>
         <tbody id="tbody"></tbody>
@@ -1548,10 +1542,22 @@ document.addEventListener("click", e => {
 
 // ---------- 비교표 필터 ----------
 // 받아온 결과 안에서만 거름 (새 검색 없음). 추천 카드는 그대로 두고 비교표만
+// 브랜드 칩: 아무것도 안 고르면 전체, 고르면 고른 브랜드만
 
 const RATING_MIN = 4.5;
-const filter = { min: 0, max: 0, lo: 0, hi: 0, step: 1, rating: false, noOverseas: false, brands: new Set(), allBrands: [] };
+const filter = { min: 0, max: 0, lo: 0, hi: 0, step: 1, rating: false, noOverseas: false, brands: new Set(), allBrands: [], on: false };
 const brandOf = p => (p.brand || "").trim() || "기타";
+
+// 만 원 단위 반올림: 10만 원 미만은 소수 한 자리 ("1.5만"), 1만 원 미만은 원 그대로
+function man(v) {
+  if (v < 10000) return `${Math.round(v).toLocaleString("ko-KR")}원`;
+  const m = v < 100000 ? Math.round(v / 1000) / 10 : Math.round(v / 10000);
+  return `${m.toLocaleString("ko-KR")}만`;
+}
+const manRange = (lo, hi) => {
+  const a = man(lo), b = man(hi);
+  return b.endsWith("원") ? `${a} ~ ${b}` : `${a} ~ ${b} 원`;   // "12만 ~ 70만 원"
+};
 
 function priceStep(span) {   // 슬라이더 한 칸: 범위의 약 1/100을 보기 좋은 단위로
   const raw = Math.max(1, span / 100);
@@ -1565,40 +1571,44 @@ function initFilters(items) {
   filter.max = prices.length ? Math.max(...prices) : 0;
   filter.step = priceStep(filter.max - filter.min);
   filter.allBrands = [...new Set(items.map(brandOf))].sort((a, b) => a.localeCompare(b, "ko"));
-  $("filters").hidden = items.length <= 3;   // 결과가 3개 이하면 필터 숨김
-  $("filters").classList.remove("open");
-  $("filterToggle").setAttribute("aria-expanded", "false");
+  filter.on = items.length > 3;                       // 결과가 3개 이하면 필터 칩 숨김 (정렬은 그대로)
+  $("fchips").hidden = !filter.on;
+  const canPrice = prices.length >= 2 && filter.min < filter.max;
+  $("fPrice").hidden = !canPrice;
   for (const id of ["priceMin", "priceMax"]) {
     const el = $(id);
     el.min = filter.min; el.max = filter.max; el.step = filter.step;
-    el.disabled = prices.length < 2 || filter.min === filter.max;
   }
-  $("brandList").innerHTML = filter.allBrands.map(b =>
-    `<label><input type="checkbox" value="${esc(b)}" checked>${esc(b)}</label>`).join("");
+  $("priceEndMin").textContent = canPrice ? man(filter.min) : "";
+  $("priceEndMax").textContent = canPrice ? man(filter.max) : "";
+  $("brandList").innerHTML = filter.allBrands.length > 1
+    ? filter.allBrands.map(b => `<button type="button" class="fchip" data-brand="${esc(b)}" aria-pressed="false">${esc(b)}</button>`).join("")
+    : "";
+  togglePricePanel(false);
   resetFilters(false);
 }
 
 function resetFilters(redraw = true) {
   filter.lo = filter.min; filter.hi = filter.max;
   filter.rating = false; filter.noOverseas = false;
-  filter.brands = new Set(filter.allBrands);
+  filter.brands = new Set();
   $("priceMin").value = filter.lo; $("priceMax").value = filter.hi;
-  $("fRating").checked = false; $("fOverseas").checked = false;
-  for (const box of $("brandList").querySelectorAll("input")) box.checked = true;
+  $("fRating").setAttribute("aria-pressed", "false");
+  $("fOverseas").setAttribute("aria-pressed", "false");
+  for (const b of $("brandList").querySelectorAll("[data-brand]")) b.setAttribute("aria-pressed", "false");
   updatePriceUI();
   if (redraw) renderTable();
 }
 
 const priceFiltered = () => filter.lo > filter.min || filter.hi < filter.max;
-const filtersActive = () => !$("filters").hidden &&
-  (priceFiltered() || filter.rating || filter.noOverseas || filter.brands.size < filter.allBrands.length);
+const filtersActive = () => filter.on && (priceFiltered() || filter.rating || filter.noOverseas || filter.brands.size > 0);
 
 function passFilter(p) {
-  if ($("filters").hidden) return true;
+  if (!filter.on) return true;
   if (priceFiltered() && (!hasPrice(p) || p.price < filter.lo || p.price > filter.hi)) return false;   // 범위를 좁히면 가격 모르는 상품은 뺌
   if (filter.rating && !(typeof p.rating === "number" && p.rating >= RATING_MIN)) return false;
   if (filter.noOverseas && isOverseas(p)) return false;
-  if (!filter.brands.has(brandOf(p))) return false;
+  if (filter.brands.size && !filter.brands.has(brandOf(p))) return false;
   return true;
 }
 
@@ -1606,16 +1616,22 @@ function updatePriceUI() {
   const span = filter.max - filter.min || 1;
   $("rangeFill").style.left = `${(filter.lo - filter.min) / span * 100}%`;
   $("rangeFill").style.right = `${(filter.max - filter.hi) / span * 100}%`;
-  const won = v => fmtPrice(v, "KRW");
-  $("priceLabel").textContent = filter.max ? `${won(filter.lo)} ~ ${won(filter.hi)}` : "가격 정보 없음";
+  $("priceLabel").textContent = filter.max ? manRange(filter.lo, filter.hi) : "";
+  const narrowed = priceFiltered();
+  $("priceChipLabel").textContent = narrowed ? manRange(filter.lo, filter.hi) : "가격 범위";
+  $("fPrice").classList.toggle("on", narrowed);
 }
 
+// 개수·초기화는 필터를 썼을 때만
 function updateFilterCount(shown, total) {
-  $("filterCount").innerHTML = `<b>${total}개 중 ${shown}개</b> 표시`;
   const active = filtersActive();
-  $("filterBadge").hidden = !active;
-  $("filterBadge").textContent = `${shown}/${total}`;
-  $("filterReset").disabled = !active;
+  $("filterFoot").hidden = !active;
+  if (active) $("filterCount").innerHTML = `<b>${total}개 중 ${shown}개</b>`;
+}
+
+function togglePricePanel(open) {
+  $("pricePanel").hidden = !open;
+  $("fPrice").setAttribute("aria-expanded", String(open));
 }
 
 function onPriceInput(e) {
@@ -1632,20 +1648,24 @@ function onPriceInput(e) {
 }
 $("priceMin").addEventListener("input", onPriceInput);
 $("priceMax").addEventListener("input", onPriceInput);
-$("fRating").addEventListener("change", e => { filter.rating = e.target.checked; renderTable(); });
-$("fOverseas").addEventListener("change", e => { filter.noOverseas = e.target.checked; renderTable(); });
-$("brandList").addEventListener("change", e => {
-  const box = e.target.closest("input");
-  if (!box) return;
-  if (box.checked) filter.brands.add(box.value); else filter.brands.delete(box.value);
+$("fPrice").addEventListener("click", () => togglePricePanel($("pricePanel").hidden));
+const pressToggle = (btn, key) => {
+  filter[key] = btn.getAttribute("aria-pressed") !== "true";
+  btn.setAttribute("aria-pressed", String(filter[key]));
+  renderTable();
+};
+$("fRating").addEventListener("click", e => pressToggle(e.currentTarget, "rating"));
+$("fOverseas").addEventListener("click", e => pressToggle(e.currentTarget, "noOverseas"));
+$("brandList").addEventListener("click", e => {
+  const b = e.target.closest("[data-brand]");
+  if (!b) return;
+  const on = b.getAttribute("aria-pressed") !== "true";
+  b.setAttribute("aria-pressed", String(on));
+  if (on) filter.brands.add(b.dataset.brand); else filter.brands.delete(b.dataset.brand);
   renderTable();
 });
 $("filterReset").addEventListener("click", () => resetFilters());
 $("tbody").addEventListener("click", e => { if (e.target.closest('[data-act="reset-filter"]')) resetFilters(); });
-$("filterToggle").addEventListener("click", () => {
-  const open = $("filters").classList.toggle("open");
-  $("filterToggle").setAttribute("aria-expanded", String(open));
-});
 
 // ---------- 결과 공유 ----------
 // 링크: 이 주소로 들어오면 저장된 결과(캐시·데모)만 보여주고 새 검색은 하지 않음
