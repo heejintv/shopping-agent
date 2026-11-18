@@ -372,7 +372,7 @@
   .wish-meta a { margin-left: 6px; }
   .wish-del { border: 0; background: none; color: var(--muted); font-size: 18px; line-height: 1; padding: 2px 4px; }
   .wish-del:hover { color: var(--bad); }
-  .empty { padding: 36px 0; text-align: center; }
+  .wish-empty { padding: 36px 0; text-align: center; }   /* 찜 목록 빈 상태 (빈 추천 카드 .pick.empty와 이름이 겹치지 않게) */
   .cmp { display: grid; grid-template-columns: 1fr auto 1fr; gap: 12px; }
   .cmp-vs { align-self: center; font-size: 13px; font-weight: 800; color: var(--muted); }
   .cmp-col { position: relative; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
@@ -1298,7 +1298,7 @@ function renderWishSheet() {
   }
   $("wishBody").innerHTML = wishList.length
     ? [...groups].map(([g, list]) => `<div class="wish-group"><h3>“${esc(g)}” <span class="na">${list.length}개</span></h3>${list.map(wishItem).join("")}</div>`).join("")
-    : '<p class="na empty">아직 찜한 상품이 없어요.<br>검색 결과에서 ♡를 눌러 보세요.</p>';
+    : '<p class="na wish-empty">아직 찜한 상품이 없어요.<br>검색 결과에서 ♡를 눌러 보세요.</p>';
   const n = wishChecked.size;
   $("cmpBtn").disabled = n !== 2;
   $("cmpBtn").textContent = `비교하기 (${n}/2)`;
