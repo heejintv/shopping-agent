@@ -4,18 +4,23 @@ Google 검색 연동(grounding) + URL 읽기 도구를 켜고 Gemini에게 JSON�
 app.py의 JSON 스키마에 맞게 값을 정리해서 claude -p 결과와 똑같은 모양으로 돌려준다.
 (검색 도구와 응답 스키마 강제를 같이 못 쓰는 모델이 있어서, 텍스트로 받은 JSON을 직접 검사·정리함)
 
-환경변수: GEMINI_API_KEY (필수), GEMINI_MODEL (기본 gemini-2.5-flash)
+환경변수: GEMINI_API_KEY (필수), GEMINI_MODEL (기본 gemini-3.5-flash-lite)
+상담 챗봇(chat.py)은 검색 도구 없이 답변만 받는 chat_gemini()를 쓴다.
 """
 
 import json
 import os
 import re
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.5-flash-lite"  # 2.5 계열은 새 사용자에게 막혀 있음(404)
 
 
 class EngineError(Exception):
-    """화면에 그대로 보여줄 수 있는 오류 메시지."""
+    """화면에 그대로 보여줄 수 있는 오류 메시지. code는 API 상태 코드(429, 503 등, 모르면 None)."""
+
+    def __init__(self, message: str, code: int | None = None):
+        super().__init__(message)
+        self.code = code
 
 
 def model_name() -> str:
@@ -100,6 +105,12 @@ JSON_INSTRUCTION = """
 
 
 def _friendly_error(e: Exception) -> EngineError:
+    err = _friendly_message(e)
+    err.code = getattr(e, "code", None)
+    return err
+
+
+def _friendly_message(e: Exception) -> EngineError:
     from google.genai import errors
     if isinstance(e, errors.APIError):
         code = e.code
@@ -120,8 +131,7 @@ def _friendly_error(e: Exception) -> EngineError:
     return EngineError(f"Gemini 호출 실패: {type(e).__name__}")
 
 
-def call_gemini(prompt: str, schema: dict, timeout: int) -> dict:
-    """Gemini + Google 검색으로 답을 받아 schema 모양의 dict로 돌려준다. 실패하면 EngineError."""
+def _client(timeout: int):
     key = os.environ.get("GEMINI_API_KEY")
     if not key:
         raise EngineError("GEMINI_API_KEY 환경변수가 설정되지 않았어요.")
@@ -130,8 +140,26 @@ def call_gemini(prompt: str, schema: dict, timeout: int) -> dict:
         from google.genai import types
     except ImportError:
         raise EngineError("google-genai 패키지가 없어요. pip install -r requirements.txt 를 실행하세요.")
+    return genai.Client(api_key=key, http_options=types.HttpOptions(timeout=timeout * 1000)), types
 
-    client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=timeout * 1000))
+
+def chat_gemini(system: str, prompt: str, timeout: int) -> str:
+    """도구 없이(웹 검색 안 함) 답변 텍스트만 받는다. 실패하면 EngineError(code 포함)."""
+    client, types = _client(timeout)
+    config = types.GenerateContentConfig(system_instruction=system, temperature=0.4)
+    try:
+        resp = client.models.generate_content(model=model_name(), contents=prompt, config=config)
+    except Exception as e:
+        raise _friendly_error(e) from e
+    text = (resp.text or "").strip()
+    if not text:
+        raise EngineError("Gemini가 빈 답변을 보냈어요. 다시 시도해 주세요.")
+    return text
+
+
+def call_gemini(prompt: str, schema: dict, timeout: int) -> dict:
+    """Gemini + Google 검색으로 답을 받아 schema 모양의 dict로 돌려준다. 실패하면 EngineError."""
+    client, types = _client(timeout)
     config = types.GenerateContentConfig(
         tools=[types.Tool(google_search=types.GoogleSearch()),   # Google 검색 연동
                types.Tool(url_context=types.UrlContext())],      # 웹페이지 읽기

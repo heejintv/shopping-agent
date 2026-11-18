@@ -10,6 +10,7 @@
 인터넷에 공개할 때를 위한 보호 장치:
 - ngrok을 거쳐 들어온 새 검색(claude 실행)은 하루 DAILY_LIMIT회(기본 10회)까지. 캐시된 결과는 제한 없음
 - 내 PC에서 직접 온 요청은 무제한 (is_local_request 참고)
+- 상담 챗봇(/chat, chat.py)은 외부 요청만 하루 CHAT_DAILY_LIMIT회(기본 30회)까지
 - CORS는 GitHub Pages 주소(ALLOWED_ORIGIN)만 허용
 """
 
@@ -25,6 +26,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
 
+import chat
 from gemini import EngineError, call_gemini
 from gemini import model_name as gemini_model
 from links import verify_links
@@ -50,6 +52,7 @@ def load_env(path: Path) -> None:
 load_env(BASE_DIR / ".env")
 
 DAILY_LIMIT = int(os.environ.get("DAILY_LIMIT", "10"))
+CHAT_DAILY_LIMIT = int(os.environ.get("CHAT_DAILY_LIMIT", "30"))
 ALLOWED_ORIGIN = "https://heejintv.github.io"
 
 CLAUDE_TIMEOUT = 600  # 초. 웹 검색을 여러 번 하므로 넉넉하게 10분
@@ -157,6 +160,10 @@ _usage_lock = threading.Lock()
 
 # ---------- 하루 검색 횟수 ----------
 
+# usage.json: {"date": 오늘, "count": 검색 횟수, "chat_count": 챗봇 횟수}
+LIMITS = {"count": lambda: DAILY_LIMIT, "chat_count": lambda: CHAT_DAILY_LIMIT}
+
+
 def read_usage() -> dict:
     today = date.today().isoformat()
     try:
@@ -164,24 +171,27 @@ def read_usage() -> dict:
     except (OSError, ValueError):
         usage = {}
     if usage.get("date") != today:  # 날짜가 바뀌면 0부터
-        usage = {"date": today, "count": 0}
+        usage = {"date": today}
+    for k in LIMITS:
+        usage.setdefault(k, 0)
     return usage
 
 
-def try_use_one() -> int | None:
-    """검색 1회를 차감하고 남은 횟수를 돌려준다. 다 썼으면 None."""
+def try_use_one(kind: str = "count") -> int | None:
+    """검색(count) 또는 챗봇(chat_count) 1회를 차감하고 남은 횟수를 돌려준다. 다 썼으면 None."""
+    limit = LIMITS[kind]()
     with _usage_lock:
         usage = read_usage()
-        if usage["count"] >= DAILY_LIMIT:
+        if usage[kind] >= limit:
             return None
-        usage["count"] += 1
+        usage[kind] += 1
         USAGE_FILE.write_text(json.dumps(usage), encoding="utf-8")
-        return DAILY_LIMIT - usage["count"]
+        return limit - usage[kind]
 
 
-def remaining() -> int:
+def remaining(kind: str = "count") -> int:
     with _usage_lock:
-        return max(0, DAILY_LIMIT - read_usage()["count"])
+        return max(0, LIMITS[kind]() - read_usage()[kind])
 
 
 # ngrok은 요청을 127.0.0.1로 전달하면서 이런 헤더를 붙인다. 하나라도 있으면 외부 요청
@@ -286,8 +296,9 @@ def cors(resp):
     if request.headers.get("Origin") == ALLOWED_ORIGIN:
         resp.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
         # ngrok 무료 도메인의 경고 페이지를 건너뛰는 헤더를 브라우저가 보낼 수 있게 허용
-        resp.headers["Access-Control-Allow-Headers"] = "ngrok-skip-browser-warning"
-        resp.headers["Access-Control-Allow-Methods"] = "GET"
+        # Content-Type: 챗봇(/chat)이 JSON을 POST로 보냄
+        resp.headers["Access-Control-Allow-Headers"] = "ngrok-skip-browser-warning, Content-Type"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST"
         resp.headers["Access-Control-Max-Age"] = "600"
         # GitHub Pages(공개 사이트)에서 http://localhost:5000 을 부를 때 크롬이 요구하는 헤더
         if request.headers.get("Access-Control-Request-Private-Network") == "true":
@@ -419,6 +430,51 @@ def search():
         info["remaining"] = left
         data.update(cached=False, **info)
         return jsonify(data)
+
+
+@app.post("/chat")
+def chat_api():
+    """상담 챗봇. 받은 검색 결과 안에서만 답한다 (웹 검색 안 함)."""
+    # 다른 사이트가 몰래 보내는 요청 막기: 허용한 출처만, JSON만 받음
+    # (JSON POST는 브라우저가 CORS 사전 확인을 하므로 허용 안 된 사이트는 요청 자체가 안 옴)
+    origin = request.headers.get("Origin")
+    if origin and origin not in LOCAL_ORIGINS:
+        return jsonify(error="허용되지 않은 출처예요."), 403
+    if not request.is_json:
+        return jsonify(error="JSON으로 보내 주세요."), 415
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify(error="요청 형식이 잘못됐어요."), 400
+
+    question = " ".join(str(body.get("question") or "").split())
+    if not question:
+        return jsonify(error="질문을 입력하세요."), 400
+    if len(question) > chat.MAX_QUESTION:
+        return jsonify(error=f"질문이 너무 길어요 ({chat.MAX_QUESTION}자 이하)."), 400
+    results = chat.clean_results(body.get("results"))
+    if results is None:
+        return jsonify(error="먼저 상품을 검색해주세요."), 400
+    history = chat.clean_history(body.get("history"))
+
+    unlimited = is_local_request()
+    left = None if unlimited else try_use_one("chat_count")
+    if not unlimited and left is None:
+        return jsonify(error=f"오늘 챗봇 대화 {CHAT_DAILY_LIMIT}회를 모두 썼어요. 내일 다시 시도하세요.",
+                       unlimited=False, remaining=0, limit=CHAT_DAILY_LIMIT), 429
+    info = {"unlimited": unlimited, "remaining": left, "limit": None if unlimited else CHAT_DAILY_LIMIT}
+
+    try:
+        out = chat.answer(question, results, history)
+    except EngineError as e:
+        app.logger.warning("chat failed: %s (%s)", e, e.__cause__)
+        status = 503 if str(e) == chat.BUSY_MESSAGE else 502
+        return jsonify(error=str(e), **info), status
+    except Exception:
+        app.logger.exception("chat failed")
+        return jsonify(error="답변 중 오류가 났어요. 잠시 후 다시 시도해주세요.", **info), 502
+    if out["fallback"]:
+        app.logger.info("chat: gemini busy → claude로 재시도함")
+    return jsonify(**out, **info)
 
 
 if __name__ == "__main__":

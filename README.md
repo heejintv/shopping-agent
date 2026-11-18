@@ -43,6 +43,7 @@ GitHub Pages: https://heejintv.github.io/shopping-agent/
 | `GET /search?q=&c=` | 검색. `c`는 원하는 조건(선택). 검색어+조건 조합으로 캐시하고, 캐시에 없으면 Claude 실행(하루 횟수 차감) |
 | `GET /history` | `cache/`에 저장된 검색어 목록 (최근 순) |
 | `GET /history/<파일명>` | 저장된 결과 하나 (Claude 실행·횟수 차감 없음) |
+| `POST /chat` | 상담 챗봇. `{question, results, history}`를 받아 검색 결과 안에서만 답함 (외부 요청 하루 30회) |
 | `GET /health` | 서버 상태, 무제한 여부(`unlimited`)와 남은 검색 횟수(`remaining`) |
 
 Claude에게는 **인기 상위 5개 모델만, 웹 검색은 최대 3번**까지 하도록 지시해서 검색 비용과 시간을 줄였습니다.
@@ -54,6 +55,7 @@ Claude에게는 **인기 상위 5개 모델만, 웹 검색은 최대 3번**까�
 | `index.html` | 화면 (검색창, 원하는 조건, 최근 검색, 추천 카드, 가격 정렬 비교표, 데모 모드) |
 | `config.js` | 검색 서버 주소 (ngrok 고정 도메인) |
 | `app.py` | Flask 백엔드. `claude -p`를 웹 검색 도구만 허용해서 실행하고 결과를 캐시 (`SEARCH_ENGINE`으로 엔진 선택) |
+| `chat.py` | 상담 챗봇. 지시문, 입력 정리, Gemini/Claude 호출과 자동 재시도 |
 | `gemini.py` | Gemini 검색 엔진. Google 검색 연동(grounding)으로 검색하고 결과를 같은 JSON 형식으로 정리 |
 | `links.py` | 상품 링크 검증. 실제 접속해서 페이지 제목에 모델명이 있는 상세 페이지인지 확인 (`python links.py`로 기존 캐시 재검증, 재검색은 안 함) |
 | `make_demo.py` | `cache/`의 검색 결과를 `demo/`로 복사 (GitHub Pages 데모용) |
@@ -79,10 +81,20 @@ Claude에게는 **인기 상위 5개 모델만, 웹 검색은 최대 3번**까�
 |---|---|
 | `SEARCH_ENGINE` | `claude`(기본, `claude -p`) 또는 `gemini`(Gemini API + Google 검색 연동) |
 | `GEMINI_API_KEY` | Gemini API 키 (`gemini`일 때 필요) |
-| `GEMINI_MODEL` | Gemini 모델 이름 (기본 `gemini-2.5-flash`) |
+| `GEMINI_MODEL` | Gemini 모델 이름 (기본 `gemini-3.5-flash-lite`) |
 
 - Gemini 호출이 실패하면(한도 초과, 키 오류 등) 이유를 화면에 보여주고 캐시에는 저장하지 않습니다.
 - 캐시 파일의 `engine`(그리고 Gemini는 `engine_model`)에 어떤 엔진으로 검색했는지 기록합니다.
+
+### 상담 챗봇
+
+결과 화면 오른쪽 아래 💬 버튼을 누르면 **지금 보고 있는 검색 결과 안에서** 상황(예산·용도·취향)에 맞는 상품을 골라 줍니다.
+
+- 답 모양: 추천 1개 / 이유 두 줄 / 사기 전에 확인할 점 하나
+- 웹 검색을 하지 않고, 검색 결과에 없는 상품·가격·정보는 지어내지 않습니다. 쇼핑과 상관없는 질문은 정중히 돌려보냅니다.
+- 엔진: `CHAT_ENGINE=gemini`(기본, 도구 없음) 또는 `claude`(`claude -p`, 도구 전부 끔). Gemini가 429(한도 초과)·503(혼잡)이면 Claude로 한 번 자동 재시도하고, 그래도 실패하면 "잠시 후 다시 시도해주세요"를 보여줍니다.
+- 질문 300자 제한, 최근 대화 6개만 전달, 새 상품을 검색하면 대화 초기화
+- 외부 접속은 하루 30회(`CHAT_DAILY_LIMIT`), 내 PC는 무제한. 허용한 출처(Origin)와 JSON 요청만 받습니다.
 
 ## 실행 방법
 
