@@ -14,7 +14,9 @@
     --cheap: #ea580c; --cheap-soft: #ffeadb;
     --warn: #d97706; --bad: #dc2626;
     --shadow: 0 1px 2px rgba(16,24,40,.04), 0 4px 16px rgba(16,24,40,.06);
-    --ai-glow: #2563eb; --ai-glow-soft: rgba(37,99,235,.45); --ai-bg: #fff4b8;   /* 챗봇 추천 강조 */
+    /* 챗봇 추천 강조: 메인 색(--accent) 하나로. near=가까운 진한 빛, far=멀리 퍼지는 연한 빛 */
+    --ai-near: rgba(37,99,235,.55); --ai-far: rgba(37,99,235,.22); --ai-rest: rgba(37,99,235,.14);
+    --ai-shine: rgba(255,255,255,.55);
   }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #0e1117; --card: #171b23; --text: #e8eaf0; --muted: #9aa3b2; --line: #272d38; --soft: #1f242e;
@@ -23,7 +25,8 @@
             --quality: #b294ff; --quality-soft: #2c2350;
             --cheap: #fb923c; --cheap-soft: #3d2414;
             --warn: #fbbf24; --bad: #f87171; --shadow: none;
-            --ai-glow: #6ea2ff; --ai-glow-soft: rgba(110,162,255,.5); --ai-bg: #4a3f12; }
+            --ai-near: rgba(110,162,255,.75); --ai-far: rgba(110,162,255,.35); --ai-rest: rgba(110,162,255,.24);
+            --ai-shine: rgba(255,255,255,.18); }   /* 다크 모드: 글로우를 조금 더 밝게 */
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
@@ -177,26 +180,42 @@
   #chatCount { padding: 0 14px 8px; font-size: 12px; color: var(--muted); text-align: right; }
   .pick-link { color: inherit; font-weight: 700; text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px; }
   .msg.bot .see { display: inline-block; margin-top: 6px; font-weight: 600; color: var(--accent); }
-  /* 챗봇이 추천한 상품 강조 (2.5초): 파란 글로우 + 1.03배 튀어나오기 + 연노랑 배경이 천천히 빠짐 */
-  @keyframes aiGlow {
-    0%   { box-shadow: 0 0 0 3px var(--ai-glow), 0 0 30px 10px var(--ai-glow-soft); }
-    30%  { box-shadow: 0 0 0 3px var(--ai-glow), 0 0 44px 16px var(--ai-glow-soft); }
-    60%  { box-shadow: 0 0 0 3px var(--ai-glow), 0 0 26px 8px var(--ai-glow-soft); }
-    100% { box-shadow: 0 0 0 0 transparent, 0 0 0 0 transparent; }
+  /* 챗봇이 추천한 상품 강조 (메인 색 하나로)
+     ① 시머: 비스듬한 흰 빛 줄기가 왼쪽→오른쪽으로 한 번 (0.9초)
+     ② 글로우 펄스: 가까운 진한 빛 + 멀리 퍼지는 연한 빛이 숨 쉬듯 두 번 (2초)
+     ③ 튀어나오기 1.02배  ④ 끝나면 1px 메인 색 테두리 + 은은한 글로우만 남김 (다음 질문 전까지) */
+  .pick { --ai-tint: color-mix(in srgb, var(--accent) 6%, var(--card)); }
+  #tbody tr { --ai-tint: color-mix(in srgb, var(--accent) 6%, transparent); }
+  .pick.ai-picked, #tbody tr.ai-picked { box-shadow: 0 0 0 1px var(--accent), 0 0 14px 2px var(--ai-rest); }
+  @keyframes aiPulse {
+    0%       { box-shadow: 0 0 0 1px var(--accent), 0 0 0 0 transparent, 0 0 0 0 transparent; }
+    25%, 75% { box-shadow: 0 0 0 2px var(--accent), 0 0 12px 3px var(--ai-near), 0 0 40px 14px var(--ai-far); }
+    50%      { box-shadow: 0 0 0 1px var(--accent), 0 0 6px 1px var(--ai-near), 0 0 18px 4px var(--ai-far); }
+    100%     { box-shadow: 0 0 0 1px var(--accent), 0 0 14px 2px var(--ai-rest), 0 0 0 0 transparent; }
   }
-  @keyframes aiPop { 0% { transform: scale(1); } 30% { transform: scale(1.03); } 100% { transform: scale(1); } }
-  @keyframes aiBg { from { background-color: var(--ai-bg); } }   /* 끝은 원래 배경색으로 */
+  @keyframes aiPop { 0% { transform: scale(1); } 30% { transform: scale(1.02); } 100% { transform: scale(1); } }
+  @keyframes aiTint { from, 70% { background-color: var(--ai-tint); } }   /* 끝은 원래 배경색으로 */
+  @keyframes aiShimmer { from { background-position: -100% 0; } to { background-position: 250% 0; } }
   .pick.flash, #tbody tr.flash { position: relative; z-index: 2;
-    animation: aiGlow 2.5s ease-out, aiPop .7s cubic-bezier(.34, 1.56, .64, 1), aiBg 2.5s ease-out; }
-  @media (prefers-reduced-motion: reduce) {   /* 움직임 줄이기: 커지는 효과 없이 색만 */
-    .pick.flash, #tbody tr.flash { animation: aiGlow 2.5s ease-out, aiBg 2.5s ease-out; }
-  }
-  /* "✨ AI 추천" 배지: 다음 질문이나 새 검색 전까지 유지 */
-  .ai-badge { display: inline-block; font-size: 12px; font-weight: 700; line-height: 1; padding: 5px 10px; border-radius: 99px;
-              background: var(--accent); color: #fff; box-shadow: 0 2px 8px var(--ai-glow-soft); white-space: nowrap; }
+    animation: aiPulse 2s ease-in-out, aiPop .7s ease-out, aiTint 2s ease-in-out; }
+  /* 시머 띠: 카드·행 위에 겹친 투명 막의 배경으로 그려서 칸 밖으로 넘치지 않음 (행에서도 행 전체를 지나감) */
+  .pick.flash::after, #tbody tr.flash::after, .ai-badge::after {
+    content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+    background: linear-gradient(105deg, transparent 20%, var(--ai-shine) 50%, transparent 80%) no-repeat;
+    background-size: 50% 100%; background-position: -100% 0;
+    animation: aiShimmer .9s ease-in-out forwards; }
+  /* "✨ AI 추천" 배지: 메인 색 그라데이션 + 흰 글자, 붙을 때 같은 시머가 한 번 지나감 */
+  .ai-badge { position: relative; overflow: hidden; display: inline-block; font-size: 12px; font-weight: 700; line-height: 1;
+              padding: 5px 10px; border-radius: 99px; color: #fff; white-space: nowrap;
+              background: linear-gradient(135deg, #1d4ed8, #2563eb 45%, #60a5fa);
+              box-shadow: 0 2px 10px var(--ai-far); }
+  .ai-badge::after { --ai-shine: rgba(255,255,255,.6); animation-delay: .15s; }
   .pick > .ai-badge { position: absolute; top: -12px; right: 14px; z-index: 3; }
   td.model > .ai-badge { margin-bottom: 6px; }
-  .pick.ai-picked { border-color: var(--accent); }
+  @media (prefers-reduced-motion: reduce) {   /* 움직임 줄이기: 시머·튀어나오기 없이 글로우만 */
+    .pick.flash, #tbody tr.flash { animation: aiPulse 2s ease-in-out; }
+    .pick.flash::after, #tbody tr.flash::after, .ai-badge::after { display: none; }
+  }
   #chatBox { transition: transform .3s ease; }
   @media (max-width: 520px) {  /* 휴대폰: 화면 아래쪽 전체를 채팅창으로 */
     #chatBox.peek { transform: translateY(calc(100% - 56px)); }  /* 강조하는 동안 머리글만 남기고 내림 */
@@ -716,7 +735,7 @@ function restoreAiBadge() {
   if (row) addAiBadge(row);
 }
 
-// 추천 상품 카드(없으면 표의 행)로 부드럽게 스크롤하고 2.5초 동안 강조 + "AI 추천" 배지
+// 추천 상품 카드(없으면 표의 행)로 부드럽게 스크롤하고 2초 동안 강조 + "AI 추천" 배지
 let peekTimer, flashTimer, flashTarget;
 function highlightProduct(pickId) {
   const pid = validPick(pickId);
@@ -729,7 +748,7 @@ function highlightProduct(pickId) {
   if ($("chatBox").classList.contains("open") && matchMedia("(max-width: 520px)").matches) {
     $("chatBox").classList.add("peek");
     clearTimeout(peekTimer);
-    peekTimer = setTimeout(() => $("chatBox").classList.remove("peek"), 3000);
+    peekTimer = setTimeout(() => $("chatBox").classList.remove("peek"), 2600);
   }
   target.scrollIntoView({ behavior: "smooth", block: "center" });
   if (aiPick && aiPick.pid !== pid) clearAiBadge();
@@ -740,7 +759,7 @@ function highlightProduct(pickId) {
   void target.offsetWidth;          // 다시 눌러도 애니메이션이 처음부터 나오게
   target.classList.add("flash");
   flashTarget = target;
-  flashTimer = setTimeout(() => target.classList.remove("flash"), 2600);
+  flashTimer = setTimeout(() => target.classList.remove("flash"), 2100);   // 효과 2초 → 끝나면 ai-picked 테두리만 남음
 }
 
 // 내려간 채팅창 머리글을 누르면 바로 다시 올림
