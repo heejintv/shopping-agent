@@ -229,6 +229,8 @@
               font-size: 14px; font-weight: 600; white-space: nowrap; box-shadow: var(--shadow); }
   .wish-btn:hover { border-color: var(--accent); color: var(--accent); }
   .wish-btn .hc { color: var(--accent); }
+  .top-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  .status-link { text-decoration: none; display: inline-block; }
   .heart { border: 0; background: none; color: var(--muted); font-size: 20px; line-height: 1; padding: 4px; transition: transform .15s; }
   .heart:hover { color: var(--accent); transform: scale(1.12); }
   .heart[aria-pressed=true] { color: var(--accent); }
@@ -306,7 +308,10 @@
 <main>
   <div class="top-row">
     <h1>가격비교</h1>
-    <button type="button" id="wishBtn" class="wish-btn"><span class="hc">♥</span> 찜 목록 (<span id="wishCount">0</span>)</button>
+    <div class="top-actions">
+      <a class="wish-btn status-link" href="status.html">📊 서버 상태</a>
+      <button type="button" id="wishBtn" class="wish-btn"><span class="hc">♥</span> 찜 목록 (<span id="wishCount">0</span>)</button>
+    </div>
   </div>
   <p class="sub">상품명을 입력하면 에이전트가 웹을 검색해 인기 모델 5개를 비교해 드려요.</p>
 

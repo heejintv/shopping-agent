@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>서버 상태</title>
+<script src="config.js"></script>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #fff; --text: #171b24; --muted: #6b7280; --line: #e6e8ec; --soft: #f0f2f5;
+    --accent: #2563eb; --accent-soft: #e0eaff;
+    --good: #059669; --good-soft: #dcf5ec;
+    --warn: #b45309; --warn-soft: #fef3c7;
+    --bad: #dc2626; --bad-soft: #fee2e2;
+    --grid: #eceef1;
+    --shadow: 0 1px 2px rgba(16,24,40,.04), 0 4px 16px rgba(16,24,40,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0e1117; --card: #171b23; --text: #e8eaf0; --muted: #9aa3b2; --line: #272d38; --soft: #1f242e;
+            --accent: #6ea2ff; --accent-soft: #1d2f52;
+            --good: #34d399; --good-soft: #12352a;
+            --warn: #fbbf24; --warn-soft: #3b2f0e;
+            --bad: #f87171; --bad-soft: #3d1a1a;
+            --grid: #222833; --shadow: none; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.55 -apple-system, "Segoe UI", "Noto Sans KR", "Malgun Gothic", sans-serif; }
+  main { max-width: 1080px; margin: 0 auto; padding: 32px 16px 64px; }
+  a { color: var(--accent); }
+  .back { font-size: 14px; text-decoration: none; }
+  .back:hover { text-decoration: underline; }
+  .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+  h1 { font-size: 28px; margin: 0; letter-spacing: -.02em; }
+  h2 { font-size: 16px; margin: 0; }
+  .na { color: var(--muted); }
+  .meta { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+
+  /* 상태 표시: 아이콘 + 글자 + 색 (색만으로 구분하지 않음) */
+  .pill { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 99px; font-weight: 700; font-size: 14px;
+          background: var(--soft); color: var(--muted); }
+  .pill .dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
+  .pill.ok { background: var(--good-soft); color: var(--good); }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); }
+  .pill.down, .pill.offline { background: var(--bad-soft); color: var(--bad); }
+  .pill.ok .dot { animation: beat 2s ease-in-out infinite; }
+  @keyframes beat { 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { .pill .dot { animation: none !important; } }
+  .pill small { font-weight: 400; color: var(--text); opacity: .8; }
+
+  #offline { display: none; margin-top: 16px; padding: 14px 16px; border-radius: 12px; background: var(--bad-soft); color: var(--bad); font-weight: 600; }
+  body.is-offline #offline { display: block; }
+  body.is-offline .live { opacity: .45; }
+
+  /* 숫자 카드 */
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 20px; }
+  .tiles.small { grid-template-columns: repeat(4, 1fr); margin-top: 12px; }
+  .tile { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px 18px; box-shadow: var(--shadow); min-width: 0; }
+  .tile .k { color: var(--muted); font-size: 13px; }
+  .tile .v { font-size: 28px; font-weight: 800; letter-spacing: -.02em; line-height: 1.25; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .tile .s { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .tiles.small .tile { padding: 12px 16px; }
+  .tiles.small .v { font-size: 20px; }
+  .tile .v.bad { color: var(--bad); }
+
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 20px; margin-top: 16px; box-shadow: var(--shadow); }
+  .panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid2 .panel { margin-top: 16px; }
+
+  /* 범례 */
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+  .legend i.line { height: 2px; width: 14px; border-radius: 2px; vertical-align: 3px; }
+  .legend i.ring { border-radius: 50%; background: none !important; border: 2px solid var(--bad); }
+
+  /* 선 그래프 */
+  .chart { position: relative; }
+  .chart svg { display: block; width: 100%; overflow: visible; }
+  .chart .axis { fill: var(--muted); font-size: 11px; }
+  .tip { position: absolute; pointer-events: none; display: none; padding: 6px 10px; border-radius: 8px; font-size: 12px; white-space: nowrap;
+         background: var(--text); color: var(--bg); transform: translate(-50%, -120%); }
+  .empty { padding: 40px 0; text-align: center; color: var(--muted); }
+
+  /* 엔진 막대 */
+  .eng { margin-top: 14px; }
+  .eng:first-of-type { margin-top: 4px; }
+  .eng-head { display: flex; justify-content: space-between; gap: 8px; font-size: 14px; }
+  .eng-head b { text-transform: capitalize; }
+  .bar { display: flex; gap: 2px; height: 14px; margin-top: 6px; border-radius: 4px; overflow: hidden; background: var(--soft); }
+  .bar span { display: block; height: 100%; min-width: 0; }
+  .bar .ok { background: var(--accent); }
+  .bar .fail { background: var(--bad); }
+  .eng-fail { margin-top: 4px; font-size: 12px; color: var(--muted); }
+
+  /* 인기 검색어 */
+  ol.top { margin: 0; padding: 0; list-style: none; counter-reset: n; }
+  ol.top li { display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 14px; counter-increment: n; }
+  ol.top li:last-child { border-bottom: 0; }
+  ol.top li::before { content: counter(n); color: var(--muted); font-weight: 700; font-size: 13px; }
+  ol.top .q { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  ol.top .q i { display: block; height: 4px; margin-top: 4px; border-radius: 4px; background: var(--accent); opacity: .8; }
+  ol.top .c { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+
+  details { margin-top: 10px; font-size: 13px; }
+  summary { cursor: pointer; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+
+  @media (max-width: 760px) {
+    .tiles, .tiles.small { grid-template-columns: repeat(2, 1fr); }
+    .grid2 { grid-template-columns: 1fr; gap: 0; }
+    h1 { font-size: 24px; }
+    .tile .v { font-size: 24px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <a class="back" href="./">← 가격비교로 돌아가기</a>
+  <div class="head">
+    <h1>📊 서버 상태</h1>
+    <span class="pill" id="pill" role="status"><span class="dot"></span><span id="pillText">연결 확인 중...</span></span>
+  </div>
+  <p class="meta"><span id="updated">-</span> · 10초마다 자동 새로고침 · <span id="statusReason"></span></p>
+  <div id="offline">🔌 서버 오프라인 — 검색 서버에 연결할 수 없어요. 10초마다 다시 시도해요.</div>
+
+  <div class="live">
+    <div class="tiles">
+      <div class="tile"><div class="k">가동 시간</div><div class="v" id="uptime">-</div><div class="s" id="started">-</div></div>
+      <div class="tile"><div class="k">오늘 요청 수</div><div class="v" id="total">-</div><div class="s" id="kinds">-</div></div>
+      <div class="tile"><div class="k">평균 응답 시간</div><div class="v" id="avg">-</div><div class="s">캐시 적중 제외</div></div>
+      <div class="tile"><div class="k">에러율 (오늘)</div><div class="v" id="errRate">-</div><div class="s" id="errCount">-</div></div>
+    </div>
+    <div class="tiles small">
+      <div class="tile"><div class="k">캐시 적중률</div><div class="v" id="cache">-</div><div class="s" id="cacheSub">-</div></div>
+      <div class="tile"><div class="k">Gemini → Claude 재시도</div><div class="v" id="fallbacks">-</div><div class="s">429·503·504일 때</div></div>
+      <div class="tile"><div class="k">비교 답변 교체 줄</div><div class="v" id="fixed">-</div><div class="s">서버가 이유를 고친 횟수</div></div>
+      <div class="tile"><div class="k">하루 제한 걸림</div><div class="v" id="limited">-</div><div class="s">외부 접속 기준</div></div>
+    </div>
+
+    <section class="panel">
+      <div class="panel-head"><h2>최근 1시간 응답 시간</h2>
+        <div class="legend"><span><i class="line" style="background:var(--accent)"></i>응답 시간</span><span><i class="ring"></i>실패한 요청</span></div></div>
+      <div class="chart" id="lineChart"></div>
+      <details><summary>표로 보기</summary><div id="recentTable"></div></details>
+    </section>
+
+    <div class="grid2">
+      <section class="panel">
+        <div class="panel-head"><h2>엔진별 성공 / 실패 (오늘)</h2>
+          <div class="legend"><span><i style="background:var(--accent)"></i>성공</span><span><i style="background:var(--bad)"></i>실패</span></div></div>
+        <div id="engines"></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>인기 검색어 TOP 5 (오늘)</h2></div>
+        <div id="top"></div>
+      </section>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const pct = v => v == null ? "-" : `${(v * 100).toFixed(v > 0 && v < 0.1 ? 1 : 0)}%`;
+const secs = ms => ms == null ? "-" : ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}초`;
+const KIND = { search: "검색", chat: "채팅", compare: "비교" };
+
+function fmtUptime(s) {
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return d ? `${d}일 ${h}시간` : h ? `${h}시간 ${m}분` : m ? `${m}분` : `${s}초`;
+}
+
+// 연결 순서는 메인 화면과 같음: ① 내 PC 서버 → ② config.js의 ngrok 주소
+const LOCAL_URL = location.port === "5000" ? "" : "http://localhost:5000";
+const NGROK_URL = String(window.APP_CONFIG?.SERVER_URL || "").trim().replace(/\/+$/, "");
+const NGROK_HEADERS = { "ngrok-skip-browser-warning": "1" };
+let base = null, headers = {};
+
+async function getStats(url, hdrs, ms) {
+  const res = await fetch(url + "/stats", { headers: hdrs, signal: AbortSignal.timeout(ms) });
+  if (!res.ok) throw new Error(res.status);
+  return res.json();
+}
+
+async function load() {
+  // 연결된 서버가 있으면 그대로, 실패하면 처음부터 다시 찾기
+  const tries = base !== null ? [[base, headers, 5000]] : [];
+  tries.push([LOCAL_URL, {}, 2000]);
+  if (NGROK_URL) tries.push([NGROK_URL, NGROK_HEADERS, 5000]);
+  for (const [url, h, ms] of tries) {
+    try {
+      const d = await getStats(url, h, ms);
+      base = url; headers = h;
+      document.body.classList.remove("is-offline");
+      render(d);
+      return;
+    } catch (_) { /* 다음 주소 시도 */ }
+  }
+  base = null;
+  document.body.classList.add("is-offline");
+  setPill("offline", "서버 오프라인");
+  $("statusReason").textContent = "마지막으로 받은 값을 흐리게 보여줘요";
+}
+
+function setPill(level, text) {
+  $("pill").className = "pill " + level;
+  const icon = { ok: "✅", warn: "⚠️", down: "⛔", offline: "🔌" }[level] || "";
+  $("pillText").textContent = `${icon} ${text}`;
+}
+
+let last = null;
+function render(d) {
+  last = d;
+  const t = d.today;
+  setPill(d.status.level, d.status.label);
+  $("statusReason").textContent = d.status.reason;
+  $("updated").textContent = `업데이트 ${d.now.slice(11, 19)}`;
+  $("uptime").textContent = fmtUptime(d.uptime_sec);
+  $("started").textContent = `시작 ${d.started_at.replace("T", " ").slice(5, 16)}`;
+  $("total").textContent = t.total.toLocaleString();
+  $("kinds").textContent = `검색 ${t.search} · 채팅 ${t.chat} · 비교 ${t.compare}`;
+  $("avg").textContent = secs(t.avg_ms);
+  $("errRate").textContent = pct(t.error_rate);
+  $("errRate").classList.toggle("bad", t.error_rate >= 0.2);
+  $("errCount").textContent = `실패 ${t.errors}건 / ${t.total}건`;
+  $("cache").textContent = pct(t.cache_rate);
+  $("cacheSub").textContent = `검색 ${t.search}건 중 ${t.cache_hits}건`;
+  $("fallbacks").textContent = t.fallbacks;
+  $("fixed").textContent = `${t.reasons_fixed}줄`;
+  $("limited").textContent = `${t.limited}회`;
+  renderLine(d.recent, d.now_ts);
+  renderEngines(d.engines);
+  renderTop(d.top_queries);
+}
+
+// ---------- 최근 1시간 응답 시간 (선 그래프, 시리즈 1개) ----------
+
+function niceMax(v) {
+  const steps = [1, 2, 5, 10, 15, 20, 30, 60, 120, 300, 600];   // 초
+  const s = v / 1000;
+  return (steps.find(x => x >= s) || Math.ceil(s / 60) * 60) * 1000;
+}
+
+function renderLine(points, now) {
+  const box = $("lineChart");
+  if (!points.length) {
+    box.innerHTML = '<div class="empty">최근 1시간 동안 처리한 요청이 없어요.</div>';
+    $("recentTable").innerHTML = "";
+    return;
+  }
+  const W = Math.max(280, box.clientWidth), H = 220, L = 44, R = 12, T = 12, B = 26;
+  const t0 = now - 3600;
+  const max = niceMax(Math.max(...points.map(p => p.ms), 1000));
+  const x = t => L + (Math.min(Math.max(t, t0), now) - t0) / 3600 * (W - L - R);
+  const y = ms => T + (1 - ms / max) * (H - T - B);
+  const grid = [0, .25, .5, .75, 1].map(f => {
+    const yy = y(max * f);
+    return `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" stroke="var(--grid)" stroke-width="1"/>
+      <text class="axis" x="${L - 6}" y="${yy + 4}" text-anchor="end">${secs(max * f)}</text>`;
+  }).join("");
+  const xt = [60, 45, 30, 15, 0].map(m => {
+    const xx = x(now - m * 60);
+    return `<text class="axis" x="${xx}" y="${H - 6}" text-anchor="${m === 60 ? "start" : m === 0 ? "end" : "middle"}">${m ? `-${m}분` : "지금"}</text>`;
+  }).join("");
+  const path = points.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.ms).toFixed(1)}`).join(" ");
+  const fails = points.filter(p => !p.ok).map(p =>
+    `<circle cx="${x(p.t)}" cy="${y(p.ms)}" r="5" fill="var(--card)" stroke="var(--bad)" stroke-width="2"/>`).join("");
+  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="최근 1시간 응답 시간 선 그래프">
+    ${grid}${xt}
+    <path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    ${points.length === 1 ? `<circle cx="${x(points[0].t)}" cy="${y(points[0].ms)}" r="4" fill="var(--accent)"/>` : ""}
+    ${fails}
+    <line id="cross" x1="0" x2="0" y1="${T}" y2="${H - B}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3" visibility="hidden"/>
+    <circle id="hov" r="5" fill="var(--accent)" stroke="var(--card)" stroke-width="2" visibility="hidden"/>
+    <rect x="${L}" y="0" width="${W - L - R}" height="${H}" fill="transparent" id="hit"/>
+  </svg><div class="tip" id="tip"></div>`;
+
+  // 마우스·터치를 올리면 가장 가까운 요청을 표시 (세로 보조선 + 값)
+  const hit = $("hit"), tip = $("tip"), cross = $("cross"), hov = $("hov");
+  const show = e => {
+    const r = box.querySelector("svg").getBoundingClientRect();
+    const px = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
+    const p = points.reduce((a, b) => Math.abs(x(b.t) - px) < Math.abs(x(a.t) - px) ? b : a);
+    const px2 = x(p.t), py = y(p.ms);
+    cross.setAttribute("x1", px2); cross.setAttribute("x2", px2); cross.setAttribute("visibility", "visible");
+    hov.setAttribute("cx", px2); hov.setAttribute("cy", py); hov.setAttribute("visibility", "visible");
+    hov.setAttribute("fill", p.ok ? "var(--accent)" : "var(--bad)");
+    const time = new Date(p.t * 1000).toTimeString().slice(0, 8);
+    tip.textContent = `${time} · ${KIND[p.kind] || p.kind} · ${secs(p.ms)}${p.ok ? "" : " · 실패"}`;
+    tip.style.left = `${px2}px`; tip.style.top = `${py}px`; tip.style.display = "block";
+  };
+  const hide = () => { tip.style.display = "none"; cross.setAttribute("visibility", "hidden"); hov.setAttribute("visibility", "hidden"); };
+  hit.addEventListener("mousemove", show);
+  hit.addEventListener("touchstart", show, { passive: true });
+  hit.addEventListener("mouseleave", hide);
+
+  $("recentTable").innerHTML = `<table><thead><tr><th>시각</th><th>종류</th><th>응답 시간</th><th>결과</th></tr></thead><tbody>${
+    [...points].reverse().slice(0, 50).map(p => `<tr><td>${new Date(p.t * 1000).toTimeString().slice(0, 8)}</td><td>${KIND[p.kind] || esc(p.kind)}</td><td>${secs(p.ms)}</td><td>${p.ok ? "성공" : "실패"}</td></tr>`).join("")
+  }</tbody></table>`;
+}
+
+// ---------- 엔진별 성공 / 실패 (가로 누적 막대) ----------
+
+function renderEngines(engines) {
+  const rows = Object.entries(engines);
+  const max = Math.max(1, ...rows.map(([, e]) => e.ok + Object.values(e.fail).reduce((a, b) => a + b, 0)));
+  $("engines").innerHTML = rows.map(([name, e]) => {
+    const fail = Object.values(e.fail).reduce((a, b) => a + b, 0);
+    const total = e.ok + fail;
+    const codes = ["429", "503", "504", "other"].filter(c => e.fail[c])
+      .map(c => `${c === "other" ? "기타" : c} ${e.fail[c]}`).join(" · ");
+    return `<div class="eng">
+      <div class="eng-head"><b>${esc(name)}</b><span class="na">성공 ${e.ok} · 실패 ${fail}${total ? ` (${pct(fail / total)})` : ""}</span></div>
+      <div class="bar" title="${esc(name)}: 성공 ${e.ok}, 실패 ${fail}">
+        ${e.ok ? `<span class="ok" style="width:${e.ok / max * 100}%" title="성공 ${e.ok}"></span>` : ""}
+        ${fail ? `<span class="fail" style="width:${fail / max * 100}%" title="실패 ${fail}"></span>` : ""}
+      </div>
+      <div class="eng-fail">${total ? (codes ? `실패 내역: ${codes}` : "실패 없음") : "오늘 호출 없음"}</div></div>`;
+  }).join("");
+}
+
+// ---------- 인기 검색어 TOP 5 ----------
+
+function renderTop(list) {
+  if (!list.length) { $("top").innerHTML = '<div class="empty">오늘 검색한 기록이 없어요.</div>'; return; }
+  const max = list[0].count;
+  $("top").innerHTML = `<ol class="top">${list.map(q =>
+    `<li><span class="q">${esc(q.query)}<i style="width:${q.count / max * 100}%"></i></span><span class="c">${q.count}회</span></li>`).join("")}</ol>`;
+}
+
+let resizeTimer;
+addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => last && renderLine(last.recent, last.now_ts), 150); });
+
+load();
+setInterval(load, 10000);
+</script>
+</body>
+</html>

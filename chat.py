@@ -11,6 +11,7 @@ import re
 import subprocess
 
 import compare
+import stats
 from gemini import EngineError, chat_gemini
 
 MAX_QUESTION = 300
@@ -169,7 +170,7 @@ def chat_claude(system: str, prompt: str, timeout: int) -> str:
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        raise EngineError("답변 시간이 너무 오래 걸렸어요. 다시 시도해 주세요.")
+        raise EngineError("답변 시간이 너무 오래 걸렸어요. 다시 시도해 주세요.", 504)
     except FileNotFoundError:
         raise EngineError("claude 명령을 찾을 수 없어요.")
     if proc.returncode != 0:
@@ -201,21 +202,37 @@ def answer(question: str, results: dict, history: list[dict], is_compare: bool =
     out["answer"], out["pick_id"] = split_pick(out["answer"], results)
     if cmp:   # "같은 점"·"상대가 나은 점"을 말하는 이유 줄은 일반 장점 문장으로 교체
         out["answer"], out["reasons_fixed"] = compare.fix_reasons(out["answer"], out["pick_id"], cmp)
+        stats.bump("reasons_fixed", out["reasons_fixed"])
     if not out["answer"]:
         raise EngineError("빈 답변을 받았어요. 다시 시도해 주세요.")
     return out
 
 
+def _call(engine: str, prompt: str) -> str:
+    """엔진 하나를 호출하고 성공·실패(429/503/504 구분)를 모니터링에 기록한다."""
+    try:
+        text = chat_claude(SYSTEM, prompt, CLAUDE_TIMEOUT) if engine == "claude" else chat_gemini(SYSTEM, prompt, GEMINI_TIMEOUT)
+    except EngineError as e:
+        stats.record_engine(engine, False, e.code)
+        raise
+    except Exception:
+        stats.record_engine(engine, False)
+        raise
+    stats.record_engine(engine, True)
+    return text
+
+
 def _answer(prompt: str) -> dict:
     if chat_engine() == "claude":
-        return {"answer": chat_claude(SYSTEM, prompt, CLAUDE_TIMEOUT), "engine": "claude", "fallback": False}
+        return {"answer": _call("claude", prompt), "engine": "claude", "fallback": False}
     try:
-        return {"answer": chat_gemini(SYSTEM, prompt, GEMINI_TIMEOUT), "engine": "gemini", "fallback": False}
+        return {"answer": _call("gemini", prompt), "engine": "gemini", "fallback": False}
     except EngineError as e:
         if e.code not in RETRY_CODES:
             raise
         first = e
+    stats.bump("fallbacks")
     try:  # Gemini 한도 초과·혼잡 → claude로 한 번만 다시
-        return {"answer": chat_claude(SYSTEM, prompt, CLAUDE_TIMEOUT), "engine": "claude", "fallback": True}
+        return {"answer": _call("claude", prompt), "engine": "claude", "fallback": True}
     except EngineError as e:
         raise EngineError(BUSY_MESSAGE, first.code) from e

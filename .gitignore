@@ -43,3 +43,6 @@ usage.json
 
 # 실행 파일
 cloudflared
+
+# 모니터링 기록 (stats.py)
+logs/

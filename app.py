@@ -12,6 +12,7 @@
 - 내 PC에서 직접 온 요청은 무제한 (is_local_request 참고)
 - 상담 챗봇(/chat, chat.py)은 외부 요청만 하루 CHAT_DAILY_LIMIT회(기본 30회)까지
 - CORS는 GitHub Pages 주소(ALLOWED_ORIGIN)만 허용
+- /stats: 모니터링 요약 (stats.py, 화면은 status.html). 질문 원문·IP는 기록하지 않음
 """
 
 import hashlib
@@ -27,6 +28,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory
 
 import chat
+import stats
 from gemini import EngineError, call_gemini
 from gemini import model_name as gemini_model
 from links import verify_links
@@ -240,9 +242,20 @@ def search_engine() -> str:
 
 
 def call_engine(prompt: str, schema: dict, timeout: int, engine: str) -> dict:
-    if engine == "gemini":
-        return call_gemini(prompt, schema, timeout)
-    return call_claude(prompt, schema, timeout)
+    """검색 엔진 호출. 성공·실패(429/503/504 구분)를 모니터링에 기록한다."""
+    try:
+        out = call_gemini(prompt, schema, timeout) if engine == "gemini" else call_claude(prompt, schema, timeout)
+    except subprocess.TimeoutExpired:
+        stats.record_engine(engine, False, 504)
+        raise
+    except EngineError as e:
+        stats.record_engine(engine, False, e.code)
+        raise
+    except Exception:
+        stats.record_engine(engine, False)
+        raise
+    stats.record_engine(engine, True)
+    return out
 
 
 def call_claude(prompt: str, schema: dict, timeout: int) -> dict:
@@ -317,6 +330,20 @@ def index():
     return send_from_directory(BASE_DIR, "index.html")
 
 
+@app.get("/status.html")
+def status_page():
+    return send_from_directory(BASE_DIR, "status.html")
+
+
+@app.get("/stats")
+def stats_api():
+    """모니터링 요약. 검색 API와 같은 CORS 규칙 + 허용하지 않은 출처는 거절."""
+    origin = request.headers.get("Origin")
+    if origin and origin not in LOCAL_ORIGINS:
+        return jsonify(error="허용되지 않은 출처예요."), 403
+    return jsonify(stats.summary())
+
+
 @app.get("/config.js")
 def config_js():
     return send_from_directory(BASE_DIR, "config.js")
@@ -382,16 +409,20 @@ def search():
     with _locks_guard:
         lock = _locks.setdefault(path.name, threading.Lock())
 
+    t0 = time.time()
+    record = lambda **kw: stats.record_request("search", (time.time() - t0) * 1000, query=q, **kw)  # noqa: E731
     with lock:
         if path.exists():  # 캐시된 결과는 횟수 차감 없음
             data = json.loads(path.read_text(encoding="utf-8"))
             data.pop("cost_usd", None)
             data.update(cached=True, **limit_info())
+            record(cached=True)
             return jsonify(data)
 
         info = limit_info()
         left = None if info["unlimited"] else try_use_one()
         if not info["unlimited"] and left is None:
+            record(limited=True)
             return jsonify(error=f"오늘 새 검색 {DAILY_LIMIT}회를 모두 썼어요. 내일 다시 시도하세요.",
                            unlimited=False, remaining=0, limit=DAILY_LIMIT), 429
 
@@ -400,12 +431,15 @@ def search():
         try:
             data = run_search(q, c, engine)
         except subprocess.TimeoutExpired:
+            record(ok=False, code=504)
             return jsonify(error=f"검색 시간이 {CLAUDE_TIMEOUT}초를 넘었어요. 다시 시도해 주세요."), 504
         except EngineError as e:  # Gemini 한도 초과·키 오류 등은 이유를 화면에 보여줌
             app.logger.warning("gemini search failed: %s (%s)", e, e.__cause__)
+            record(ok=False, code=e.code)
             return jsonify(error=str(e)), 502
         except Exception:  # 실패한 결과는 캐시에 저장하지 않음
             app.logger.exception("search failed")
+            record(ok=False)
             return jsonify(error="검색 중 오류가 났어요. 서버 로그를 확인하세요."), 502
 
         # 링크마다 실제 접속해서 확인 → 실패한 상품만 claude로 한 번 더 찾기 → 그래도 실패하면 링크 없음
@@ -429,6 +463,7 @@ def search():
         data.pop("cost_usd", None)
         info["remaining"] = left
         data.update(cached=False, **info)
+        record()
         return jsonify(data)
 
 
@@ -463,9 +498,13 @@ def chat_api():
             return jsonify(error="먼저 상품을 검색해주세요."), 400
         history = chat.clean_history(body.get("history"))
 
+    kind = "compare" if compare else "chat"
+    t0 = time.time()
+    record = lambda **kw: stats.record_request(kind, (time.time() - t0) * 1000, **kw)  # noqa: E731
     unlimited = is_local_request()
     left = None if unlimited else try_use_one("chat_count")
     if not unlimited and left is None:
+        record(limited=True)
         return jsonify(error=f"오늘 챗봇 대화 {CHAT_DAILY_LIMIT}회를 모두 썼어요. 내일 다시 시도하세요.",
                        unlimited=False, remaining=0, limit=CHAT_DAILY_LIMIT), 429
     info = {"unlimited": unlimited, "remaining": left, "limit": None if unlimited else CHAT_DAILY_LIMIT}
@@ -475,14 +514,17 @@ def chat_api():
     except EngineError as e:
         app.logger.warning("chat failed: %s (%s)", e, e.__cause__)
         status = 503 if str(e) == chat.BUSY_MESSAGE else 502
+        record(ok=False, code=e.code)
         return jsonify(error=str(e), **info), status
     except Exception:
         app.logger.exception("chat failed")
+        record(ok=False)
         return jsonify(error="답변 중 오류가 났어요. 잠시 후 다시 시도해주세요.", **info), 502
     if out.get("reasons_fixed"):
         app.logger.info("chat compare: 이유 %d줄을 일반 장점 문장으로 바꿈", out["reasons_fixed"])
     if out["fallback"]:
         app.logger.info("chat: gemini busy → claude로 재시도함")
+    record()
     return jsonify(**out, **info)
 
 
