@@ -1,1 +1,2 @@
 flask>=3.1
+google-genai>=1.0  # SEARCH_ENGINE=gemini 일 때만 필요

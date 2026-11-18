@@ -1,7 +1,11 @@
 """쇼핑 가격비교 서버.
 
-/search?q=상품명 요청이 오면 `claude -p`를 웹 검색 전용으로 실행해서
-브랜드·모델별 가격 정보를 JSON으로 받아 돌려준다. 결과는 cache/에 저장한다.
+/search?q=상품명 요청이 오면 검색 엔진으로 브랜드·모델별 가격 정보를 JSON으로 받아 돌려준다.
+결과는 cache/에 저장한다 (어떤 엔진으로 검색했는지 engine에 기록).
+
+검색 엔진 (환경변수 SEARCH_ENGINE):
+- claude (기본): `claude -p`를 웹 검색 전용으로 실행
+- gemini: Gemini API + Google 검색 연동 (GEMINI_API_KEY, GEMINI_MODEL 사용, gemini.py)
 
 인터넷에 공개할 때를 위한 보호 장치:
 - ngrok을 거쳐 들어온 새 검색(claude 실행)은 하루 DAILY_LIMIT회(기본 10회)까지. 캐시된 결과는 제한 없음
@@ -21,6 +25,8 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
 
+from gemini import EngineError, call_gemini
+from gemini import model_name as gemini_model
 from links import verify_links
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -217,6 +223,18 @@ def cache_path(q: str, c: str = "") -> Path:
     return CACHE_DIR / f"{key}.json"
 
 
+def search_engine() -> str:
+    """SEARCH_ENGINE 환경변수 (claude 또는 gemini). 모르는 값이면 claude."""
+    engine = (os.environ.get("SEARCH_ENGINE") or "claude").strip().lower()
+    return engine if engine in ("claude", "gemini") else "claude"
+
+
+def call_engine(prompt: str, schema: dict, timeout: int, engine: str) -> dict:
+    if engine == "gemini":
+        return call_gemini(prompt, schema, timeout)
+    return call_claude(prompt, schema, timeout)
+
+
 def call_claude(prompt: str, schema: dict, timeout: int) -> dict:
     """claude -p를 웹 도구만 허용해서 실행하고, 스키마 모양의 결과(dict)를 돌려준다."""
     cmd = [
@@ -241,15 +259,15 @@ def call_claude(prompt: str, schema: dict, timeout: int) -> dict:
     return data
 
 
-def run_claude(q: str, c: str = "") -> dict:
+def run_search(q: str, c: str, engine: str) -> dict:
     prompt = PROMPT.format(q=q) + (CONDITION_PROMPT.format(c=c) if c else "")
-    return call_claude(prompt, build_schema(bool(c)), CLAUDE_TIMEOUT)
+    return call_engine(prompt, build_schema(bool(c)), CLAUDE_TIMEOUT, engine)
 
 
-def retry_links(failed: list[dict]) -> float | None:
-    """검증 실패한 상품들만 claude를 한 번 더 실행해 상세 페이지를 다시 찾고 검증한다. 비용(USD)을 돌려준다."""
+def retry_links(failed: list[dict], engine: str) -> float | None:
+    """검증 실패한 상품들만 같은 엔진으로 한 번 더 상세 페이지를 찾고 검증한다. 비용(USD)을 돌려준다."""
     items = "\n".join(f"{i}. {p['brand']} {p['model']}" for i, p in enumerate(failed, 1))
-    out = call_claude(RETRY_PROMPT.format(items=items), RETRY_SCHEMA, RETRY_TIMEOUT)
+    out = call_engine(RETRY_PROMPT.format(items=items), RETRY_SCHEMA, RETRY_TIMEOUT, engine)
     found = {x.get("no"): x.get("url") for x in out.get("links", [])}
     retried = []
     for i, p in enumerate(failed, 1):
@@ -367,10 +385,14 @@ def search():
                            unlimited=False, remaining=0, limit=DAILY_LIMIT), 429
 
         started = time.time()
+        engine = search_engine()
         try:
-            data = run_claude(q, c)
+            data = run_search(q, c, engine)
         except subprocess.TimeoutExpired:
             return jsonify(error=f"검색 시간이 {CLAUDE_TIMEOUT}초를 넘었어요. 다시 시도해 주세요."), 504
+        except EngineError as e:  # Gemini 한도 초과·키 오류 등은 이유를 화면에 보여줌
+            app.logger.warning("gemini search failed: %s (%s)", e, e.__cause__)
+            return jsonify(error=str(e)), 502
         except Exception:  # 실패한 결과는 캐시에 저장하지 않음
             app.logger.exception("search failed")
             return jsonify(error="검색 중 오류가 났어요. 서버 로그를 확인하세요."), 502
@@ -379,12 +401,15 @@ def search():
         failed = verify_links(data.get("products") or [])
         if failed:
             try:
-                cost = retry_links(failed)
+                cost = retry_links(failed, engine)
                 if cost and data.get("cost_usd") is not None:
                     data["cost_usd"] = round(data["cost_usd"] + cost, 4)
             except Exception:  # 재시도가 실패해도 검색 결과는 그대로 돌려줌 (해당 상품은 링크 확인 안 됨)
                 app.logger.exception("link retry failed")
         data["link_retry"] = len(failed)
+        data["engine"] = engine
+        if engine == "gemini":
+            data["engine_model"] = gemini_model()
         data["query"] = q
         data["condition"] = c or None
         data["searched_at"] = time.strftime("%Y-%m-%d %H:%M:%S")

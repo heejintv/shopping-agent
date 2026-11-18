@@ -11,7 +11,7 @@ CACHE_DIR = BASE_DIR / "cache"
 DEMO_DIR = BASE_DIR / "demo"
 
 # 공개 저장소에 올리지 않을 내부 정보
-DROP_KEYS = {"cost_usd", "cached", "elapsed_sec"}
+DROP_KEYS = {"cost_usd", "cached", "elapsed_sec", "tokens"}
 
 
 def main() -> None:

@@ -53,7 +53,8 @@ Claude에게는 **인기 상위 5개 모델만, 웹 검색은 최대 3번**까�
 |---|---|
 | `index.html` | 화면 (검색창, 원하는 조건, 최근 검색, 추천 카드, 가격 정렬 비교표, 데모 모드) |
 | `config.js` | 검색 서버 주소 (ngrok 고정 도메인) |
-| `app.py` | Flask 백엔드. `claude -p`를 웹 검색 도구만 허용해서 실행하고 결과를 캐시 |
+| `app.py` | Flask 백엔드. `claude -p`를 웹 검색 도구만 허용해서 실행하고 결과를 캐시 (`SEARCH_ENGINE`으로 엔진 선택) |
+| `gemini.py` | Gemini 검색 엔진. Google 검색 연동(grounding)으로 검색하고 결과를 같은 JSON 형식으로 정리 |
 | `links.py` | 상품 링크 검증. 실제 접속해서 페이지 제목에 모델명이 있는 상세 페이지인지 확인 (`python links.py`로 기존 캐시 재검증, 재검색은 안 함) |
 | `make_demo.py` | `cache/`의 검색 결과를 `demo/`로 복사 (GitHub Pages 데모용) |
 | `demo/` | 공개용으로 저장해 둔 검색 결과 |
@@ -69,6 +70,19 @@ Claude에게는 **인기 상위 5개 모델만, 웹 검색은 최대 3번**까�
 - JSON 스키마로 출력 형식을 강제하고, 확인 못 한 값은 `null`로 두도록 지시합니다.
 - 화면에 표시할 때 모든 값을 HTML 이스케이프하고, `http(s)` 링크만 표시합니다.
 - **링크 검증**: Claude가 준 상품 링크에 서버가 직접 접속해 정상 응답이고 페이지 제목에 모델명이 있는지 확인합니다. 실패한 상품만 모아 `claude -p`로 상세 페이지를 **한 번만** 다시 찾게 하고, 그래도 실패하면 버튼 대신 "링크 확인 안 됨"을 표시합니다. 검색 결과 페이지 같은 대체 링크는 쓰지 않으며, 내 PC·내부망 주소(localhost, 192.168.x.x 등)에는 접속하지 않습니다.
+
+### 검색 엔진 선택 (Claude / Gemini)
+
+환경변수(`.env`)로 고릅니다. 화면·JSON 형식·링크 검증 규칙은 엔진과 관계없이 같습니다.
+
+| 변수 | 설명 |
+|---|---|
+| `SEARCH_ENGINE` | `claude`(기본, `claude -p`) 또는 `gemini`(Gemini API + Google 검색 연동) |
+| `GEMINI_API_KEY` | Gemini API 키 (`gemini`일 때 필요) |
+| `GEMINI_MODEL` | Gemini 모델 이름 (기본 `gemini-2.5-flash`) |
+
+- Gemini 호출이 실패하면(한도 초과, 키 오류 등) 이유를 화면에 보여주고 캐시에는 저장하지 않습니다.
+- 캐시 파일의 `engine`(그리고 Gemini는 `engine_model`)에 어떤 엔진으로 검색했는지 기록합니다.
 
 ## 실행 방법
 
