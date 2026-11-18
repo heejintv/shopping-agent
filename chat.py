@@ -33,6 +33,8 @@ SYSTEM = """너는 친절하고 솔직한 쇼핑 도우미야.
 - 검색 결과에 없는 상품을 물으면 쇼핑 질문이니 거절하지 마. "그 상품은 이번 검색 결과에 없어서 비교할 수 없어요"라고 말하고, 원하면 검색 결과 중 비슷한 상품을 추천해.
 - 쇼핑과 상관없는 질문(날씨, 로또 등)이면 정중하게 거절하고, 지금 검색 결과에 대해 물어봐 달라고 안내해.
 - 항상 한국어로 답해.
+- products에서 "overseas": true인 상품은 해외구매(해외직구·병행수입·구매대행) 상품이야. 이런 상품을 추천하면
+  "확인할 점"에 A/S, 배송 기간, 관부가세 중 관련된 내용을 꼭 넣어 (예: "해외구매라 국내 A/S가 어렵고 배송이 1~2주 걸릴 수 있어요").
 
 추천을 할 때는 꼭 이 모양으로 짧게 답해 (마크다운 기호 없이, 딱 4줄):
 추천: 브랜드 모델명 (가격, 검색 결과에 있으면)
@@ -91,6 +93,14 @@ def clean_compare(results) -> dict | None:
     return {"products": cleaned["products"]}
 
 
+OVERSEAS = re.compile(r"해외\s*구매|해외\s*직구|병행\s*수입|구매\s*대행")
+
+
+def is_overseas(p: dict) -> bool:
+    """상품명이나 쇼핑몰 정보에 해외구매·해외직구·병행수입·구매대행이 있으면 True."""
+    return bool(OVERSEAS.search(" ".join(str(p.get(k) or "") for k in ("model", "store"))))
+
+
 def clean_results(results) -> dict | None:
     """브라우저가 보낸 검색 결과에서 답변에 필요한 값만 꺼낸다 (크기 제한, 링크 등 제외)."""
     if not isinstance(results, dict) or not isinstance(results.get("products"), list):
@@ -108,6 +118,8 @@ def clean_results(results) -> dict | None:
             "pros": [t for t in map(_text, (p.get("pros") or [])[:3]) if t] if isinstance(p.get("pros"), list) else [],
             "cons": [t for t in map(_text, (p.get("cons") or [])[:3]) if t] if isinstance(p.get("cons"), list) else [],
         }
+        if is_overseas(p):
+            item["overseas"] = True   # 챗봇이 '확인할 점'에 A/S·배송·관부가세를 넣도록
         if p.get("fit"):
             item["fit"], item["fit_reason"] = _text(p.get("fit"), 10), _text(p.get("fit_reason"))
         if item["model"]:
