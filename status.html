@@ -173,6 +173,11 @@
     </div>
 
     <section class="panel">
+      <div class="panel-head"><h2>새 검색 단계별 시간 (오늘)</h2><span class="na" id="stepMeta"></span></div>
+      <div id="steps"></div>
+    </section>
+
+    <section class="panel">
       <div class="panel-head"><h2>사이트별 링크 확인 (오늘)</h2>
         <div class="legend"><span><i style="background:var(--accent)"></i>성공</span><span><i style="background:var(--bad)"></i>차단 의심</span><span><i style="background:var(--muted)"></i>기타 실패</span></div></div>
       <div id="linkSites"></div>
@@ -277,6 +282,7 @@ function render(d) {
   renderEngines(d.engines);
   renderTop(d.top_queries);
   renderLinkSites(d.links || []);
+  renderSteps(d.steps, t);
 }
 
 // ---------- 최근 1시간 응답 시간 (선 그래프, 시리즈 1개) ----------
@@ -372,6 +378,24 @@ function renderTop(list) {
   const max = list[0].count;
   $("top").innerHTML = `<ol class="top">${list.map(q =>
     `<li><span class="q">${esc(q.query)}<i style="width:${q.count / max * 100}%"></i></span><span class="c">${q.count}회</span></li>`).join("")}</ol>`;
+}
+
+// ---------- 새 검색 단계별 시간 (평균 / 마지막 검색) ----------
+
+const STEP_LABEL = { cache: "캐시 확인", search: "AI 검색", links: "링크 확인", retry: "링크 재검색", finalize: "정리" };
+function renderSteps(st, t) {
+  if (!st || !st.count) {
+    $("steps").innerHTML = '<div class="empty">오늘 새 검색 기록이 없어요.</div>';
+    $("stepMeta").textContent = "";
+    return;
+  }
+  $("stepMeta").textContent = `새 검색 ${st.count}건 · 링크 재검색 ${t.link_retries}건 · 재검색 생략 ${t.link_retry_skipped}건`;
+  const keys = Object.keys(STEP_LABEL);
+  const max = Math.max(1, ...keys.map(k => Math.max(st.avg_ms[k] || 0, st.last?.[k] || 0)));
+  $("steps").innerHTML = keys.map(k => `<div class="eng">
+      <div class="eng-head"><b>${STEP_LABEL[k]}</b><span class="na">평균 ${secs(st.avg_ms[k])}${st.last ? ` · 마지막 ${secs(st.last[k] ?? 0)}` : ""}</span></div>
+      <div class="bar" title="평균 ${secs(st.avg_ms[k])}"><span class="ok" style="width:${(st.avg_ms[k] || 0) / max * 100}%"></span></div></div>`).join("")
+    + (st.last_query ? `<div class="eng-fail" style="margin-top:10px">마지막 검색: “${esc(st.last_query)}”</div>` : "");
 }
 
 // ---------- 사이트별 링크 확인 ("danawa 0/5") ----------

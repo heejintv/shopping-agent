@@ -33,7 +33,7 @@ _day: dict | None = None
 def _empty(today: str) -> dict:
     return {"date": today, "events": [],
             "engines": {e: {"ok": 0, "fail": {c: 0 for c in (*FAIL_CODES, "other")}} for e in ("claude", "gemini")},
-            "counters": {"fallbacks": 0, "reasons_fixed": 0},
+            "counters": {"fallbacks": 0, "reasons_fixed": 0, "link_retries": 0, "link_retry_skipped": 0},
             "links": {}}   # 사이트별 링크 확인 {사이트: {ok, fail, blocked, reasons: {결과: 수}}}
 
 
@@ -82,10 +82,15 @@ def code_key(code) -> str:
 
 # ---------- 기록 ----------
 
+STEP_NAMES = ("cache", "search", "links", "retry", "finalize")   # 캐시 확인, AI 검색, 링크 확인, 링크 재검색, 정리
+
+
 def record_request(kind: str, ms: float, ok: bool = True, cached: bool = False,
-                   limited: bool = False, code=None, query: str | None = None) -> None:
-    """요청 하나를 기록. limited = 하루 제한에 걸림 (서버 오류로 치지 않음)."""
+                   limited: bool = False, code=None, query: str | None = None, steps: dict | None = None) -> None:
+    """요청 하나를 기록. limited = 하루 제한에 걸림 (서버 오류로 치지 않음). steps = 단계별 걸린 시간(ms)."""
     ev = {"t": round(time.time(), 1), "kind": kind, "ms": round(ms), "ok": bool(ok)}
+    if steps:
+        ev["steps"] = {k: round(v) for k, v in steps.items() if k in STEP_NAMES}
     if cached:
         ev["cached"] = True
     if limited:
@@ -164,6 +169,8 @@ def summary() -> dict:
     errors = sum(1 for e in events if not e["ok"])
     counted = [e for e in events if not e.get("limited")]
     top = Counter(e["query"] for e in searches if e.get("query")).most_common(5)
+    timed = [e for e in events if e.get("steps") and not e.get("cached")]   # 새 검색의 단계별 시간
+    avg_steps = {k: round(sum(e["steps"].get(k, 0) for e in timed) / len(timed)) for k in STEP_NAMES} if timed else None
     return {
         "now": datetime.fromtimestamp(now).isoformat(timespec="seconds"),
         "now_ts": round(now, 1),   # 그래프 기준 시각 (보는 사람의 시간대와 무관)
@@ -182,9 +189,13 @@ def summary() -> dict:
             "cache_hits": cache_hits,
             "cache_rate": round(cache_hits / len(searches), 3) if searches else None,
             "fallbacks": day["counters"].get("fallbacks", 0),
+            "link_retries": day["counters"].get("link_retries", 0),             # 링크 재검색(Claude 두 번째 호출)을 한 검색 수
+            "link_retry_skipped": day["counters"].get("link_retry_skipped", 0), # 확인 못 한 링크가 있었지만 차단·시간 초과라 재검색 안 함
             "reasons_fixed": day["counters"].get("reasons_fixed", 0),
         },
         "engines": day["engines"],
+        "steps": {"avg_ms": avg_steps, "count": len(timed),                    # 새 검색 단계별 평균 시간 (ms)
+                  "last": timed[-1]["steps"] if timed else None, "last_query": timed[-1].get("query") if timed else None},
         # 사이트별 링크 확인: "danawa 0/5" (성공/전체), 차단 의심 수와 이유
         "links": sorted(({"site": k, "ok": v["ok"], "total": v["ok"] + v["fail"] + v["blocked"], "blocked": v["blocked"],
                           "fail": v["fail"], "reasons": v.get("reasons", {}),

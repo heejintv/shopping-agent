@@ -47,7 +47,10 @@ BLOCK_REASONS = {"http_401", "http_403", "http_429", "captcha", "timeout"}   # �
 CAPTCHA_MARKS = ("captcha", "recaptcha", "hcaptcha", "cf-chl", "challenge-platform", "just a moment",
                  "access denied", "비정상적인 접근", "접근이 차단", "자동입력 방지", "보안문자")
 
-TIMEOUT = 8            # 초. 링크 하나당
+TIMEOUT = 5            # 초. 링크 하나당 (느린·막힌 사이트에 오래 매달리지 않게)
+WORKERS = 5            # 동시에 확인할 링크 수
+BLOCK_MEMORY_SEC = 30 * 60   # 차단된 사이트를 기억하는 시간 (Render)
+RETRY_REASONS = {"http_404", "http_410", "title_mismatch", "search_page"}   # 링크가 진짜 틀린 경우만 재검색
 MAX_BYTES = 400_000    # 제목만 보면 되므로 페이지 앞부분만 읽음
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/131.0 Safari/537.36")
@@ -127,12 +130,14 @@ def fetch_page_info(url: str) -> tuple[str | None, str]:
             break
         except urllib.error.HTTPError as e:
             reason = f"http_{e.code}"
-            if e.code != 429 and e.code < 500:  # 404·403 등은 다시 해도 같음
+            if e.code < 500:      # 404·403·429 등은 다시 해도 같음 (429는 기다려도 차단이 풀리지 않는 경우가 많음)
                 return None, reason
         except (TimeoutError, socket.timeout):
-            reason = "timeout"
+            return None, "timeout"   # 시간 초과는 다시 해도 대개 또 늦음
         except urllib.error.URLError as e:
-            reason = "timeout" if isinstance(e.reason, (TimeoutError, socket.timeout)) else "error"
+            if isinstance(e.reason, (TimeoutError, socket.timeout)):
+                return None, "timeout"
+            reason = "error"
         except Exception:
             reason = "error"   # 연결 오류 → 한 번 더
     else:
@@ -187,6 +192,24 @@ def note_result(url: str, reason: str) -> None:
             RESULT_HOOK(site, reason)
         except Exception:   # 기록 실패가 검색에 영향을 주지 않게
             pass
+
+
+_blocked_until: dict[str, float] = {}   # 사이트 → 이 시각까지 차단으로 기억 (Render)
+
+
+def remember_block(site: str) -> None:
+    with _recent_lock:
+        _blocked_until[site] = time.time() + BLOCK_MEMORY_SEC
+    log.warning("사이트 차단으로 판단: %s (%d분 동안 확인을 건너뜀)", site, BLOCK_MEMORY_SEC // 60)
+
+
+def site_remembered_blocked(site: str) -> bool:
+    with _recent_lock:
+        until = _blocked_until.get(site, 0)
+        if until and until < time.time():
+            del _blocked_until[site]
+            return False
+    return until > 0
 
 
 def site_blocked(url: str) -> bool:
@@ -346,16 +369,33 @@ def _reject(p: dict, url: str | None) -> None:
             rejected.append(url)
 
 
-def verify_product(p: dict, finalize: bool = True) -> bool:
+def _check(url: str | None, model: str, batch: dict | None) -> tuple[str | None, str]:
+    """링크 하나 확인. Render에서는 같은 검색에서 이미 차단된 사이트나 30분 안에 차단된 사이트를 건너뛴다."""
+    if url and block_mode():
+        site = site_name(url)
+        if site_remembered_blocked(site) or (batch is not None and site in batch["blocked"]):
+            return None, "skipped_blocked"
+    page, reason = check_page_info(url, model)
+    if url and block_mode() and reason in BLOCK_REASONS:
+        site = site_name(url)
+        if batch is not None:
+            batch["blocked"].add(site)              # 같은 검색 안에서는 이 사이트 나머지를 건너뜀
+        if reason in ("http_403", "captcha") or site_blocked(url):
+            if not site_remembered_blocked(site):
+                remember_block(site)                # 다음 검색에서도 30분 동안 바로 '확인 불가'
+    return page, reason
+
+
+def verify_product(p: dict, finalize: bool = True, batch: dict | None = None) -> bool:
     """p["url"]을 검증해서 p를 고친다. 확인되면 True. 연 페이지에서 별점·리뷰 수도 읽는다
     (별점은 확인된 페이지에서만 → 차단된 사이트에서는 읽지 않음).
     원래 링크가 안 되고 p["shop_url"](다른 쇼핑몰)이 있으면 그 주소로 확인한다.
     finalize=False면 실패한 링크를 아직 지우지 않는다 (verify_links가 사이트 차단 여부를 보고 마무리)."""
     url, alt, model = p.get("url"), p.get("shop_url"), p.get("model") or ""
     p.pop("url_status", None)
-    page, reason = check_page_info(url, model)
+    page, reason = _check(url, model, batch)
     if page is None and alt and alt != url:
-        page2, _ = check_page_info(alt, model)
+        page2, _ = _check(alt, model, batch)
         if page2 is not None:
             _reject(p, url)
             p["url_original"] = url          # 원래 링크(예: 다나와)는 기록만
@@ -373,11 +413,13 @@ def verify_product(p: dict, finalize: bool = True) -> bool:
     return False
 
 
-def _finalize_failed(p: dict) -> None:
+def _finalize_failed(p: dict, batch: dict | None = None) -> None:
     """실패한 링크 마무리: Render에서 그 사이트가 차단된 것이면 링크를 남기고 '확인 불가', 아니면 지움."""
     reason = p.pop("_reason", None)
     url = p.get("url")
-    if url and block_mode() and reason in BLOCK_REASONS and site_blocked(url):
+    blocked_site = url and (site_blocked(url) or site_remembered_blocked(site_name(url))
+                            or (batch is not None and site_name(url) in batch["blocked"]))
+    if url and block_mode() and (reason == "skipped_blocked" or (reason in BLOCK_REASONS and blocked_site)):
         p["url_status"] = "unverifiable"   # 화면: 회색 '상품 보기 (미확인)'
         return
     _reject(p, url)
@@ -385,23 +427,28 @@ def _finalize_failed(p: dict) -> None:
 
 
 def verify_links(products: list[dict], on_progress=None) -> list[dict]:
-    """상품들의 링크를 동시에 검증하고, 실패한 상품 목록을 돌려준다.
+    """상품들의 링크를 동시에(5개씩) 검증하고, 다시 찾을 가치가 있는 상품 목록을 돌려준다.
+    재검색 대상은 링크가 진짜 틀린 경우(404, 다른 상품·검색 페이지)만. 차단·시간 초과·연결 오류는 다시 찾아도 같아서 뺀다.
     on_progress(끝난 개수, 전체 개수)를 주면 하나 끝날 때마다 알려준다 (진행 상황 표시용)."""
     if not products:
         return []
+    batch = {"blocked": set()}   # 이번 검색에서 차단된 사이트
     ok = [False] * len(products)
-    with ThreadPoolExecutor(max_workers=4) as pool:  # 한 사이트에 너무 몰아서 접속하지 않도록
-        futures = {pool.submit(verify_product, p, False): i for i, p in enumerate(products)}
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        futures = {pool.submit(verify_product, p, False, batch): i for i, p in enumerate(products)}
         for done, f in enumerate(as_completed(futures), 1):
             ok[futures[f]] = f.result()
             if on_progress:
                 on_progress(done, len(products))
     # 모두 확인한 뒤에 사이트별 차단 여부를 보고 실패한 링크를 마무리
+    retry = []
     for p, good in zip(products, ok):
-        if not good:
-            _finalize_failed(p)
-    # 확인 불가(차단된 사이트) 링크는 다시 찾아도 확인할 수 없으므로 재검색 대상에서 뺌
-    return [p for p, good in zip(products, ok) if not good and p.get("url_status") != "unverifiable"]
+        if good:
+            continue
+        if p.get("_reason") in RETRY_REASONS:
+            retry.append(p)
+        _finalize_failed(p, batch)
+    return retry
 
 
 def migrate_old(p: dict) -> None:

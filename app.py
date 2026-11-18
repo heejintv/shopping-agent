@@ -203,6 +203,9 @@ def build_schema(with_condition: bool) -> dict:
     return schema
 
 app = Flask(__name__)
+if not app.debug:
+    import logging
+    app.logger.setLevel(logging.INFO)   # 단계별 시간 같은 info 로그도 남김 (gunicorn·Render 로그)
 
 # 같은 검색어가 동시에 들어오면 claude를 한 번만 실행하도록 검색어별 잠금
 _locks: dict[str, threading.Lock] = {}
@@ -414,21 +417,36 @@ def retry_links(failed: list[dict], engine: str, job: Job | None = None) -> floa
     return out.get("cost_usd")
 
 
-def perform_search(q: str, c: str, path: Path, engine: str, step=None, job: Job | None = None) -> dict:
+STEP_LABELS = {"cache": "캐시", "search": "AI 검색", "links": "링크 확인", "retry": "링크 재검색", "finalize": "정리"}
+
+
+def log_steps(q: str, timings: dict) -> None:
+    app.logger.info("검색 단계 시간 [%s] %s", q, " · ".join(f"{STEP_LABELS[k]} {v / 1000:.1f}초" for k, v in timings.items()))
+
+
+def perform_search(q: str, c: str, path: Path, engine: str, step=None, job: Job | None = None,
+                   timings: dict | None = None) -> dict:
     """새 검색 본체: 엔진 검색 → 링크 검증(실패한 것만 한 번 재검색) → 문구 정리 → 캐시 저장.
     step(단계, 글자, done, total)로 진행 상황을 알린다. 예외(시간 초과·엔진 오류·취소)는 호출한 쪽에서 처리."""
     step = step or (lambda *a, **k: None)
     check = job.check if job else (lambda: None)
+    timings = timings if timings is not None else {}
     started = time.time()
+    t = time.time()
     step("search", "AI가 웹 검색 중")
     data = run_search(q, c, engine, job)
+    timings["search"] = (time.time() - t) * 1000
     check()
     products = data.get("products") or []
+    t = time.time()
     step("links", "링크 확인 중", 0, len(products))
-    # 링크마다 실제 접속해서 확인 → 실패한 상품만 한 번 더 찾기 → 그래도 실패하면 링크 없음
-    failed = verify_links(products, on_progress=lambda d, t: step("links", "링크 확인 중", d, t))
+    # 링크마다 실제 접속해서 확인 → 진짜 틀린 링크(404·다른 상품 페이지)만 한 번 더 찾기 → 그래도 실패하면 링크 없음
+    failed = verify_links(products, on_progress=lambda d, n: step("links", "링크 확인 중", d, n))
+    timings["links"] = (time.time() - t) * 1000
     check()
+    t = time.time()
     if failed:
+        stats.bump("link_retries")
         step("links", "링크 다시 찾는 중", len(products) - len(failed), len(products))
         try:
             cost = retry_links(failed, engine, job)
@@ -438,7 +456,11 @@ def perform_search(q: str, c: str, path: Path, engine: str, step=None, job: Job 
             raise
         except Exception:  # 재시도가 실패해도 검색 결과는 그대로 돌려줌 (해당 상품은 링크 확인 안 됨)
             app.logger.exception("link retry failed")
+    elif any(p.get("url_verified") is False for p in products):
+        stats.bump("link_retry_skipped")   # 확인 못 한 링크는 있지만 차단·시간 초과라 재검색 안 함
+    timings["retry"] = (time.time() - t) * 1000
     check()
+    t = time.time()
     step("finalize", "결과 정리 중")
     polish_result(data)   # 추천 이유 끝맺음을 "~해요/~예요"로
     data["link_retry"] = len(failed)
@@ -451,6 +473,7 @@ def perform_search(q: str, c: str, path: Path, engine: str, step=None, job: Job 
     data["elapsed_sec"] = round(time.time() - started, 1)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     data.pop("cost_usd", None)
+    timings["finalize"] = (time.time() - t) * 1000
     return data
 
 
@@ -590,8 +613,10 @@ def search():
     lock = query_lock(path)
 
     t0 = time.time()
+    timings = {}
     record = lambda **kw: stats.record_request("search", (time.time() - t0) * 1000, query=q, **kw)  # noqa: E731
     with lock:
+        timings["cache"] = (time.time() - t0) * 1000
         if path.exists():  # 캐시된 결과는 횟수 차감 없음
             data = polish_result(json.loads(path.read_text(encoding="utf-8")))   # 예전 캐시의 "~있음" 같은 끝맺음 다듬기
             data.pop("cost_usd", None)
@@ -608,7 +633,7 @@ def search():
 
         engine = search_engine()
         try:
-            data = perform_search(q, c, path, engine)
+            data = perform_search(q, c, path, engine, timings=timings)
         except subprocess.TimeoutExpired:
             record(ok=False, code=504)
             return jsonify(error=f"검색 시간이 {CLAUDE_TIMEOUT}초를 넘었어요. 다시 시도해 주세요."), 504
@@ -622,7 +647,8 @@ def search():
             return jsonify(error="검색 중 오류가 났어요. 서버 로그를 확인하세요."), 502
         info["remaining"] = left
         data.update(cached=False, **info)
-        record()
+        log_steps(q, timings)
+        record(steps=timings)
         return jsonify(data)
 
 
@@ -654,8 +680,10 @@ def search_stream():
         t0 = time.time()
         record = lambda **kw: stats.record_request("search", (time.time() - t0) * 1000, query=q, **kw)  # noqa: E731
         left = None
+        timings = {}
         try:
             with query_lock(path):
+                timings["cache"] = (time.time() - t0) * 1000
                 step("cache", "캐시 확인")
                 if path.exists():
                     data = polish_result(json.loads(path.read_text(encoding="utf-8")))
@@ -672,9 +700,10 @@ def search_stream():
                     job.emit("error", {"error": f"오늘 새 검색 {DAILY_LIMIT}회를 모두 썼어요. 내일 다시 시도하세요.",
                                        "status": 429, "unlimited": False, "remaining": 0, "limit": DAILY_LIMIT})
                     return
-                data = perform_search(q, c, path, search_engine(), step, job)
+                data = perform_search(q, c, path, search_engine(), step, job, timings)
                 data.update(cached=False, **{**info, "remaining": left})
-                record()
+                log_steps(q, timings)
+                record(steps=timings)
                 job.emit("result", data)
         except Cancelled:
             if left is not None:
