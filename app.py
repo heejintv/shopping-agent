@@ -32,6 +32,7 @@ import stats
 from gemini import EngineError, call_gemini
 from gemini import model_name as gemini_model
 from links import verify_links
+from polish import polish_result
 
 BASE_DIR = Path(__file__).resolve().parent
 CACHE_DIR = BASE_DIR / "cache"
@@ -106,6 +107,7 @@ PROMPT = """상품 "{q}"의 한국 쇼핑몰(다나와·네이버쇼핑·쿠팡 
   웹페이지 읽기로 실제로 열어서 확인한 주소만 쓰고, 추측해서 만들지 마. 확인 못 하면 null.
 - 확인 못 한 값은 null(목록은 빈 배열). 지어내지 마.
 - value_pick(가성비)·quality_pick(품질): products의 model 이름 그대로 + 이유 한 줄. 근거 없으면 null.
+- 이유(reason, fit_reason)는 "~해요", "~예요"로 끝나는 문장으로 써. "~있음", "~함", "~다", "~입니다" 같은 끝맺음은 쓰지 마.
 - notes: 주의사항 한 문장 또는 null.
 """
 
@@ -388,7 +390,7 @@ def history_item(name):
     path = CACHE_DIR / f"{key}.json"
     if not HISTORY_ID.match(key) or not path.exists():
         return jsonify(error="저장된 검색 결과가 없어요."), 404
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = polish_result(json.loads(path.read_text(encoding="utf-8")))
     data.pop("cost_usd", None)
     data.update(cached=True, **limit_info())
     return jsonify(data)
@@ -413,7 +415,7 @@ def search():
     record = lambda **kw: stats.record_request("search", (time.time() - t0) * 1000, query=q, **kw)  # noqa: E731
     with lock:
         if path.exists():  # 캐시된 결과는 횟수 차감 없음
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = polish_result(json.loads(path.read_text(encoding="utf-8")))   # 예전 캐시의 "~있음" 같은 끝맺음 다듬기
             data.pop("cost_usd", None)
             data.update(cached=True, **limit_info())
             record(cached=True)
@@ -451,6 +453,7 @@ def search():
                     data["cost_usd"] = round(data["cost_usd"] + cost, 4)
             except Exception:  # 재시도가 실패해도 검색 결과는 그대로 돌려줌 (해당 상품은 링크 확인 안 됨)
                 app.logger.exception("link retry failed")
+        polish_result(data)   # 추천 이유 끝맺음을 "~해요/~예요"로
         data["link_retry"] = len(failed)
         data["engine"] = engine
         if engine == "gemini":

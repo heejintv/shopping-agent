@@ -18,7 +18,7 @@
       ],
       "url": "https://prod.danawa.com/info/?pcode=28887164",
       "fit": "높음",
-      "fit_reason": "산리오 캐릭터 디자인이라 '귀여운 디자인' 조건에 가장 잘 맞음",
+      "fit_reason": "산리오 캐릭터 디자인이라 '귀여운 디자인' 조건에 가장 잘 맞아요",
       "url_verified": true
     },
     {
@@ -38,7 +38,7 @@
       ],
       "url": "https://prod.danawa.com/info/?pcode=28887134",
       "fit": "높음",
-      "fit_reason": "마이멜로디 캐릭터 디자인으로 조건에 잘 맞음",
+      "fit_reason": "마이멜로디 캐릭터 디자인으로 조건에 잘 맞아요",
       "url_verified": true
     },
     {
@@ -58,7 +58,7 @@
       ],
       "url": null,
       "fit": "보통",
-      "fit_reason": "러블리 퍼플 컬러의 미니 사이즈지만 캐릭터 디자인은 아님",
+      "fit_reason": "러블리 퍼플 컬러의 미니 사이즈지만 캐릭터 디자인은 아니에요",
       "url_verified": false,
       "url_rejected": [
         "https://search.danawa.com/dsearch.php?query=%ED%9C%B4%EB%8C%80%EC%9A%A9%EA%B3%A0%EB%8D%B0%EA%B8%B0"
@@ -81,7 +81,7 @@
       ],
       "url": null,
       "fit": "보통",
-      "fit_reason": "작은 미니 디자인이지만 귀여운 디자인인지 따로 확인되지 않음",
+      "fit_reason": "작은 미니 디자인이지만 귀여운 디자인인지 따로 확인되지 않아요",
       "url_verified": false,
       "url_rejected": [
         "https://search.danawa.com/dsearch.php?query=%ED%9C%B4%EB%8C%80%EC%9A%A9%EA%B3%A0%EB%8D%B0%EA%B8%B0"
@@ -104,7 +104,7 @@
       ],
       "url": null,
       "fit": "보통",
-      "fit_reason": "'티니' 미니 사이즈라 아기자기하지만 디자인 정보는 제한적임",
+      "fit_reason": "'티니' 미니 사이즈라 아기자기하지만 디자인 정보는 제한적이에요",
       "url_verified": false,
       "url_rejected": [
         "https://search.danawa.com/dsearch.php?query=%ED%9C%B4%EB%8C%80%EC%9A%A9%EA%B3%A0%EB%8D%B0%EA%B8%B0"
@@ -113,11 +113,11 @@
   ],
   "value_pick": {
     "model": "디하우트 러블리 미니 무선 고데기",
-    "reason": "3만 원대 가격에 평점 4.71과 리뷰 999건 이상으로 검증이 가장 많이 됨"
+    "reason": "3만 원대 가격에 평점 4.71과 리뷰 999건 이상으로 검증이 가장 많이 돼요"
   },
   "quality_pick": {
     "model": "디하우트 프리미엄 미니 무선 고데기",
-    "reason": "리뷰 647건에서 평점 4.80으로 후기가 충분하면서 평점이 가장 높음"
+    "reason": "리뷰 647건에서 평점 4.80으로 후기가 충분하면서 평점이 가장 높아요"
   },
   "notes": "가격은 검색 시점 기준이고 디하우트 러블리의 리뷰 수는 '999+'로만 표시되며, 산리오 제품은 판매처에 따라 가격 차이가 커서(약 5만~11만 원) 구매 전 다나와에서 최신 가격을 확인하세요.",
   "query": "고데기",

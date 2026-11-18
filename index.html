@@ -133,9 +133,14 @@
 
   /* 추천 카드 */
   #results { display: none; }
-  .result-title { display: flex; align-items: baseline; gap: 8px; margin: 28px 0 0; }
+  .result-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin: 28px 0 0; }
+  .few { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, var(--card));
+         padding: 2px 10px; border-radius: 99px; }
   .result-title h2 { font-size: 20px; }
   .picks { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin-top: 12px; }
+  @media (min-width: 761px) {   /* 같은 상품을 합쳐 카드가 줄면 남은 카드가 가로 공간을 고르게 나눔 */
+    .picks { grid-template-columns: repeat(var(--n, 3), minmax(0, 1fr)); }
+  }
   .pick { --c: var(--accent); --c-soft: var(--accent-soft);
           position: relative; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line);
           border-top: 4px solid var(--c); border-radius: 16px; padding: 20px; box-shadow: var(--shadow); }
@@ -143,6 +148,10 @@
   .pick.quality { --c: var(--quality); --c-soft: var(--quality-soft); }
   .pick.cheap { --c: var(--cheap); --c-soft: var(--cheap-soft); }
   .tag { align-self: flex-start; font-size: 13px; font-weight: 700; padding: 3px 10px; border-radius: 99px; background: var(--c-soft); color: var(--c); }
+  .tags { display: flex; flex-wrap: wrap; gap: 6px; padding-right: 30px; }   /* 오른쪽은 ♡ 자리 */
+  .tag.t-value { background: var(--value-soft); color: var(--value); }
+  .tag.t-quality { background: var(--quality-soft); color: var(--quality); }
+  .tag.t-cheap { background: var(--cheap-soft); color: var(--cheap); }
   .pick .brand { color: var(--muted); font-size: 13px; margin-top: 14px; }
   .pick .name { font-size: 18px; font-weight: 700; line-height: 1.35; letter-spacing: -.01em; }
   .pick .price { font-size: 30px; font-weight: 800; letter-spacing: -.02em; margin: 10px 0 2px; }
@@ -151,7 +160,17 @@
   .pick .go { margin-top: auto; padding-top: 14px; }
   .pick .go a { display: inline-block; font-size: 14px; font-weight: 600; color: var(--c); text-decoration: none; }
   .pick .go a:hover { text-decoration: underline; }
-  .pick.empty .why { background: none; padding: 0; color: var(--muted); }
+  .pick .why + .why { margin-top: 8px; }
+  .pick .why b { color: var(--c); font-size: 12px; margin-right: 4px; }
+  /* 판단할 정보가 부족한 카드: 배지 위치·여백·높이는 같게, 내용은 가운데 회색 안내, 배경은 살짝 흐리게 */
+  .pick.empty { background: color-mix(in srgb, var(--card) 55%, var(--soft)); border-top-color: color-mix(in srgb, var(--c) 45%, var(--line));
+                box-shadow: none; min-height: 220px; }
+  .pick.empty .tag { opacity: .75; }
+  .empty-body { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+                padding: 18px 8px 8px; text-align: center; color: var(--muted); }
+  .empty-body svg { width: 40px; height: 40px; opacity: .55; }
+  .empty-body b { font-size: 15px; font-weight: 600; color: var(--muted); }
+  .empty-body small { font-size: 13px; opacity: .85; }
 
   /* 비교표 */
   .table-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
@@ -454,7 +473,7 @@
   <div class="panel" id="error"></div>
 
   <div id="results">
-    <div class="result-title"><h2 id="rq"></h2><span class="na" id="rcount"></span></div>
+    <div class="result-title"><h2 id="rq"></h2><span class="na" id="rcount"></span><span class="few" id="rfew" hidden>찾은 모델이 적어요 · 다른 검색어로도 찾아보세요</span></div>
     <div class="req-cond" id="reqCond"></div>
     <div class="panel nomatch" id="nomatch"></div>
     <div class="picks" id="picks"></div>
@@ -871,6 +890,7 @@ function render(d) {
 
   $("rq").textContent = `“${d.query || $("q").value.trim()}” 비교 결과`;
   $("rcount").textContent = `${items.length}개 모델`;
+  $("rfew").hidden = !(items.length > 0 && items.length <= 3);   // 3개 이하면 다른 검색어 안내
   $("reqCond").innerHTML = cond ? `요청한 조건: <b>${esc(cond)}</b>` : "";
   $("reqCond").style.display = cond ? "block" : "none";
   $("meta").textContent = [
@@ -896,25 +916,47 @@ function render(d) {
   const valueP = findByModel(d.value_pick?.model);
   const qualityP = findByModel(d.quality_pick?.model);
 
-  const picks = [
-    ["value", "💰 가성비 추천", valueP, d.value_pick?.reason, d.value_pick?.model],
-    ["quality", "⭐ 품질 추천", qualityP, d.quality_pick?.reason, d.quality_pick?.model],
-    ["cheap", "🏷️ 최저가", cheapest, cheapest && "확인된 가격 중 가장 저렴해요.", null],
+  // 가성비·품질·최저가 중 같은 상품이면 카드 하나로 합치고 배지를 여러 개 붙임
+  const kinds = [
+    { cls: "value", tag: "💰 가성비 추천", label: "가성비", p: valueP, why: d.value_pick?.reason, name: d.value_pick?.model,
+      empty: "가격과 장단점을 함께 비교할 정보가 부족해요" },
+    { cls: "quality", tag: "⭐ 품질 추천", label: "품질", p: qualityP, why: d.quality_pick?.reason, name: d.quality_pick?.model,
+      empty: "별점이나 리뷰 정보가 있는 상품이 적어요" },
+    { cls: "cheap", tag: "🏷️ 최저가", label: "최저가", p: cheapest, why: cheapest && "확인된 가격 중 가장 저렴해요", name: null,
+      empty: "가격이 확인된 상품이 없어요", generic: true },
   ];
+  const cards = [];
+  for (const k of kinds) {
+    const same = k.p && cards.find(c => c.p === k.p);
+    if (same) {
+      same.kinds.push(k);
+      // 최저가의 일반 문구는 다른 이유가 없을 때만
+      if (k.why && (!k.generic || !same.whys.length) && !same.whys.some(w => w.text === k.why)) same.whys.push({ label: k.label, text: k.why });
+      continue;
+    }
+    cards.push({ p: k.p, name: k.name, kinds: [k], whys: k.why ? [{ label: k.label, text: k.why }] : [] });
+  }
+  $("picks").style.setProperty("--n", cards.length);
+
   const pid = p => p ? ` data-pid="${items.indexOf(p)}"` : "";   // 챗봇 추천 id = products 순서
-  $("picks").innerHTML = picks.map(([cls, tag, p, why, fallbackName]) => {
-    if (!p && !fallbackName) {
-      return `<div class="pick ${cls} empty"><span class="tag">${tag}</span><p class="why">판단할 정보가 부족해요.</p></div>`;
+  const EMPTY_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+    <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/><path d="M9.2 9.2a1.9 1.9 0 1 1 2.6 1.8c-.5.2-.8.6-.8 1.1v.3"/><circle cx="11" cy="14.6" r=".6" fill="currentColor"/></svg>`;
+  $("picks").innerHTML = cards.map(({ p, name, kinds: ks, whys }) => {
+    const tags = `<div class="tags">${ks.map(k => `<span class="tag t-${k.cls}">${k.tag}</span>`).join("")}</div>`;
+    if (!p && !name) {   // 판단할 정보 부족: ♡·상품 보기 없이 가운데 안내
+      return `<div class="pick ${ks[0].cls} empty">${tags}
+        <div class="empty-body">${EMPTY_ICON}<b>판단할 정보가 부족해요</b><small>${ks[0].empty}</small></div></div>`;
     }
     const url = productUrl(p);
     const price = p ? fmtPrice(p.price, p.currency) : null;
-    return `<div class="pick ${cls}"${pid(p)}><span class="tag">${tag}</span>${p ? heartBtn(p, items.indexOf(p)) : ""}
+    const whyHtml = whys.map(w => `<p class="why">${whys.length > 1 ? `<b>${w.label}</b>` : ""}${esc(w.text)}</p>`).join("");
+    return `<div class="pick ${ks[0].cls}"${pid(p)}>${tags}${p ? heartBtn(p, items.indexOf(p)) : ""}
       ${p ? `<div class="brand">${esc(p.brand)}</div>` : ""}
-      <div class="name">${esc(p ? p.model : fallbackName)}</div>
+      <div class="name">${esc(p ? p.model : name)}</div>
       ${cond && p ? fitBadge(p.fit) : ""}
       <div class="price">${price ?? '<span class="na" style="font-size:16px;font-weight:400">가격 확인 안 됨</span>'}</div>
       ${p?.store ? `<div class="store">${esc(p.store)}</div>` : ""}
-      ${why ? `<p class="why">${esc(why)}</p>` : ""}
+      ${whyHtml}
       ${url ? `<div class="go"><a href="${esc(url)}" target="_blank" rel="noopener noreferrer">상품 보기 →</a></div>`
             : p ? `<div class="go">${NOLINK}</div>` : ""}</div>`;
   }).join("");

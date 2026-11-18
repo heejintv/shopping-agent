@@ -6,6 +6,8 @@
 import json
 from pathlib import Path
 
+from polish import polish_result
+
 BASE_DIR = Path(__file__).resolve().parent
 CACHE_DIR = BASE_DIR / "cache"
 DEMO_DIR = BASE_DIR / "demo"
@@ -18,7 +20,7 @@ def main() -> None:
     DEMO_DIR.mkdir(exist_ok=True)
     manifest = []
     for src in sorted(CACHE_DIR.glob("*.json")):
-        data = json.loads(src.read_text(encoding="utf-8"))
+        data = polish_result(json.loads(src.read_text(encoding="utf-8")))   # 추천 이유 끝맺음 다듬기
         if not data.get("query") or not (data.get("products") or data.get("condition")):
             continue
         for k in DROP_KEYS:

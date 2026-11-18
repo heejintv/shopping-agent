@@ -17,7 +17,7 @@
       ],
       "url": "https://prod.danawa.com/info/?pcode=10058121&cate=102207",
       "fit": "높음",
-      "fit_reason": "무게 0.6kg 초경량 핸디형",
+      "fit_reason": "무게 0.6kg 초경량 핸디형이에요",
       "url_verified": true
     },
     {
@@ -37,7 +37,7 @@
       ],
       "url": "https://prod.danawa.com/info/?pcode=18868094&cate=102207",
       "fit": "높음",
-      "fit_reason": "스틱형 중 가장 가벼운 1.5kg",
+      "fit_reason": "스틱형 중 가장 가벼운 1.5kg이에요",
       "url_verified": true
     },
     {
@@ -57,7 +57,7 @@
       ],
       "url": "https://prod.danawa.com/info/?pcode=98230349&cate=102207",
       "fit": "높음",
-      "fit_reason": "무게 1.7kg으로 가볍고 자동 먼지비움 기능도 있음",
+      "fit_reason": "무게 1.7kg으로 가볍고 자동 먼지비움 기능도 있어요",
       "url_verified": true
     },
     {
@@ -77,7 +77,7 @@
       ],
       "url": "https://prod.danawa.com/info/?pcode=123803664&cate=102207",
       "fit": "보통",
-      "fit_reason": "2kg 미만이지만 1.5~1.7kg 모델보다 무거움",
+      "fit_reason": "2kg 미만이지만 1.5~1.7kg 모델보다 무거워요",
       "url_verified": true
     },
     {
@@ -96,17 +96,17 @@
       ],
       "url": "https://prod.danawa.com/info/?pcode=17785652&cate=102207",
       "fit": "보통",
-      "fit_reason": "경량형으로 소개되지만 실제 무게는 확인하지 못함",
+      "fit_reason": "경량형으로 소개되지만 실제 무게는 확인하지 못해요",
       "url_verified": true
     }
   ],
   "value_pick": {
     "model": "미홀 M22",
-    "reason": "스틱형 중 가장 가벼운 1.5kg이고 가격은 13만 원대로 낮음"
+    "reason": "스틱형 중 가장 가벼운 1.5kg이고 가격은 13만 원대로 낮아요"
   },
   "quality_pick": {
     "model": "샤크 에보파워 시스템 부스트+ LC751KRLV",
-    "reason": "1.7kg으로 가벼우면서 관절형 파이프와 자동 먼지비움 거치대를 갖춘 상위 모델"
+    "reason": "1.7kg으로 가벼우면서 관절형 파이프와 자동 먼지비움 거치대를 갖춘 상위 모델이에요"
   },
   "notes": "다나와 상세 페이지에서 별점·리뷰가 로딩되지 않아 rating·review_count는 모두 null이고, 장단점은 리뷰가 아닌 상품 스펙·소개 문구 기준이며 가격은 2026-11-18 조회 시점 최저가라 바뀔 수 있음.",
   "link_retry": 0,
