@@ -1,0 +1,126 @@
+{
+  "products": [
+    {
+      "brand": "로이체",
+      "model": "로이체 산리오 무선 미니 고데기 (쿠로미)",
+      "price": 49890,
+      "currency": "KRW",
+      "store": "다나와 최저가",
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "산리오 쿠로미 캐릭터 디자인",
+        "178g 경량 무선으로 휴대 편리"
+      ],
+      "cons": [
+        "성능은 애매하다는 후기 있음",
+        "가격 대비 만족도 엇갈림"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=28887164",
+      "fit": "높음",
+      "fit_reason": "산리오 캐릭터 디자인이라 '귀여운 디자인' 조건에 가장 잘 맞음",
+      "url_verified": true
+    },
+    {
+      "brand": "로이체",
+      "model": "로이체 산리오 무선 미니 고데기 (마이멜로디)",
+      "price": null,
+      "currency": "KRW",
+      "store": null,
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "산리오 마이멜로디 캐릭터 디자인",
+        "온도 3단계(160~200℃) 조절 가능"
+      ],
+      "cons": [
+        "사용시간 45분으로 짧음"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=28887134",
+      "fit": "높음",
+      "fit_reason": "마이멜로디 캐릭터 디자인으로 조건에 잘 맞음",
+      "url_verified": true
+    },
+    {
+      "brand": "디하우트",
+      "model": "디하우트 러블리 미니 무선 고데기",
+      "price": 34900,
+      "currency": "KRW",
+      "store": "디하우트랩(다나와)",
+      "rating": 4.71,
+      "review_count": 999,
+      "pros": [
+        "리뷰 999건 이상, 평점 4.71",
+        "작고 가벼운 미니 무선 고데기"
+      ],
+      "cons": [
+        "충전 4시간에 사용시간 30분"
+      ],
+      "url": null,
+      "fit": "보통",
+      "fit_reason": "러블리 퍼플 컬러의 미니 사이즈지만 캐릭터 디자인은 아님",
+      "url_verified": false,
+      "url_rejected": [
+        "https://search.danawa.com/dsearch.php?query=%ED%9C%B4%EB%8C%80%EC%9A%A9%EA%B3%A0%EB%8D%B0%EA%B8%B0"
+      ]
+    },
+    {
+      "brand": "디하우트",
+      "model": "디하우트 프리미엄 미니 무선 고데기",
+      "price": 47500,
+      "currency": "KRW",
+      "store": "다나와",
+      "rating": 4.8,
+      "review_count": 647,
+      "pros": [
+        "평점 4.80으로 높음",
+        "미니 무선 휴대형"
+      ],
+      "cons": [
+        "러블리 모델보다 약 1만 원 이상 비쌈"
+      ],
+      "url": null,
+      "fit": "보통",
+      "fit_reason": "작은 미니 디자인이지만 귀여운 디자인인지 따로 확인되지 않음",
+      "url_verified": false,
+      "url_rejected": [
+        "https://search.danawa.com/dsearch.php?query=%ED%9C%B4%EB%8C%80%EC%9A%A9%EA%B3%A0%EB%8D%B0%EA%B8%B0"
+      ]
+    },
+    {
+      "brand": "오브룸",
+      "model": "오브룸 티니 미니 고데기 2세대",
+      "price": 22900,
+      "currency": "KRW",
+      "store": "다나와",
+      "rating": 4.83,
+      "review_count": 12,
+      "pros": [
+        "2만 원대 초반으로 가장 저렴",
+        "평점 4.83"
+      ],
+      "cons": [
+        "리뷰 12건으로 표본이 적음"
+      ],
+      "url": null,
+      "fit": "보통",
+      "fit_reason": "'티니' 미니 사이즈라 아기자기하지만 디자인 정보는 제한적임",
+      "url_verified": false,
+      "url_rejected": [
+        "https://search.danawa.com/dsearch.php?query=%ED%9C%B4%EB%8C%80%EC%9A%A9%EA%B3%A0%EB%8D%B0%EA%B8%B0"
+      ]
+    }
+  ],
+  "value_pick": {
+    "model": "디하우트 러블리 미니 무선 고데기",
+    "reason": "3만 원대 가격에 평점 4.71과 리뷰 999건 이상으로 검증이 가장 많이 됨"
+  },
+  "quality_pick": {
+    "model": "디하우트 프리미엄 미니 무선 고데기",
+    "reason": "리뷰 647건에서 평점 4.80으로 후기가 충분하면서 평점이 가장 높음"
+  },
+  "notes": "가격은 검색 시점 기준이고 디하우트 러블리의 리뷰 수는 '999+'로만 표시되며, 산리오 제품은 판매처에 따라 가격 차이가 커서(약 5만~11만 원) 구매 전 다나와에서 최신 가격을 확인하세요.",
+  "query": "고데기",
+  "condition": "귀여운 디자인",
+  "searched_at": "2026-11-17 13:42:15"
+}

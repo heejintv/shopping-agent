@@ -1,0 +1,101 @@
+{
+  "products": [
+    {
+      "brand": "다이슨",
+      "model": "에어랩 멀티 스타일러 컴플리트 롱 (니켈/코퍼)",
+      "price": 674500,
+      "currency": "KRW",
+      "store": "G마켓",
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "현행 멀티 스타일러 중 확인된 최저가(무료배송)",
+        "V9 모터·1300W, 570g"
+      ],
+      "cons": [],
+      "url": "https://prod.danawa.com/info/?pcode=17306666",
+      "url_verified": true
+    },
+    {
+      "brand": "다이슨",
+      "model": "에어랩 멀티 스타일러 컴플리트 롱 (블루/코퍼)",
+      "price": 682100,
+      "currency": "KRW",
+      "store": "G마켓",
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "판매처가 많아 가격 경쟁이 있음(검색 결과 기준 32곳)"
+      ],
+      "cons": [
+        "같은 롱 모델 니켈/코퍼보다 약 7,600원 비쌈"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=17306678",
+      "url_verified": true
+    },
+    {
+      "brand": "다이슨",
+      "model": "에어랩 스타일러 컴플리트 (푸시아/니켈)",
+      "price": 617500,
+      "currency": "KRW",
+      "store": "G마켓",
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "비교한 5개 중 최저가",
+        "최대 24개월 무이자"
+      ],
+      "cons": [
+        "2018년 등록된 구형 모델"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=6517468",
+      "url_verified": true
+    },
+    {
+      "brand": "다이슨",
+      "model": "에어랩 멀티 스타일러 컴플리트 (블루/코퍼)",
+      "price": 777990,
+      "currency": "KRW",
+      "store": "11번가",
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "현행 멀티 스타일러 일반 길이 버전"
+      ],
+      "cons": [
+        "롱 버전보다 약 10만 원 비쌈"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=17305613",
+      "url_verified": true
+    },
+    {
+      "brand": "다이슨",
+      "model": "에어랩 멀티 스타일러 컴플리트 (푸시아/니켈)",
+      "price": 788900,
+      "currency": "KRW",
+      "store": "h컴퍼니",
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "노즐 6종 구성, 콜드샷·음이온 케어"
+      ],
+      "cons": [
+        "비교한 5개 중 최고가",
+        "판매처 4곳뿐"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=17305409",
+      "url_verified": true
+    }
+  ],
+  "value_pick": {
+    "model": "에어랩 멀티 스타일러 컴플리트 롱 (니켈/코퍼)",
+    "reason": "현행 멀티 스타일러 가운데 가장 싼 674,500원(무료배송)이라, 2018년 구형과의 차이가 약 5.7만 원에 그칩니다."
+  },
+  "quality_pick": null,
+  "notes": "다나와 페이지에서 평점·리뷰 수가 로딩되지 않아 확인하지 못했고, 인기 순위도 확인하지 못해 검색 상위 5개 상품을 골랐습니다. 가격은 2026-11-17~18 다나와 최저가 기준이며 수시로 바뀝니다.",
+  "link_retry": 0,
+  "engine": "claude",
+  "query": "에어랩",
+  "condition": null,
+  "searched_at": "2026-11-18 11:48:29"
+}

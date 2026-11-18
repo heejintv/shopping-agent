@@ -1,6 +1,49 @@
 [
   {
+    "query": "무선 청소기",
+    "condition": "가벼움",
+    "file": "17511517423c3070971d71493852c8a9.json",
+    "searched_at": "2026-11-18 11:35:36",
+    "count": 5
+  },
+  {
+    "query": "맥북",
+    "condition": null,
+    "file": "86f1b51e5a5d1525c00d30056855fdc8.json",
+    "searched_at": "2026-11-18 13:02:54",
+    "count": 5
+  },
+  {
+    "query": "고데기",
+    "condition": "귀여운 디자인",
+    "file": "9785ef692ba924a269c724259d406387.json",
+    "searched_at": "2026-11-17 13:42:15",
+    "count": 5
+  },
+  {
+    "query": "에어랩",
+    "condition": null,
+    "file": "cf86ab859a28a987ab808a2f4298f52d.json",
+    "searched_at": "2026-11-18 11:48:29",
+    "count": 5
+  },
+  {
+    "query": "고데기",
+    "condition": null,
+    "file": "e09aa8083591126390e7dfc7918cf625.json",
+    "searched_at": "2026-11-17 13:33:59",
+    "count": 5
+  },
+  {
+    "query": "gpu",
+    "condition": null,
+    "file": "e3c5ba51dba85ab0c990db5e309f4d7b.json",
+    "searched_at": "2026-11-18 12:53:02",
+    "count": 5
+  },
+  {
     "query": "무선 마우스",
+    "condition": null,
     "file": "ea11e5e52fbd2866b64a92cd7b0927b8.json",
     "searched_at": "2026-11-17 11:50:25",
     "count": 8

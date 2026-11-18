@@ -1,0 +1,111 @@
+{
+  "products": [
+    {
+      "brand": "APPLE",
+      "model": "맥북프로16 M5프로 18코어 CPU, 20코어 GPU 블랙 (램24GB, SSD 1TB)",
+      "price": 4497990,
+      "currency": "KRW",
+      "store": "옥션",
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "16.2인치 miniLED 120Hz 대화면",
+        "100Wh 배터리, 최대 24시간 사용"
+      ],
+      "cons": [
+        "5개 중 가장 비쌈",
+        "무게 2.14kg으로 무거움"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=106756001",
+      "url_verified": true
+    },
+    {
+      "brand": "APPLE",
+      "model": "맥북프로14 M5프로 15코어 CPU, 16코어 GPU 실버 (램24GB, SSD 1TB)",
+      "price": 3879680,
+      "currency": "KRW",
+      "store": "옥션",
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "M5 Pro 15코어 CPU에 1.6kg으로 휴대성 좋음",
+        "무료배송"
+      ],
+      "cons": [
+        "최저가가 출시가 3,490,000원보다 높음"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=106755515",
+      "url_verified": true
+    },
+    {
+      "brand": "APPLE",
+      "model": "맥북프로14 M5프로 15코어 CPU, 16코어 GPU 블랙 (램24GB, SSD 1TB)",
+      "price": 3844440,
+      "currency": "KRW",
+      "store": "G마켓",
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "같은 사양 실버보다 약 3.5만 원 저렴",
+        "Wi-Fi 7·블루투스 6.0, 최대 24개월 무이자"
+      ],
+      "cons": [
+        "최저가가 출시가 3,490,000원보다 높음"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=106755434",
+      "url_verified": true
+    },
+    {
+      "brand": "APPLE",
+      "model": "맥북프로14 M6 12코어 CPU, 12코어 GPU 실버 (램16GB, SSD 1TB)",
+      "price": 3290000,
+      "currency": "KRW",
+      "store": "더현대닷컴",
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "최신 M6 칩인데 5개 중 가장 저렴",
+        "1.55kg 가볍고 최대 24시간 사용"
+      ],
+      "cons": [
+        "램 16GB로 Pro 모델(24GB)보다 적음",
+        "가격이 출시가 그대로라 할인 없음"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=124697684",
+      "url_verified": true
+    },
+    {
+      "brand": "APPLE",
+      "model": "맥북프로16 M5프로 18코어 CPU, 20코어 GPU 실버 (램24GB, SSD 1TB)",
+      "price": 4370000,
+      "currency": "KRW",
+      "store": "모던스타일샵",
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "같은 사양 블랙보다 약 12.8만 원 저렴",
+        "16.2인치 miniLED 120Hz 대화면"
+      ],
+      "cons": [
+        "배송비 9,000원 별도",
+        "무게 2.14kg"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=106756094",
+      "url_verified": true
+    }
+  ],
+  "value_pick": {
+    "model": "맥북프로14 M6 12코어 CPU, 12코어 GPU 실버 (램16GB, SSD 1TB)",
+    "reason": "가장 최신인 M6 칩에 SSD 1TB를 갖췄는데 5개 중 가장 싼 3,290,000원입니다."
+  },
+  "quality_pick": {
+    "model": "맥북프로16 M5프로 18코어 CPU, 20코어 GPU 실버 (램24GB, SSD 1TB)",
+    "reason": "18코어 CPU·20코어 GPU와 16.2인치 miniLED, 100Wh 배터리로 성능이 가장 높고, 같은 사양 블랙보다 약 12.8만 원 저렴합니다."
+  },
+  "notes": "다나와 '노트북 > APPLE 맥북' 목록의 기본 정렬 상위 5개는 모두 맥북프로라서 맥북에어는 없고, 평점·리뷰 수는 상세 페이지에 나오지 않아 null로 두었으며, 가격은 2026-11-18 조회 기준이라 바뀔 수 있습니다.",
+  "link_retry": 0,
+  "engine": "claude",
+  "query": "맥북",
+  "condition": null,
+  "searched_at": "2026-11-18 13:02:54"
+}

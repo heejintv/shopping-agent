@@ -1,0 +1,104 @@
+{
+  "products": [
+    {
+      "brand": "유닉스",
+      "model": "유닉스 UCI-A2302",
+      "price": 15190,
+      "currency": "KRW",
+      "store": "다나와 (최저가 기준)",
+      "rating": 4.5,
+      "review_count": 480,
+      "pros": [
+        "다나와 최저가 1만 원대로 가장 저렴",
+        "판매몰 999곳 이상으로 구하기 쉬움"
+      ],
+      "cons": [
+        "별점 4.5로 비교 대상 중 가장 낮음"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=2617184&keyword=%EA%B3%A0%EB%8D%B0%EA%B8%B0&cate=10348569",
+      "url_verified": true
+    },
+    {
+      "brand": "필립스",
+      "model": "필립스 고데기 3000 BHS375/09",
+      "price": 28900,
+      "currency": "KRW",
+      "store": "다나와 (최저가 기준)",
+      "rating": 4.72,
+      "review_count": 294,
+      "pros": [
+        "2만 원대 가격에 별점 4.72"
+      ],
+      "cons": [
+        "상품 상세 페이지 URL 확인 못 함"
+      ],
+      "url": null,
+      "url_verified": false
+    },
+    {
+      "brand": "오아",
+      "model": "오아 무선고데기 OHA-011",
+      "price": 37110,
+      "currency": "KRW",
+      "store": "다나와 (최저가 기준)",
+      "rating": 4.6,
+      "review_count": 285,
+      "pros": [
+        "무선이라 휴대하기 좋음"
+      ],
+      "cons": [
+        "별점 4.6으로 상위 모델보다 조금 낮음"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=17499902&keyword=%EA%B3%A0%EB%8D%B0%EA%B8%B0&cate=10348569",
+      "url_verified": true
+    },
+    {
+      "brand": "JMW",
+      "model": "JMW W6001MA",
+      "price": 69000,
+      "currency": "KRW",
+      "store": "다나와 (최저가 기준)",
+      "rating": 4.7,
+      "review_count": 81,
+      "pros": [
+        "노써치 종합 1위 추천 모델"
+      ],
+      "cons": [
+        "판매몰이 3곳뿐",
+        "리뷰 81건으로 적은 편"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=2131145&keyword=%EA%B3%A0%EB%8D%B0%EA%B8%B0&cate=10348569",
+      "url_verified": true
+    },
+    {
+      "brand": "그리에이트",
+      "model": "그리에이트 티타늄 매직 미러2",
+      "price": 106600,
+      "currency": "KRW",
+      "store": "다나와 (최저가 기준)",
+      "rating": 4.8,
+      "review_count": 55,
+      "pros": [
+        "별점 4.8로 비교 대상 중 가장 높음",
+        "판매몰 62곳"
+      ],
+      "cons": [
+        "10만 원대로 가장 비쌈 (41mm 옵션 가격)",
+        "리뷰 55건으로 적음"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=13131455&keyword=%EA%B3%A0%EB%8D%B0%EA%B8%B0&cate=10348569",
+      "url_verified": true
+    }
+  ],
+  "value_pick": {
+    "model": "필립스 고데기 3000 BHS375/09",
+    "reason": "2만 원대(28,900원)에 별점 4.72, 리뷰 294건이라 가격 대비 평가가 가장 좋습니다."
+  },
+  "quality_pick": {
+    "model": "그리에이트 티타늄 매직 미러2",
+    "reason": "다나와 별점 4.8로 가장 높습니다. 다만 리뷰가 55건이라 표본이 적습니다."
+  },
+  "notes": "다나와 검색 결과 순서(광고 상품 제외)를 인기 순위로 봤고, 가격은 조회 시점의 최저가라 실제 구매 전 다시 확인이 필요합니다.",
+  "query": "고데기",
+  "searched_at": "2026-11-17 13:33:59"
+}

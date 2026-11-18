@@ -1,0 +1,117 @@
+{
+  "products": [
+    {
+      "brand": "샤크닌자",
+      "model": "샤크 에보파워 플러스 WV250KR",
+      "price": 121830,
+      "currency": "KRW",
+      "store": "G마켓",
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "무게 0.6kg으로 확인한 모델 중 가장 가벼움",
+        "차량·원룸용 핸디 청소기로 소개됨"
+      ],
+      "cons": [
+        "핸디형이라 바닥 전체 청소용 스틱 청소기를 대신하기 어려움"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=10058121&cate=102207",
+      "fit": "높음",
+      "fit_reason": "무게 0.6kg 초경량 핸디형",
+      "url_verified": true
+    },
+    {
+      "brand": "샤오미",
+      "model": "미홀 M22",
+      "price": 132240,
+      "currency": "KRW",
+      "store": "옥션",
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "1.5kg으로 가벼운 스틱형",
+        "흡입력 22,000Pa, 13만 원대 가격"
+      ],
+      "cons": [
+        "리뷰 기반 단점은 확인하지 못함"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=18868094&cate=102207",
+      "fit": "높음",
+      "fit_reason": "스틱형 중 가장 가벼운 1.5kg",
+      "url_verified": true
+    },
+    {
+      "brand": "샤크닌자",
+      "model": "샤크 에보파워 시스템 부스트+ LC751KRLV",
+      "price": 699010,
+      "currency": "KRW",
+      "store": "G마켓",
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "1.7kg으로 가벼움",
+        "관절형 파이프와 자동 먼지비움 거치대"
+      ],
+      "cons": [
+        "약 70만 원으로 비쌈"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=98230349&cate=102207",
+      "fit": "높음",
+      "fit_reason": "무게 1.7kg으로 가볍고 자동 먼지비움 기능도 있음",
+      "url_verified": true
+    },
+    {
+      "brand": "LG전자",
+      "model": "코드제로 A5 AS520HA",
+      "price": 362150,
+      "currency": "KRW",
+      "store": "11번가",
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "다나와 실측 1.96kg",
+        "물세척 필터, 최대 40분 사용"
+      ],
+      "cons": [
+        "흡입력 150W로 상위 모델보다 낮음"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=123803664&cate=102207",
+      "fit": "보통",
+      "fit_reason": "2kg 미만이지만 1.5~1.7kg 모델보다 무거움",
+      "url_verified": true
+    },
+    {
+      "brand": "다이슨",
+      "model": "디지털 슬림",
+      "price": 295000,
+      "currency": "KRW",
+      "store": "G마켓",
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "초경량 바디와 Slim Fluffy 헤드로 손목 부담을 줄였다고 소개됨"
+      ],
+      "cons": [
+        "다나와 상세 페이지에 무게가 표기되어 있지 않음"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=17785652&cate=102207",
+      "fit": "보통",
+      "fit_reason": "경량형으로 소개되지만 실제 무게는 확인하지 못함",
+      "url_verified": true
+    }
+  ],
+  "value_pick": {
+    "model": "미홀 M22",
+    "reason": "스틱형 중 가장 가벼운 1.5kg이고 가격은 13만 원대로 낮음"
+  },
+  "quality_pick": {
+    "model": "샤크 에보파워 시스템 부스트+ LC751KRLV",
+    "reason": "1.7kg으로 가벼우면서 관절형 파이프와 자동 먼지비움 거치대를 갖춘 상위 모델"
+  },
+  "notes": "다나와 상세 페이지에서 별점·리뷰가 로딩되지 않아 rating·review_count는 모두 null이고, 장단점은 리뷰가 아닌 상품 스펙·소개 문구 기준이며 가격은 2026-11-18 조회 시점 최저가라 바뀔 수 있음.",
+  "link_retry": 0,
+  "engine": "claude",
+  "query": "무선 청소기",
+  "condition": "가벼움",
+  "searched_at": "2026-11-18 11:35:36"
+}

@@ -1,0 +1,110 @@
+{
+  "products": [
+    {
+      "brand": "ZOTAC",
+      "model": "ZOTAC GAMING 지포스 RTX 5060 Ti Twin Edge OC D7 8GB",
+      "price": 754860,
+      "currency": "KRW",
+      "store": "11번가",
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "제로팬(0dB)과 백플레이트가 있음",
+        "길이 220.5mm의 짧은 2팬 구조라 작은 케이스에도 들어감"
+      ],
+      "cons": [
+        "VRAM이 8GB"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=85410707&cate=112753",
+      "url_verified": true
+    },
+    {
+      "brand": "MSI",
+      "model": "MSI 지포스 RTX 5070 게이밍 트리오 OC D7 12GB 트라이프로져4",
+      "price": 1449000,
+      "currency": "KRW",
+      "store": "샵다나와",
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "3팬 쿨링, 제로팬, DrMOS 탑재",
+        "A/S 기간 3년"
+      ],
+      "cons": [
+        "길이 338mm, 두께 50mm로 큼",
+        "권장 파워 650W 이상"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=77379380&cate=112753",
+      "url_verified": true
+    },
+    {
+      "brand": "MSI",
+      "model": "MSI 지포스 RTX 5060 벤투스 2X OC V1 D7 8GB",
+      "price": 698990,
+      "currency": "KRW",
+      "store": "옥션",
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "상위 5개 중 가장 저렴함",
+        "사용전력 145W로 가장 낮음"
+      ],
+      "cons": [
+        "VRAM이 8GB"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=122676813&cate=112753",
+      "url_verified": true
+    },
+    {
+      "brand": "MSI",
+      "model": "MSI 지포스 RTX 5060 Ti 벤투스 2X OC 플러스 D7 8GB",
+      "price": 756000,
+      "currency": "KRW",
+      "store": "옥션",
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "제로팬, 백플레이트, DrMOS 탑재"
+      ],
+      "cons": [
+        "VRAM이 8GB",
+        "최저가 판매처에 배송비 3,000원이 따로 붙음"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=86814989&cate=112753",
+      "url_verified": true
+    },
+    {
+      "brand": "PALIT",
+      "model": "PALIT 지포스 RTX 5070 Ti GAMINGPRO-S D7 16GB 이엠텍",
+      "price": 2142430,
+      "currency": "KRW",
+      "store": "컴오아시스",
+      "rating": null,
+      "review_count": null,
+      "pros": [
+        "상위 5개 중 유일한 16GB VRAM, 3팬 쿨링",
+        "A/S 기간 3년"
+      ],
+      "cons": [
+        "길이 331.9mm로 긺",
+        "권장 파워 750W 이상, 가격이 가장 높음"
+      ],
+      "url": "https://prod.danawa.com/info/?pcode=91768979&cate=112753",
+      "url_verified": true
+    }
+  ],
+  "value_pick": {
+    "model": "MSI 지포스 RTX 5060 벤투스 2X OC V1 D7 8GB",
+    "reason": "인기 상위 5개 중 최저가(698,990원)이고 사용전력도 145W로 가장 낮다."
+  },
+  "quality_pick": {
+    "model": "PALIT 지포스 RTX 5070 Ti GAMINGPRO-S D7 16GB 이엠텍",
+    "reason": "상위 5개 중 가장 상위 칩(RTX 5070 Ti)이고 유일하게 VRAM이 16GB다."
+  },
+  "notes": "다나와 상세 페이지에 별점과 리뷰 수가 표시되지 않아 null로 두었고, 장단점은 리뷰가 아니라 스펙 기준이며, 그래픽카드 가격이 오르는 중이라 값이 자주 바뀝니다(5070 Ti는 피씨블랙 현금가 1,920,000원 판매처도 있었음).",
+  "link_retry": 0,
+  "engine": "claude",
+  "query": "gpu",
+  "condition": null,
+  "searched_at": "2026-11-18 12:53:02"
+}
