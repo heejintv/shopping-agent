@@ -2,7 +2,7 @@
 
 - CHAT_ENGINE=gemini (기본): Gemini API, 도구 없음 (웹 검색 안 함)
 - CHAT_ENGINE=claude: claude -p, 도구 전부 끔 (답변만)
-- Gemini가 429(한도 초과)·503(혼잡)이면 claude로 한 번 자동 재시도
+- Gemini가 429(한도 초과)·503(혼잡)·504(시간 초과)이면 claude로 한 번 자동 재시도
 """
 
 import json
@@ -16,7 +16,7 @@ MAX_HISTORY = 6          # 최근 대화 몇 개까지 전달할지
 MAX_HISTORY_TEXT = 1000  # 대화 하나당 글자 수
 GEMINI_TIMEOUT = 60      # 초
 CLAUDE_TIMEOUT = 120     # 초
-RETRY_CODES = (429, 503)
+RETRY_CODES = (429, 503, 504)  # 한도 초과·혼잡·서버 시간 초과
 BUSY_MESSAGE = "잠시 후 다시 시도해주세요."
 
 SYSTEM = """너는 친절하고 솔직한 쇼핑 도우미야.
