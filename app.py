@@ -12,20 +12,24 @@
 - 내 PC에서 직접 온 요청은 무제한 (is_local_request 참고)
 - 상담 챗봇(/chat, chat.py)은 외부 요청만 하루 CHAT_DAILY_LIMIT회(기본 30회)까지
 - CORS는 GitHub Pages 주소(ALLOWED_ORIGIN)만 허용
+- /search/stream: 새 검색의 진행 단계를 실시간으로 보냄 (Server-Sent Events). 취소하면 claude를 멈추고 횟수를 되돌림
 - /stats: 모니터링 요약 (stats.py, 화면은 status.html). 질문 원문·IP는 기록하지 않음
 """
 
 import hashlib
 import json
 import os
+import queue
 import re
+import secrets
+import signal
 import subprocess
 import threading
 import time
 from datetime import date
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory
 
 import chat
 import stats
@@ -193,6 +197,15 @@ def try_use_one(kind: str = "count") -> int | None:
         return limit - usage[kind]
 
 
+def refund_one(kind: str = "count") -> None:
+    """취소된 검색처럼 실제로 쓰지 않은 1회를 되돌린다."""
+    with _usage_lock:
+        usage = read_usage()
+        if usage[kind] > 0:
+            usage[kind] -= 1
+            USAGE_FILE.write_text(json.dumps(usage), encoding="utf-8")
+
+
 def remaining(kind: str = "count") -> int:
     with _usage_lock:
         return max(0, LIMITS[kind]() - read_usage()[kind])
@@ -243,10 +256,35 @@ def search_engine() -> str:
     return engine if engine in ("claude", "gemini") else "claude"
 
 
-def call_engine(prompt: str, schema: dict, timeout: int, engine: str) -> dict:
-    """검색 엔진 호출. 성공·실패(429/503/504 구분)를 모니터링에 기록한다."""
+class Cancelled(Exception):
+    """사용자가 검색을 취소함."""
+
+
+class Job:
+    """진행 상황을 보내는 검색 하나. 취소 신호와 이벤트 줄(queue)을 가진다."""
+
+    def __init__(self):
+        self.id = secrets.token_hex(8)
+        self.cancel = threading.Event()
+        self.events: queue.Queue = queue.Queue()
+
+    def emit(self, event: str | None, data: dict | None = None) -> None:
+        self.events.put(None if event is None else (event, data or {}))
+
+    def check(self) -> None:
+        if self.cancel.is_set():
+            raise Cancelled()
+
+
+_jobs: dict[str, Job] = {}
+
+
+def call_engine(prompt: str, schema: dict, timeout: int, engine: str, job: Job | None = None) -> dict:
+    """검색 엔진 호출. 성공·실패(429/503/504 구분)를 모니터링에 기록한다. 취소는 실패로 치지 않는다."""
     try:
-        out = call_gemini(prompt, schema, timeout) if engine == "gemini" else call_claude(prompt, schema, timeout)
+        out = call_gemini(prompt, schema, timeout) if engine == "gemini" else call_claude(prompt, schema, timeout, job)
+    except Cancelled:
+        raise
     except subprocess.TimeoutExpired:
         stats.record_engine(engine, False, 504)
         raise
@@ -260,8 +298,18 @@ def call_engine(prompt: str, schema: dict, timeout: int, engine: str) -> dict:
     return out
 
 
-def call_claude(prompt: str, schema: dict, timeout: int) -> dict:
-    """claude -p를 웹 도구만 허용해서 실행하고, 스키마 모양의 결과(dict)를 돌려준다."""
+def _kill(proc: subprocess.Popen) -> None:
+    """claude와 그 아래에서 뜬 프로세스까지 한꺼번에 종료."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        proc.kill()
+    proc.communicate()
+
+
+def call_claude(prompt: str, schema: dict, timeout: int, job: Job | None = None) -> dict:
+    """claude -p를 웹 도구만 허용해서 실행하고, 스키마 모양의 결과(dict)를 돌려준다.
+    job이 있으면 0.5초마다 취소 여부를 확인해서, 취소되면 프로세스를 멈추고 Cancelled를 낸다."""
     cmd = [
         "claude", "-p", prompt,
         "--tools", WEB_TOOLS,            # 쓸 수 있는 도구를 웹 검색·웹페이지 읽기로만 제한
@@ -269,12 +317,23 @@ def call_claude(prompt: str, schema: dict, timeout: int) -> dict:
         "--output-format", "json",
         "--json-schema", json.dumps(schema),
     ]
-    proc = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=timeout, cwd=BASE_DIR,
-    )
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=BASE_DIR,
+                            start_new_session=True)   # 취소할 때 프로세스 그룹째 멈출 수 있게
+    deadline = time.time() + timeout
+    while True:
+        try:
+            stdout, stderr = proc.communicate(timeout=0.5)
+            break
+        except subprocess.TimeoutExpired:
+            if job and job.cancel.is_set():
+                _kill(proc)
+                raise Cancelled()
+            if time.time() > deadline:
+                _kill(proc)
+                raise subprocess.TimeoutExpired(cmd[:2], timeout)
     if proc.returncode != 0:
-        raise RuntimeError(f"claude 실행 실패 (코드 {proc.returncode}): {proc.stderr[-500:]}")
-    out = json.loads(proc.stdout)
+        raise RuntimeError(f"claude 실행 실패 (코드 {proc.returncode}): {stderr[-500:]}")
+    out = json.loads(stdout)
     if out.get("is_error"):
         raise RuntimeError(f"claude 오류: {out.get('result')}")
     data = out.get("structured_output")
@@ -284,15 +343,15 @@ def call_claude(prompt: str, schema: dict, timeout: int) -> dict:
     return data
 
 
-def run_search(q: str, c: str, engine: str) -> dict:
+def run_search(q: str, c: str, engine: str, job: Job | None = None) -> dict:
     prompt = PROMPT.format(q=q) + (CONDITION_PROMPT.format(c=c) if c else "")
-    return call_engine(prompt, build_schema(bool(c)), CLAUDE_TIMEOUT, engine)
+    return call_engine(prompt, build_schema(bool(c)), CLAUDE_TIMEOUT, engine, job)
 
 
-def retry_links(failed: list[dict], engine: str) -> float | None:
+def retry_links(failed: list[dict], engine: str, job: Job | None = None) -> float | None:
     """검증 실패한 상품들만 같은 엔진으로 한 번 더 상세 페이지를 찾고 검증한다. 비용(USD)을 돌려준다."""
     items = "\n".join(f"{i}. {p['brand']} {p['model']}" for i, p in enumerate(failed, 1))
-    out = call_engine(RETRY_PROMPT.format(items=items), RETRY_SCHEMA, RETRY_TIMEOUT, engine)
+    out = call_engine(RETRY_PROMPT.format(items=items), RETRY_SCHEMA, RETRY_TIMEOUT, engine, job)
     found = {x.get("no"): x.get("url") for x in out.get("links", [])}
     retried = []
     for i, p in enumerate(failed, 1):
@@ -301,6 +360,64 @@ def retry_links(failed: list[dict], engine: str) -> float | None:
             retried.append(p)
     verify_links(retried)  # 다시 받은 주소도 똑같이 검증. 실패하면 링크 확인 안 됨으로 남음
     return out.get("cost_usd")
+
+
+def perform_search(q: str, c: str, path: Path, engine: str, step=None, job: Job | None = None) -> dict:
+    """새 검색 본체: 엔진 검색 → 링크 검증(실패한 것만 한 번 재검색) → 문구 정리 → 캐시 저장.
+    step(단계, 글자, done, total)로 진행 상황을 알린다. 예외(시간 초과·엔진 오류·취소)는 호출한 쪽에서 처리."""
+    step = step or (lambda *a, **k: None)
+    check = job.check if job else (lambda: None)
+    started = time.time()
+    step("search", "AI가 웹 검색 중")
+    data = run_search(q, c, engine, job)
+    check()
+    products = data.get("products") or []
+    step("links", "링크 확인 중", 0, len(products))
+    # 링크마다 실제 접속해서 확인 → 실패한 상품만 한 번 더 찾기 → 그래도 실패하면 링크 없음
+    failed = verify_links(products, on_progress=lambda d, t: step("links", "링크 확인 중", d, t))
+    check()
+    if failed:
+        step("links", "링크 다시 찾는 중", len(products) - len(failed), len(products))
+        try:
+            cost = retry_links(failed, engine, job)
+            if cost and data.get("cost_usd") is not None:
+                data["cost_usd"] = round(data["cost_usd"] + cost, 4)
+        except Cancelled:
+            raise
+        except Exception:  # 재시도가 실패해도 검색 결과는 그대로 돌려줌 (해당 상품은 링크 확인 안 됨)
+            app.logger.exception("link retry failed")
+    check()
+    step("finalize", "결과 정리 중")
+    polish_result(data)   # 추천 이유 끝맺음을 "~해요/~예요"로
+    data["link_retry"] = len(failed)
+    data["engine"] = engine
+    if engine == "gemini":
+        data["engine_model"] = gemini_model()
+    data["query"] = q
+    data["condition"] = c or None
+    data["searched_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    data["elapsed_sec"] = round(time.time() - started, 1)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    data.pop("cost_usd", None)
+    return data
+
+
+def read_query():
+    """q·c를 읽어서 검사. (q, c, 오류 응답 또는 None)"""
+    q = (request.args.get("q") or "").strip()
+    c = " ".join((request.args.get("c") or "").split())  # 원하는 조건 (선택)
+    if not q:
+        return q, c, (jsonify(error="검색어(q)를 입력하세요."), 400)
+    if len(q) > 100:
+        return q, c, (jsonify(error="검색어가 너무 길어요 (100자 이하)."), 400)
+    if len(c) > 100:
+        return q, c, (jsonify(error="조건이 너무 길어요 (100자 이하)."), 400)
+    return q, c, None
+
+
+def query_lock(path: Path) -> threading.Lock:
+    with _locks_guard:
+        return _locks.setdefault(path.name, threading.Lock())
 
 
 # ---------- 라우트 ----------
@@ -414,18 +531,11 @@ def cached():
 
 @app.get("/search")
 def search():
-    q = (request.args.get("q") or "").strip()
-    if not q:
-        return jsonify(error="검색어(q)를 입력하세요."), 400
-    if len(q) > 100:
-        return jsonify(error="검색어가 너무 길어요 (100자 이하)."), 400
-    c = " ".join((request.args.get("c") or "").split())  # 원하는 조건 (선택)
-    if len(c) > 100:
-        return jsonify(error="조건이 너무 길어요 (100자 이하)."), 400
-
+    q, c, err = read_query()
+    if err:
+        return err
     path = cache_path(q, c)
-    with _locks_guard:
-        lock = _locks.setdefault(path.name, threading.Lock())
+    lock = query_lock(path)
 
     t0 = time.time()
     record = lambda **kw: stats.record_request("search", (time.time() - t0) * 1000, query=q, **kw)  # noqa: E731
@@ -444,10 +554,9 @@ def search():
             return jsonify(error=f"오늘 새 검색 {DAILY_LIMIT}회를 모두 썼어요. 내일 다시 시도하세요.",
                            unlimited=False, remaining=0, limit=DAILY_LIMIT), 429
 
-        started = time.time()
         engine = search_engine()
         try:
-            data = run_search(q, c, engine)
+            data = perform_search(q, c, path, engine)
         except subprocess.TimeoutExpired:
             record(ok=False, code=504)
             return jsonify(error=f"검색 시간이 {CLAUDE_TIMEOUT}초를 넘었어요. 다시 시도해 주세요."), 504
@@ -459,31 +568,115 @@ def search():
             app.logger.exception("search failed")
             record(ok=False)
             return jsonify(error="검색 중 오류가 났어요. 서버 로그를 확인하세요."), 502
-
-        # 링크마다 실제 접속해서 확인 → 실패한 상품만 claude로 한 번 더 찾기 → 그래도 실패하면 링크 없음
-        failed = verify_links(data.get("products") or [])
-        if failed:
-            try:
-                cost = retry_links(failed, engine)
-                if cost and data.get("cost_usd") is not None:
-                    data["cost_usd"] = round(data["cost_usd"] + cost, 4)
-            except Exception:  # 재시도가 실패해도 검색 결과는 그대로 돌려줌 (해당 상품은 링크 확인 안 됨)
-                app.logger.exception("link retry failed")
-        polish_result(data)   # 추천 이유 끝맺음을 "~해요/~예요"로
-        data["link_retry"] = len(failed)
-        data["engine"] = engine
-        if engine == "gemini":
-            data["engine_model"] = gemini_model()
-        data["query"] = q
-        data["condition"] = c or None
-        data["searched_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        data["elapsed_sec"] = round(time.time() - started, 1)
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        data.pop("cost_usd", None)
         info["remaining"] = left
         data.update(cached=False, **info)
         record()
         return jsonify(data)
+
+
+def sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@app.get("/search/stream")
+def search_stream():
+    """새 검색의 진행 단계를 실시간으로 보낸다 (Server-Sent Events).
+    이벤트: start{id} → step{step, label, done, total} … → result{검색 결과} | error{error, status} | cancelled
+    단계: cache(캐시 확인) → search(AI가 웹 검색 중) → links(링크 확인 중 3/5) → finalize(결과 정리 중)
+    취소: POST /search/cancel/<id> 또는 연결을 끊으면 claude를 멈추고 하루 횟수를 되돌린다."""
+    origin = request.headers.get("Origin")
+    if origin and origin not in LOCAL_ORIGINS:
+        return jsonify(error="허용되지 않은 출처예요."), 403
+    q, c, err = read_query()
+    if err:
+        return err
+    path = cache_path(q, c)
+    info = limit_info()   # 요청 정보가 필요한 판단은 여기서 (작업 스레드에는 request가 없음)
+    job = Job()
+    _jobs[job.id] = job
+
+    def step(name, label, done=None, total=None):
+        job.emit("step", {"step": name, "label": label, "done": done, "total": total})
+
+    def worker():
+        t0 = time.time()
+        record = lambda **kw: stats.record_request("search", (time.time() - t0) * 1000, query=q, **kw)  # noqa: E731
+        left = None
+        try:
+            with query_lock(path):
+                step("cache", "캐시 확인")
+                if path.exists():
+                    data = polish_result(json.loads(path.read_text(encoding="utf-8")))
+                    data.pop("cost_usd", None)
+                    data.update(cached=True, **info)
+                    record(cached=True)
+                    job.emit("result", data)
+                    return
+                if job.cancel.is_set():
+                    raise Cancelled()
+                left = None if info["unlimited"] else try_use_one()
+                if not info["unlimited"] and left is None:
+                    record(limited=True)
+                    job.emit("error", {"error": f"오늘 새 검색 {DAILY_LIMIT}회를 모두 썼어요. 내일 다시 시도하세요.",
+                                       "status": 429, "unlimited": False, "remaining": 0, "limit": DAILY_LIMIT})
+                    return
+                data = perform_search(q, c, path, search_engine(), step, job)
+                data.update(cached=False, **{**info, "remaining": left})
+                record()
+                job.emit("result", data)
+        except Cancelled:
+            if left is not None:
+                refund_one()   # 취소된 검색은 하루 횟수에서 빼지 않음
+            job.emit("cancelled", {"refunded": left is not None})
+        except subprocess.TimeoutExpired:
+            record(ok=False, code=504)
+            job.emit("error", {"error": f"검색 시간이 {CLAUDE_TIMEOUT}초를 넘었어요. 다시 시도해 주세요.", "status": 504})
+        except EngineError as e:
+            app.logger.warning("gemini search failed: %s (%s)", e, e.__cause__)
+            record(ok=False, code=e.code)
+            job.emit("error", {"error": str(e), "status": 502})
+        except Exception:
+            app.logger.exception("search stream failed")
+            record(ok=False)
+            job.emit("error", {"error": "검색 중 오류가 났어요. 서버 로그를 확인하세요.", "status": 502})
+        finally:
+            job.emit(None)   # 끝 표시
+            _jobs.pop(job.id, None)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def generate():
+        finished = False
+        try:
+            yield sse("start", {"id": job.id})
+            while True:
+                try:
+                    item = job.events.get(timeout=1)
+                except queue.Empty:
+                    yield ": ping\n\n"   # 연결 유지 + 끊겼는지 확인
+                    continue
+                if item is None:
+                    finished = True
+                    return
+                yield sse(*item)
+        finally:
+            if not finished:   # 브라우저가 연결을 끊음 → 검색 취소
+                job.cancel.set()
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.post("/search/cancel/<job_id>")
+def search_cancel(job_id):
+    """진행 중인 스트림 검색 취소."""
+    origin = request.headers.get("Origin")
+    if origin and origin not in LOCAL_ORIGINS:
+        return jsonify(error="허용되지 않은 출처예요."), 403
+    job = _jobs.get(job_id)
+    if job:
+        job.cancel.set()
+    return jsonify(ok=bool(job))
 
 
 @app.post("/chat")

@@ -23,7 +23,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 TIMEOUT = 8            # 초. 링크 하나당
@@ -145,12 +145,18 @@ def verify_product(p: dict) -> bool:
     return False
 
 
-def verify_links(products: list[dict]) -> list[dict]:
-    """상품들의 링크를 동시에 검증하고, 실패한 상품 목록을 돌려준다."""
+def verify_links(products: list[dict], on_progress=None) -> list[dict]:
+    """상품들의 링크를 동시에 검증하고, 실패한 상품 목록을 돌려준다.
+    on_progress(끝난 개수, 전체 개수)를 주면 하나 끝날 때마다 알려준다 (진행 상황 표시용)."""
     if not products:
         return []
+    ok = [False] * len(products)
     with ThreadPoolExecutor(max_workers=4) as pool:  # 한 사이트에 너무 몰아서 접속하지 않도록
-        ok = list(pool.map(verify_product, products))
+        futures = {pool.submit(verify_product, p): i for i, p in enumerate(products)}
+        for done, f in enumerate(as_completed(futures), 1):
+            ok[futures[f]] = f.result()
+            if on_progress:
+                on_progress(done, len(products))
     return [p for p, good in zip(products, ok) if not good]
 
 

@@ -126,7 +126,30 @@
           background: color-mix(in srgb, var(--warn) 12%, var(--card)); border: 1px solid color-mix(in srgb, var(--warn) 50%, transparent); }
   #demo strong { color: var(--warn); }
 
-  #loading { display: none; align-items: center; gap: 14px; }
+  #loading { display: none; flex-direction: column; gap: 14px; }
+  .ld-top { display: flex; align-items: center; gap: 14px; }
+  .ld-text { flex: 1; min-width: 0; }
+  .ld-text b { font-size: 16px; }
+  .ld-sub { font-size: 13px; margin-top: 2px; }
+  .cancel-btn { flex: none; padding: 8px 14px; border-radius: 99px; border: 1px solid var(--line); background: var(--card); color: var(--text);
+                font-size: 13px; font-weight: 600; }
+  .cancel-btn:hover { border-color: var(--bad); color: var(--bad); }
+  .cancel-btn:disabled { opacity: .5; cursor: default; }
+  /* 진행 단계: 끝난 단계 ✓, 지금 단계는 메인 색 */
+  .steps { list-style: none; margin: 0; padding: 0 0 0 38px; display: flex; flex-direction: column; gap: 8px; }
+  .steps li { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--muted); }
+  .steps li i { position: relative; flex: none; width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--line); background: var(--card);
+                display: grid; place-items: center; font-style: normal; font-size: 11px; font-weight: 800; }
+  .steps li.done { color: var(--text); }
+  .steps li.done i { border-color: var(--accent); background: var(--accent); color: #fff; }
+  .steps li.done i::before { content: "✓"; }
+  .steps li.active { color: var(--accent); font-weight: 700; }
+  .steps li.active i { border-color: var(--accent); }
+  .steps li.active i::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: stepPulse 1.2s ease-in-out infinite; }
+  .steps li .cnt { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  @keyframes stepPulse { 50% { transform: scale(.55); opacity: .5; } }
+  @media (prefers-reduced-motion: reduce) { .steps li.active i::before { animation: none; } }
+  @media (max-width: 520px) { .steps { padding-left: 4px; } .ld-top { flex-wrap: wrap; } .cancel-btn { margin-left: 38px; } }
   .spinner { width: 24px; height: 24px; flex: none; border: 3px solid var(--accent-soft); border-top-color: var(--accent);
              border-radius: 50%; animation: spin .8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -542,10 +565,20 @@
     <div class="feature"><div class="ic">💬</div><b>딱 하나 골라줘요</b><p>예산과 용도를 말하면 상담 챗봇이 맞는 하나를 추천해요</p></div>
   </section>
 
-  <div class="panel" id="loading">
-    <div class="spinner"></div>
-    <div>에이전트가 검색 중... <span class="na" id="elapsed"></span><br>
-      <span class="na" style="font-size:13px">쇼핑몰 가격을 확인하느라 1~3분 정도 걸릴 수 있어요.</span></div>
+  <div class="panel" id="loading" aria-live="polite">
+    <div class="ld-top">
+      <div class="spinner"></div>
+      <div class="ld-text"><b>에이전트가 검색 중이에요</b> <span class="na" id="elapsed"></span>
+        <div class="na ld-sub">보통 1~2분 걸려요</div></div>
+      <button type="button" class="cancel-btn" id="cancelBtn">검색 취소</button>
+    </div>
+    <ol class="steps" id="steps">
+      <li data-step="cache"><i></i><span>캐시 확인</span></li>
+      <li data-step="search"><i></i><span>AI가 웹 검색 중</span></li>
+      <li data-step="links"><i></i><span>링크 확인 중</span><small class="cnt"></small></li>
+      <li data-step="finalize"><i></i><span>결과 정리 중</span></li>
+      <li data-step="done"><i></i><span>완료</span></li>
+    </ol>
   </div>
   <div class="panel" id="error"></div>
 
@@ -903,10 +936,10 @@ async function fetchDemo(q, c) {
   return fetchSaved(hit);
 }
 
-async function fetchLive(q, c) {
+async function fetchLive(q, c, signal) {
   let url = API_BASE + "/search?q=" + encodeURIComponent(q);
   if (c) url += "&c=" + encodeURIComponent(c);
-  const res = await fetch(url, { headers: API_HEADERS });
+  const res = await fetch(url, { headers: API_HEADERS, signal });
   const data = await res.json();
   if (res.status === 429) setStatus(`🟡 오늘 새 검색 횟수를 모두 썼어요 (최근 검색은 계속 볼 수 있어요)`, "bad");
   if (!res.ok) throw new Error(data.error || res.statusText);
@@ -940,14 +973,23 @@ $("f").addEventListener("submit", async e => {
   }
   $("btn").disabled = true;
   $("results").style.display = "none";
+  $("notice").style.display = "none";
   $("loading").style.display = "flex";
   const t0 = Date.now();
-  $("elapsed").textContent = "";
-  timer = setInterval(() => $("elapsed").textContent = `(${Math.round((Date.now() - t0) / 1000)}초)`, 1000);
+  const tick = () => {
+    const sec = Math.round((Date.now() - t0) / 1000);
+    $("elapsed").textContent = `· ${sec < 60 ? `${sec}초` : `${Math.floor(sec / 60)}분 ${sec % 60}초`}`;
+  };
+  tick();
+  timer = setInterval(tick, 1000);
+  const ctl = { abort: new AbortController(), jobId: null, cancelled: false, mode: "stream" };
+  searchCtl = ctl;
+  resetSteps();
+  $("cancelBtn").disabled = false;
   try {
     let data;
     try {
-      data = await fetchLive(q, c);
+      data = await fetchSearch(q, c, ctl);
       if (!data.cached) loadRecent();  // 새로 저장된 검색어를 목록에 반영
     } catch (err) {
       if (!(err instanceof TypeError)) throw err;  // TypeError = 서버 연결 자체가 안 됨
@@ -955,14 +997,138 @@ $("f").addEventListener("submit", async e => {
       await enterDemoMode();
       data = await fetchDemo(q, c);
     }
+    setStep({ step: "done" });
     render(data);
   } catch (err) {
-    showError("검색 실패: " + err.message);
+    if (err instanceof SearchCancelled || ctl.cancelled) {
+      $("notice").innerHTML = ctl.mode === "stream"
+        ? "검색을 취소했어요. <b>하루 검색 횟수는 차감되지 않았어요.</b>"
+        : "검색을 취소했어요.";
+      $("notice").style.display = "block";
+    } else {
+      showError("검색 실패: " + err.message);
+    }
   } finally {
     clearInterval(timer);
+    searchCtl = null;
     $("loading").style.display = "none";
     $("btn").disabled = false;
   }
+});
+
+// ---------- 실시간 진행 상황 (/search/stream) ----------
+// fetch로 Server-Sent Events를 읽음 (EventSource는 ngrok 헤더를 못 붙여서). 스트림을 못 쓰면 기존 /search로
+
+class SearchCancelled extends Error {}
+class StreamUnavailable extends Error {}
+let searchCtl = null;   // 진행 중인 검색 {abort, jobId, cancelled, mode}
+const STEP_ORDER = ["cache", "search", "links", "finalize", "done"];
+
+function resetSteps() {
+  for (const li of $("steps").children) {
+    li.className = "";
+    li.querySelector(".cnt") && (li.querySelector(".cnt").textContent = "");
+  }
+  $("steps").querySelector('[data-step="links"] span').textContent = "링크 확인 중";
+  $("steps").querySelector('[data-step="search"] span').textContent = "AI가 웹 검색 중";
+}
+
+function setStep(d) {
+  const idx = STEP_ORDER.indexOf(d.step);
+  if (idx < 0) return;
+  for (const li of $("steps").children) {
+    const i = STEP_ORDER.indexOf(li.dataset.step);
+    li.className = i < idx || d.step === "done" ? "done" : i === idx ? "active" : "";
+  }
+  const cur = $("steps").querySelector(`[data-step="${d.step}"]`);
+  if (d.label && d.step !== "done") cur.querySelector("span").textContent = d.label;
+  const cnt = cur.querySelector(".cnt");
+  if (cnt) cnt.textContent = d.total ? ` (${d.done}/${d.total})` : "";
+}
+
+async function fetchSearch(q, c, ctl) {
+  try {
+    return await fetchStream(q, c, ctl);
+  } catch (err) {
+    if (!(err instanceof StreamUnavailable)) throw err;
+    if (ctl.cancelled) throw new SearchCancelled();
+    // 스트림 연결이 안 되거나 끊김 → 기존 방식 (진행 단계는 못 받음)
+    ctl.mode = "fallback";
+    setStep({ step: "search", label: "AI가 웹 검색 중 (기존 방식으로 전환)" });
+    try {
+      return await fetchLive(q, c, ctl.abort.signal);
+    } catch (e) {
+      if (e.name === "AbortError") throw new SearchCancelled();
+      throw e;
+    }
+  }
+}
+
+async function fetchStream(q, c, ctl) {
+  let res;
+  try {
+    res = await fetch(`${API_BASE}/search/stream?${shareParams(q, c)}`, { headers: API_HEADERS, signal: ctl.abort.signal });
+  } catch (e) {
+    if (ctl.cancelled) throw new SearchCancelled();
+    throw new StreamUnavailable();
+  }
+  if (!(res.headers.get("Content-Type") || "").includes("text/event-stream")) {
+    if ([400, 403, 429].includes(res.status)) {   // 입력·출처·제한 오류는 그대로 보여줌
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.error || res.statusText);
+    }
+    throw new StreamUnavailable();   // 예전 서버(404) 등
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let cut;
+      while ((cut = buf.indexOf("\n\n")) >= 0) {
+        const block = buf.slice(0, cut);
+        buf = buf.slice(cut + 2);
+        if (!block || block.startsWith(":")) continue;   // 연결 유지용 ping
+        let event = "message", raw = "";
+        for (const line of block.split("\n")) {
+          if (line.startsWith("event:")) event = line.slice(6).trim();
+          else if (line.startsWith("data:")) raw += line.slice(5).trim();
+        }
+        const d = raw ? JSON.parse(raw) : {};
+        if (event === "start") ctl.jobId = d.id;
+        else if (event === "step") setStep(d);
+        else if (event === "result") { showRemaining(d); return d; }
+        else if (event === "cancelled") throw new SearchCancelled();
+        else if (event === "error") {
+          if (d.status === 429) setStatus("🟡 오늘 새 검색 횟수를 모두 썼어요 (최근 검색은 계속 볼 수 있어요)", "bad");
+          const err = new Error(d.error || "검색 중 오류가 났어요.");
+          err.final = true;
+          throw err;
+        }
+      }
+    }
+  } catch (e) {
+    if (e instanceof SearchCancelled || e.final) throw e;
+    if (ctl.cancelled) throw new SearchCancelled();
+    throw new StreamUnavailable();   // 읽는 도중 끊김
+  }
+  if (ctl.cancelled) throw new SearchCancelled();
+  throw new StreamUnavailable();     // 결과 없이 끝남
+}
+
+// 검색 취소: 서버에 취소를 알리고(claude 중단 + 횟수 되돌림) 연결을 끊음
+$("cancelBtn").addEventListener("click", () => {
+  const ctl = searchCtl;
+  if (!ctl || ctl.cancelled) return;
+  ctl.cancelled = true;
+  $("cancelBtn").disabled = true;
+  if (ctl.jobId) {
+    fetch(`${API_BASE}/search/cancel/${encodeURIComponent(ctl.jobId)}`, { method: "POST", headers: API_HEADERS }).catch(() => {});
+  }
+  ctl.abort.abort();
 });
 
 // ---------- 결과 화면 ----------
