@@ -172,7 +172,20 @@
   #chatSend { padding: 0 16px; border: 0; border-radius: 10px; background: var(--accent); color: #fff; font-weight: 600; }
   #chatSend:disabled, #chatEx button:disabled { opacity: .5; cursor: default; }
   #chatCount { padding: 0 14px 8px; font-size: 12px; color: var(--muted); text-align: right; }
+  .pick-link { color: inherit; font-weight: 700; text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px; }
+  .msg.bot .see { display: inline-block; margin-top: 6px; font-weight: 600; color: var(--accent); }
+  /* 챗봇이 추천한 상품 강조: 2초 동안 테두리 반짝임 */
+  @keyframes flash { 0%, 50%, 100% { box-shadow: 0 0 0 3px var(--accent); } 25%, 75% { box-shadow: 0 0 0 3px transparent; } }
+  @keyframes flashCell { 0%, 50%, 100% { background: var(--accent-soft); } 25%, 75% { background: transparent; } }
+  .pick.flash { animation: flash 2s ease-in-out; }
+  #tbody tr.flash { animation: flash 2s ease-in-out; }       /* 휴대폰(카드 모양) */
+  @media (min-width: 761px) {                                  /* PC 표: 행 칸들을 반짝임 */
+    #tbody tr.flash { animation: none; }
+    #tbody tr.flash > td { animation: flashCell 2s ease-in-out; }
+  }
+  #chatBox { transition: transform .3s ease; }
   @media (max-width: 520px) {  /* 휴대폰: 화면 아래쪽 전체를 채팅창으로 */
+    #chatBox.peek { transform: translateY(calc(100% - 56px)); }  /* 강조하는 동안 머리글만 남기고 내림 */
     #chatBox { right: 0; left: 0; bottom: 0; width: 100%; max-width: none; height: 85vh; height: 85dvh; border-radius: 16px 16px 0 0; }
     #chatBox.open + #chatFab, #chatBox.open ~ #chatFab { display: none; }
   }
@@ -509,13 +522,14 @@ function render(d) {
     ["quality", "⭐ 품질 추천", qualityP, d.quality_pick?.reason, d.quality_pick?.model],
     ["cheap", "🏷️ 최저가", cheapest, cheapest && "확인된 가격 중 가장 저렴해요.", null],
   ];
+  const pid = p => p ? ` data-pid="${items.indexOf(p)}"` : "";   // 챗봇 추천 id = products 순서
   $("picks").innerHTML = picks.map(([cls, tag, p, why, fallbackName]) => {
     if (!p && !fallbackName) {
       return `<div class="pick ${cls} empty"><span class="tag">${tag}</span><p class="why">판단할 정보가 부족해요.</p></div>`;
     }
     const url = productUrl(p);
     const price = p ? fmtPrice(p.price, p.currency) : null;
-    return `<div class="pick ${cls}"><span class="tag">${tag}</span>
+    return `<div class="pick ${cls}"${pid(p)}><span class="tag">${tag}</span>
       ${p ? `<div class="brand">${esc(p.brand)}</div>` : ""}
       <div class="name">${esc(p ? p.model : fallbackName)}</div>
       ${cond && p ? fitBadge(p.fit) : ""}
@@ -551,7 +565,7 @@ function renderTable() {
     const rating = p.rating == null ? NA
       : `★ ${esc(p.rating)}${p.review_count != null ? ` <span class="na">(${Number(p.review_count).toLocaleString()})</span>` : ""}`;
     const price = fmtPrice(p.price, p.currency);
-    return `<tr>
+    return `<tr data-pid="${items.indexOf(p)}">
       <td class="model"><span class="brand">${esc(p.brand)}</span><b>${esc(p.model)}</b>${badges ? `<div class="badges">${badges}</div>` : ""}</td>
       <td class="fit-c fit-col" data-label="적합도">${p.fit ? fitBadge(p.fit) : NA}${p.fit_reason ? `<span class="fit-why">${esc(p.fit_reason)}</span>` : ""}</td>
       <td class="price" data-label="가격">${price ?? NA}${price ? `<div class="mini"><i style="width:${Math.max(3, p.price / max * 100)}%"></i></div>` : ""}</td>
@@ -618,7 +632,8 @@ async function chatAsk(question) {
     wait.remove();
     if (data.unlimited === false && data.remaining != null) $("chatCount").textContent = `오늘 남은 대화 ${data.remaining}회`;
     if (!res.ok) throw new Error(data.error || "잠시 후 다시 시도해주세요.");
-    chatAdd("bot", data.answer);
+    chatAddAnswer(data.answer, data.pick_id);
+    if (data.pick_id != null) highlightProduct(data.pick_id);   // 답변이 오면 추천 상품을 한 번 강조
     chatHistory.push({ role: "user", text: question }, { role: "assistant", text: data.answer });
     chatHistory = chatHistory.slice(-6);
   } catch (err) {
@@ -630,12 +645,74 @@ async function chatAsk(question) {
   }
 }
 
+// 서버가 검증한 추천 id가 지금 결과에 있을 때만 사용 (없는 상품이면 null → 강조 안 함)
+const validPick = id => Number.isInteger(id) && chatResult?.products?.[id] ? id : null;
+
+// 답변 표시: "추천:" 줄의 상품명을 링크로. 그런 줄이 없으면 "결과에서 보기" 링크를 덧붙임
+function chatAddAnswer(text, pickId) {
+  const pid = validPick(pickId);
+  const div = chatAdd("bot", "");
+  const link = label => {
+    const a = document.createElement("a");
+    a.href = "#"; a.className = "pick-link"; a.textContent = label;
+    a.addEventListener("click", e => { e.preventDefault(); highlightProduct(pid); });
+    return a;
+  };
+  let linked = false;
+  text.split("\n").forEach((line, i) => {
+    if (i) div.appendChild(document.createTextNode("\n"));
+    const m = pid != null && !linked && line.match(/^(\s*추천\s*[:：]\s*)(.+)$/);
+    if (m) {
+      div.append(m[1], link(m[2]));
+      linked = true;
+    } else {
+      div.appendChild(document.createTextNode(line));
+    }
+  });
+  if (pid != null && !linked) {
+    const see = link("👉 결과에서 보기");
+    see.className = "see";
+    div.append("\n", see);
+  }
+  $("chatLog").scrollTop = $("chatLog").scrollHeight;
+}
+
+// 추천 상품 카드(없으면 표의 행)로 부드럽게 스크롤하고 2초 동안 테두리 반짝임
+let peekTimer;
+function highlightProduct(pickId) {
+  const pid = validPick(pickId);
+  if (pid == null || $("results").style.display === "none") return;
+  const visible = el => el && el.offsetParent !== null;
+  const target = [...document.querySelectorAll(`.pick[data-pid="${pid}"]`)].find(visible)
+              || [...document.querySelectorAll(`#tbody tr[data-pid="${pid}"]`)].find(visible);
+  if (!target) return;
+  // 휴대폰: 채팅창이 화면을 덮으므로 잠깐 내려서 카드가 보이게
+  if ($("chatBox").classList.contains("open") && matchMedia("(max-width: 520px)").matches) {
+    $("chatBox").classList.add("peek");
+    clearTimeout(peekTimer);
+    peekTimer = setTimeout(() => $("chatBox").classList.remove("peek"), 2600);
+  }
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
+  target.classList.remove("flash");
+  void target.offsetWidth;          // 다시 눌러도 애니메이션이 처음부터 나오게
+  target.classList.add("flash");
+  setTimeout(() => target.classList.remove("flash"), 2000);
+}
+
+// 내려간 채팅창 머리글을 누르면 바로 다시 올림
+$("chatBox").addEventListener("click", e => {
+  if ($("chatBox").classList.contains("peek") && e.target.closest(".chat-head") && e.target.id !== "chatClose") {
+    clearTimeout(peekTimer);
+    $("chatBox").classList.remove("peek");
+  }
+});
+
 $("chatFab").addEventListener("click", () => {
   const open = $("chatBox").classList.toggle("open");
   if (open && !chatResult && !$("chatLog").children.length) chatReset(null);
   if (open && !$("chatIn").disabled) $("chatIn").focus();
 });
-$("chatClose").addEventListener("click", () => $("chatBox").classList.remove("open"));
+$("chatClose").addEventListener("click", () => $("chatBox").classList.remove("open", "peek"));
 $("chatForm").addEventListener("submit", e => { e.preventDefault(); chatAsk($("chatIn").value); });
 $("chatEx").addEventListener("click", e => { if (e.target.tagName === "BUTTON") chatAsk(e.target.textContent); });
 chatReset(null);
