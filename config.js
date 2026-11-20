@@ -8,6 +8,6 @@ window.APP_CONFIG = {
 
   // 로그인(Supabase). Supabase 대시보드 → Project Settings → API 에서 복사
   // 여기에는 Project URL과 anon(public) 키만! service_role 키는 절대 넣지 마세요 (공개 저장소라 누구나 봄)
-  SUPABASE_URL: "",
-  SUPABASE_ANON_KEY: "",
+  SUPABASE_URL: "https://nfgfldlibxbdegwbmnve.supabase.co",
+  SUPABASE_ANON_KEY: "sb_publishable_lmZE1f80HPLCUu0bikTMMw_j8YVag5t",
 };
