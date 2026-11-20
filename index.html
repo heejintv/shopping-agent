@@ -298,6 +298,7 @@
   .mini { height: 4px; background: var(--soft); border-radius: 4px; margin-top: 6px; }
   .mini i { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
   td.price .store-sub { color: var(--muted); font-size: 12px; font-weight: 400; white-space: nowrap; }   /* 가격 아래(옆) 쇼핑몰 */
+  @media (max-width: 640px) { td.price .store-sub { white-space: normal; } }   /* 휴대폰: 긴 쇼핑몰 이름이 화면 밖으로 넘치지 않게 줄바꿈 */
   td.rating, td.link { white-space: nowrap; }
   ul.pc { margin: 0; padding-left: 16px; }
   .pros li::marker { color: var(--value); }

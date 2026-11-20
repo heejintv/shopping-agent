@@ -1,5 +1,7 @@
 # Pickit (픽잇) — AI 쇼핑 비교
 
+[![test](https://github.com/heejintv/shopping-agent/actions/workflows/test.yml/badge.svg)](https://github.com/heejintv/shopping-agent/actions/workflows/test.yml)
+
 > **고민은 짧게, 선택은 정확하게.** AI가 웹을 검색해 인기 모델 5개를 비교하고, 딱 맞는 하나를 골라드려요.
 
 상품명을 입력하면 AI 에이전트가 웹을 직접 검색해서 **브랜드·모델별 가격, 쇼핑몰, 별점, 장단점, 링크**를 비교표로 정리해 주는 웹서비스입니다.
@@ -273,6 +275,7 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | `supabase/schema.sql` | Supabase 표 3개·가입 트리거·RLS 규칙. SQL Editor에서 실행 |
 | `supabase/check_favorites.sql` | 찜이 계정끼리 섞였는지 점검하는 SQL (읽기 전용, 삭제문은 주석) |
 | `tests/` | 서버 단위 테스트 (`python -m unittest discover -s tests -v`) |
+| `e2e/` | Playwright 화면 테스트, 데모 모드 (`npm ci && npx playwright install chromium && npm run test:e2e`) |
 | `chat.py` | 상담 챗봇. 지시문, 입력 정리, Gemini/Claude 호출과 자동 재시도 |
 | `polish.py` | 추천 이유 끝맺음을 "~해요/~예요"로 다듬기 (응답할 때 적용, `python polish.py demo`로 데모 파일 정리) |
 | `stats.py` | 모니터링 기록. 요청·엔진 결과를 `logs/`에 저장하고 `/stats` 요약 계산 |

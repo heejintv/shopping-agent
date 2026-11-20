@@ -49,3 +49,9 @@ logs/
 
 # Render 빌드 때 복사하는 Claude CLI 실행 파일
 /bin/
+
+# Playwright
+node_modules/
+test-results/
+playwright-report/
+.playwright-mcp/
