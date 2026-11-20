@@ -7,6 +7,7 @@
 
 - **검색은 Claude**: 로컬에 설치된 Claude Code CLI(`claude -p`)가 웹 검색 → 쇼핑몰 페이지 확인 → JSON 정리
 - **상담은 Gemini**: Gemini API가 검색 결과만 보고 답변 (혼잡·한도 초과면 Claude로 자동 재시도)
+- **회원은 Supabase**: 이메일 회원가입·로그인, 계정별 하루 사용 횟수·찜 목록·사용 기록 저장, 관리자 대시보드
 
 ## 주요 기능
 
@@ -20,14 +21,19 @@
 - 별점·리뷰 수는 링크 확인 때 연 상품 페이지에서 직접 읽음 (JSON-LD aggregateRating → 다나와 페이지 데이터, 5점 만점으로 환산, AI 값보다 우선, `rating_source`에 page/ai 기록)
 - 확인하지 못한 값은 지어내지 않고 "확인 안 됨"으로 표시
 - 같은 검색어는 캐시해서 다시 검색하지 않음, 최근 검색 바로 보기
-- 새 검색은 진행 단계(캐시 확인 → 웹 검색 → 링크 확인 3/5 → 결과 정리)와 경과 시간을 실시간으로 보여주고, "검색 취소" 가능 (취소하면 하루 횟수 차감 없음)
+- 새 검색은 진행 단계(캐시 확인 → 웹 검색 → 링크 확인 3/5 → 결과 정리)와 경과 시간을 실시간으로 보여주고, "검색 취소" 가능 (취소한 검색은 하루 횟수에 안 셈)
 - 상담 챗봇: 추천 1개 / 이유 두 줄 / 사기 전에 확인할 점 하나
 - **챗봇 ↔ 결과 화면 연결**: 챗봇이 추천한 상품 카드로 스크롤하고 시머·글로우 효과와 "✨ AI 추천" 배지로 강조
-- **찜하기와 1:1 비교**: ♡로 찜(브라우저에 저장, 검색어별로 모아 보기), 찜한 상품 2개를 나란히 비교하고 "AI에게 물어보기"
+- **찜하기와 1:1 비교**: ♡로 찜(회원은 내 계정에, 비회원은 이 기기에 저장, 검색어별로 모아 보기), 찜한 상품 2개를 나란히 비교하고 "AI에게 물어보기"
 - **비교 답변 서버 검증**: 서버가 두 상품의 숫자를 직접 비교하고, AI가 이유에 틀린 비교를 쓰면 고쳐서 보여줌
 - **모니터링 대시보드**: 📊 서버 상태 화면에서 요청 수, 응답 시간, 엔진별 성공·실패, 정상/주의/장애 상태를 10초마다 확인
 - **결과 공유**: "🔗 공유"로 링크(`?q=검색어&c=조건`)나 요약 텍스트 복사, 휴대폰은 공유 시트. 링크로 들어오면 저장된 결과만 바로 보여주고 새 검색은 하지 않음
 - 서버가 꺼져 있으면 저장된 결과를 보여주는 데모 모드
+- **회원가입·로그인 (Supabase Auth)**: 헤더의 "로그인"에서 이메일+비밀번호로 가입·로그인. 로그인하면 이메일 앞부분, "오늘 검색 3/5", 로그아웃 표시
+- **회원 전용 새 검색·상담**: 비회원은 최근 검색·공유 링크·데모·필터·정렬만. 새 검색을 누르면 "새 검색은 회원 전용이에요", 챗봇은 자물쇠 안내 카드
+- **계정별 하루 제한 + 서버 전체 상한**: 회원 한 명당 새 검색 5회·상담 30회, 모든 회원 합쳐 새 검색 20회. admin은 무제한
+- **찜 목록 동기화**: 로그인하면 내 계정 찜(Supabase `favorites`)만 보이고 다른 기기에서도 같은 목록. 로그아웃하면 이 기기의 기록을 모두 지움
+- **🛠 관리자 대시보드**: admin 계정에만 보이는 버튼. 회원 수, 오늘 사용량, Gemini 토큰·한도, 사용자별 순위, 최근 기록, 7일 그래프
 
 ## 스크린샷
 
@@ -52,26 +58,48 @@
 | ![서버 상태 — 숫자 카드, 응답 시간 그래프, 엔진별 성공·실패](screenshots/status.png) |
 | `screenshots/status.png` |
 
+#### 회원 기능
+
+| 로그인 · 회원가입 창 | 로그인 후 헤더 | 새 검색 회원 전용 안내 |
+|---|---|---|
+| ![로그인 창 — 이메일·비밀번호, 회원가입 전환, 질문 기록 안내](screenshots/login.png) | ![헤더 — 이메일 앞부분, 오늘 검색 3/5, 로그아웃, 관리자 버튼](screenshots/header-member.png) | ![비회원이 검색을 누르면 — 자물쇠와 로그인/회원가입 버튼](screenshots/search-gate.png) |
+| `screenshots/login.png` | `screenshots/header-member.png` | `screenshots/search-gate.png` |
+
+| 챗봇 로그인 전 화면 | 비회원 찜 가져오기 확인창 |
+|---|---|
+| ![챗봇 — 자물쇠 아이콘, 로그인하고 상담받기, 회원 혜택 3줄](screenshots/chat-guest.png) | ![이 기기에 저장된 찜 N개를 내 계정에 추가할까요?](screenshots/wish-import.png) |
+| `screenshots/chat-guest.png` | `screenshots/wish-import.png` |
+
+#### 관리자 대시보드
+
+| 관리자 대시보드 (PC) | 관리자 대시보드 (휴대폰) | 관리자가 아닐 때 |
+|---|---|---|
+| ![관리자 — 숫자 카드, Gemini·서버 전체 한도 막대, 7일 그래프, 순위·최근 기록](screenshots/admin.png) | ![관리자 — 휴대폰에서 카드 2열, 표는 옆으로 밀어 보기](screenshots/admin-mobile.png) | ![관리자만 볼 수 있어요 안내 카드](screenshots/admin-denied.png) |
+| `screenshots/admin.png` | `screenshots/admin-mobile.png` | `screenshots/admin-denied.png` |
+
 ## 데모
 
 GitHub Pages: https://heejintv.github.io/shopping-agent/
 
 페이지가 열리면 내 PC 서버(`localhost:5000`) → `config.js`의 ngrok 주소 순서로 연결을 시도합니다.
-- 연결되면 바로 검색 가능: "🟢 실시간 검색 가능 (오늘 남은 N회)"
+- 연결되면 로그인한 회원은 바로 새 검색 가능 (헤더에 "오늘 검색 N/5"). 비회원은 최근 검색·공유 링크만
 - 연결되지 않으면 자동으로 **데모 모드**: 미리 검색해 둔 결과(`demo/`)만 볼 수 있고 챗봇은 쓸 수 없습니다.
 
 ## 전체 구조
 
 ```
- ┌──────────────────────────────┐
- │ 브라우저 (index.html)          │  GitHub Pages 또는 http://localhost:5000
- └──────────────┬───────────────┘
-                │  ① localhost:5000 직접 (내 PC, 무제한)
-                │  ② ngrok 고정 도메인 (외부 접속, 하루 제한)
-                ▼
- ┌──────────────────────────────┐
- │ Flask 서버 (app.py)           │  WSL에서 실행, 127.0.0.1:5000에서만 받음
- │  출처 확인 · 하루 제한 · 캐시   │
+ ┌──────────────────────────────┐  로그인·찜(내 행만, RLS)  ┌──────────────────────────┐
+ │ 브라우저 (index.html)          │ ───────────────────────▶ │ Supabase                  │
+ │ admin.html (관리자)            │      supabase-js          │  Auth (회원가입·로그인)    │
+ └──────────────┬───────────────┘      (anon 키)            │  profiles · favorites     │
+                │  Authorization: Bearer <로그인 토큰>        │  usage_logs               │
+                │  ① localhost:5000 직접 (내 PC, 무제한)       └────────────▲─────────────┘
+                │  ② Render · ngrok (계정별 하루 제한)                      │
+                ▼                                                          │ 토큰 확인 · 등급 ·
+ ┌──────────────────────────────┐                                         │ 사용 기록 · 하루 횟수
+ │ Flask 서버 (app.py)           │ ───────────────────────────────────────┘ (SERVICE 키, 서버에서만)
+ │  출처 확인 · 로그인 확인       │
+ │  하루 제한 · 캐시              │
  └───────┬──────────────┬───────┘
          │              │
   GET /search      POST /chat
@@ -120,7 +148,9 @@ Claude에게는 **인기 상위 5개 모델만, 웹 검색은 최대 3번**까�
 - 휴대폰에서는 강조하는 동안 채팅창을 잠깐 내려서 카드가 보이게 합니다. 움직임 줄이기(`prefers-reduced-motion`) 설정이면 시머와 튀어나오기 없이 글로우만 보여줍니다.
 
 ### 찜하기와 1:1 비교
-- **찜하기**: 추천 카드와 표의 ♡를 누르면 ♥로 바뀌고 브라우저(localStorage)에 저장합니다. 상품명, 가격, 쇼핑몰, 별점, 장단점, 확인된 링크, 검색어, 찜한 날짜를 같이 저장하고, 저장에 실패해도 화면은 그대로 동작합니다.
+- **찜하기**: 추천 카드와 표의 ♡를 누르면 ♥로 바뀝니다. 상품명, 가격, 쇼핑몰, 별점, 장단점, 확인된 링크, 검색어, 찜한 날짜를 같이 저장하고, 저장에 실패해도 화면은 그대로 동작합니다.
+  - 회원: Supabase `favorites` 표의 **내 행만** 읽고 씁니다 (브라우저에는 저장하지 않음). 다른 기기에서도 같은 목록이 보입니다.
+  - 비회원: 이 기기의 브라우저 저장소(`pickit:guest:wishlist`)에만 저장합니다. 자세한 규칙은 [찜 목록 저장 방식](#찜-목록-저장-방식)
 - **찜 목록**: 위쪽 "♥ 찜 목록 (N)"에서 다른 검색어 상품까지 검색어별로 묶어 보고, 하나씩 지우거나 전체 비울 수 있습니다.
 - **1:1 비교**: 2개를 체크하면 "비교하기"가 켜집니다 (3개째는 체크 안 됨). 가격·쇼핑몰·별점·장단점·링크를 나란히 보여주고, 가격은 낮은 쪽, 별점은 높은 쪽을 메인 색으로 표시합니다.
 - **AI에게 물어보기**: 두 상품만 `/chat`(`mode: "compare"`)에 보내 "이 두 개 중에 뭐가 나아?"를 묻습니다. 답변은 비교 화면 위쪽에 바로 나오고, AI가 고른 칸에 같은 강조 효과가 붙습니다. 채팅창 대화 기록에도 남고, 하루 제한은 일반 질문과 같은 횟수를 씁니다.
@@ -153,7 +183,7 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | 인기 검색어 TOP 5 | 오늘 검색한 검색어 (캐시 적중 포함) |
 
 - **기록 방식** (`stats.py`): `logs/stats-YYYY-MM-DD.json`에 날짜별로 저장하고 30일이 지난 파일은 지웁니다. `logs/`는 `.gitignore`에 있어 저장소에 올라가지 않습니다.
-- **개인정보 없음**: 요청마다 종류·시각·응답 시간·성공 여부·오류 코드·검색어만 남깁니다. 챗봇 질문 원문, 답변, IP는 저장하지 않습니다.
+- **개인정보 없음**: 요청마다 종류·시각·응답 시간·성공 여부·오류 코드·검색어만 남깁니다. 챗봇 질문 원문, 답변, IP는 저장하지 않습니다. (회원 사용 기록은 이와 별도로 Supabase `usage_logs`에 남고, 여기에는 질문 원문이 300자까지 들어갑니다 — [아래](#supabase-표와-rls-규칙) 참고)
 - **에러로 치는 것**: 검색·챗봇이 실패해서 오류를 돌려준 경우만. 하루 제한(429 응답)은 서버 오류가 아니라 따로 셉니다.
 - `/stats`도 검색 API와 같은 CORS 규칙을 따르고, 허용하지 않은 출처(Origin)는 403으로 거절합니다.
 
@@ -169,6 +199,7 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | 외부 공개 | **ngrok** (무료 고정 도메인) | 내 PC의 `localhost:5000`을 인터넷에 연결 |
 | 프론트엔드 | **GitHub Pages**, HTML·CSS·JavaScript | 화면 호스팅. 프레임워크 없이 한 파일(`index.html`) |
 | 링크 검증 | Python 표준 라이브러리 (`urllib`) | 상품 페이지에 직접 접속해 확인 (`links.py`) |
+| 회원·DB | **Supabase** (Auth + Postgres + RLS), `supabase-js` 2.45.4 | 회원가입·로그인, 찜 목록, 사용 기록, 관리자 권한 (`auth.py`, `members.py`, `supabase/`) |
 
 ## 보안 장치
 
@@ -176,6 +207,7 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 - `GEMINI_API_KEY` 같은 비밀 값은 `.env`에만 두고, 코드는 **환경변수로만** 읽습니다.
 - `.env`는 `.gitignore`에 들어 있어 커밋되지 않습니다. 저장소에는 값이 빈 `.env.example`만 올립니다.
 - 검색 비용 같은 내부 정보는 `make_demo.py`로 공개용 결과를 만들 때 빠집니다.
+- Supabase 키: 화면(`config.js`)에는 공개용 URL·anon(publishable) 키만 둡니다. **SERVICE 키는 서버 환경변수에만** 있고 화면·응답·로그에 나오지 않습니다. 커밋 전에 서비스 키 모양(`sb_secret_`, JWT)이 섞였는지 검사합니다.
 
 ### 2. 출처 확인
 - **CORS**: GitHub Pages(`https://heejintv.github.io`)에서 온 요청만 브라우저가 응답을 읽을 수 있습니다.
@@ -211,25 +243,36 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 
 | API | 설명 |
 |---|---|
-| `GET /search?q=&c=` | 검색. `c`는 원하는 조건(선택). 검색어+조건 조합으로 캐시하고, 캐시에 없으면 AI 실행(하루 횟수 차감) |
-| `GET /search/stream?q=&c=` | 새 검색의 진행 단계를 실시간으로 보냄 (Server-Sent Events: 캐시 확인 → AI가 웹 검색 중 → 링크 확인 중 3/5 → 결과 정리 중). 연결을 끊으면 취소 |
-| `POST /search/cancel/<id>` | 진행 중인 스트림 검색 취소. claude 프로세스를 멈추고 하루 횟수를 되돌림 |
+| `GET /search?q=&c=` | 🔒 검색. `c`는 원하는 조건(선택). 검색어+조건 조합으로 캐시하고, 캐시에 없으면 AI 실행(계정·서버 전체 하루 횟수 차감) |
+| `GET /search/stream?q=&c=` | 🔒 새 검색의 진행 단계를 실시간으로 보냄 (Server-Sent Events: 캐시 확인 → AI가 웹 검색 중 → 링크 확인 중 3/5 → 결과 정리 중). 연결을 끊으면 취소 |
+| `POST /search/cancel/<id>` | 진행 중인 스트림 검색 취소. claude 프로세스를 멈추고, 취소된 검색은 하루 횟수에 안 셈 |
 | `GET /cached?q=&c=` | 공유 링크용. 저장된 결과만 돌려주고 없으면 404 (새 검색·횟수 차감 없음) |
 | `GET /history` | `cache/`에 저장된 검색어 목록 (최근 순) |
 | `GET /history/<파일명>` | 저장된 결과 하나 (AI 실행·횟수 차감 없음) |
-| `POST /chat` | 상담 챗봇. `{question, results, history}`를 받아 검색 결과 안에서만 답함. `mode: "compare"`면 찜한 상품 정확히 2개만 받아 둘 중 하나를 추천 (대화 기록은 무시, 하루 제한은 같은 횟수) |
+| `POST /chat` | 🔒 상담 챗봇. `{question, results, history}`를 받아 검색 결과 안에서만 답함. `mode: "compare"`면 찜한 상품 정확히 2개만 받아 둘 중 하나를 추천 (대화 기록은 무시, 하루 제한은 같은 횟수) |
 | `GET /stats` | 모니터링 요약 (가동 시간, 오늘 요청 수, 응답 시간, 엔진별 성공·실패, 캐시 적중률, 인기 검색어, 사이트별 링크 확인 `danawa 0/5`, 상태) |
-| `GET /health` | 서버 상태, 무제한 여부(`unlimited`)와 남은 검색 횟수(`remaining`) |
+| `GET /health` | 서버 상태, 내 PC 직접 접속이면 `unlimited: true` (계정별 남은 횟수는 `/me`) |
+| `GET /me` | 🔒 로그인한 사람의 등급(`role`)과 오늘 남은 새 검색·상담 횟수, 서버 전체 남은 새 검색 |
+| `GET /admin/stats?period=today\|7d\|30d&q=이메일` | 🔒👑 관리자 대시보드 데이터. admin이 아니면 403 |
+
+🔒 = `Authorization: Bearer <Supabase 로그인 토큰>` 필요 (없거나 틀리면 401, AI 호출 전에 막음). 👑 = `profiles.role = 'admin'`만.
 
 ## 파일
 
 | 파일 | 역할 |
 |---|---|
 | `index.html` | 화면 (Pickit 로고·첫 화면, 검색창, 원하는 조건, 최근 검색, 추천 카드, 비교표, 상담 챗봇, 찜 목록·1:1 비교, 데모 모드) |
-| `config.js` | 검색 서버 주소 (`RENDER_URL`, `SERVER_URL`=ngrok). 연결 순서: 내 PC → Render → ngrok → 데모 |
+| `config.js` | 검색 서버 주소 (`RENDER_URL`, `SERVER_URL`=ngrok), Supabase URL·anon 키. 연결 순서: 내 PC → Render → ngrok → 데모 |
 | `render.yaml` | Render 배포 설정 (빌드 때 Claude CLI 설치, 시작 명령, 헬스체크, 환경변수) |
 | `gunicorn.conf.py` | 배포용 서버 설정 (워커 1 + 스레드 8, timeout 300초) |
-| `app.py` | Flask 백엔드. 검색·챗봇 API, 캐시, 하루 제한, 출처 확인 |
+| `app.py` | Flask 백엔드. 검색·챗봇·관리자 API, 캐시, 로그인 확인, 하루 제한, 출처 확인 |
+| `auth.py` | Supabase 로그인 토큰 확인 (`Authorization: Bearer`) |
+| `members.py` | SERVICE 키로 Supabase 읽기·쓰기: 등급(`profiles.role`), 사용 기록(`usage_logs`), 계정별·서버 전체 하루 한도 |
+| `admin_stats.py` | 관리자 대시보드 집계 (숫자 카드, Gemini 사용량, 순위, 최근 기록, 7일 그래프) |
+| `admin.html` | 관리자 대시보드 화면 (데이터는 `/admin/stats`에서만 받음) |
+| `supabase/schema.sql` | Supabase 표 3개·가입 트리거·RLS 규칙. SQL Editor에서 실행 |
+| `supabase/check_favorites.sql` | 찜이 계정끼리 섞였는지 점검하는 SQL (읽기 전용, 삭제문은 주석) |
+| `tests/` | 서버 단위 테스트 (`python -m unittest discover -s tests -v`) |
 | `chat.py` | 상담 챗봇. 지시문, 입력 정리, Gemini/Claude 호출과 자동 재시도 |
 | `polish.py` | 추천 이유 끝맺음을 "~해요/~예요"로 다듬기 (응답할 때 적용, `python polish.py demo`로 데모 파일 정리) |
 | `stats.py` | 모니터링 기록. 요청·엔진 결과를 `logs/`에 저장하고 `/stats` 요약 계산 |
@@ -261,7 +304,7 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | `SUPABASE_URL`, `SUPABASE_ANON_KEY` | — | 로그인 확인 |
 | `SUPABASE_SERVICE_KEY` | — | 서버 전용. 등급 확인·사용 기록 (화면·GitHub·로그에 절대 넣지 않음) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | — | (Render) `claude -p` 로그인 토큰. 내 PC에서 `claude setup-token`으로 발급 |
-| `DATA_DIR` | 프로젝트 폴더 | 캐시·하루 횟수·모니터링 기록을 둘 폴더 |
+| `DATA_DIR` | 프로젝트 폴더 | 캐시·모니터링 기록을 둘 폴더 (하루 횟수는 Supabase `usage_logs`) |
 | `SEED_DEMO` | — | `1`이면 처음 켜질 때 `demo/` 결과를 캐시로 불러옴 (Render에서는 자동) |
 | `RENDER`, `RENDER_EXTERNAL_URL` | (Render가 자동 설정) | Render에서 도는지 판별, Render 주소를 허용 출처에 추가 |
 
@@ -314,14 +357,14 @@ ngrok http --url=<내도메인>.ngrok-free.app 5000  # 터미널 2
 - **빌드:** Claude Code CLI 설치(`curl -fsSL https://claude.ai/install.sh | bash`) → 실행 파일을 프로젝트의 `bin/`으로 복사 → `pip install -r requirements.txt`
 - **시작:** `PATH="$PWD/bin:$PATH" gunicorn app:app` (설정은 `gunicorn.conf.py`: 워커 1개 + 스레드 8개, timeout 300초. 진행 상황 스트림은 1초마다 ping을 보내 연결을 유지)
 - **헬스체크:** `/health`
-- **Render에서 달라지는 점:** 모든 요청을 외부로 보고 하루 제한 적용(검색 5회, 채팅 30회). 처음 켜질 때 `demo/` 결과를 캐시로 불러와서 재시작해도 기본 결과가 보임. CORS는 `https://heejintv.github.io` 그대로
+- **Render에서 달라지는 점:** 모든 요청을 외부로 보고 계정별 하루 제한 적용(새 검색 5회, 상담 30회, 서버 전체 새 검색 20회). 처음 켜질 때 `demo/` 결과를 캐시로 불러와서 재시작해도 기본 결과가 보임. CORS는 `https://heejintv.github.io` 그대로
 
 직접 해야 하는 단계:
 
 1. **Claude 토큰 발급 (내 PC):** 터미널에서 `claude setup-token` 실행 → 브라우저에서 로그인 → 출력된 토큰(`sk-ant-oat…`)을 복사해 둡니다. 비밀번호처럼 다루고 저장소·채팅에 붙여 넣지 마세요.
 2. **Render 가입:** https://render.com 에서 GitHub 계정으로 가입하고, 이 저장소 접근을 허용합니다.
 3. **블루프린트로 만들기:** 대시보드 → **New → Blueprint** → 이 저장소 선택 → `render.yaml`을 읽어 `pickit` 서비스가 나옵니다.
-4. **비밀 환경변수 입력:** 만드는 화면(또는 서비스 → **Environment**)에서 `CLAUDE_CODE_OAUTH_TOKEN`(1번 토큰)과 `GEMINI_API_KEY`를 입력합니다. 나머지(`SEARCH_ENGINE`, `CHAT_ENGINE`, `GEMINI_MODEL`, 하루 제한)는 `render.yaml` 값이 들어가 있고 필요하면 바꿉니다.
+4. **비밀 환경변수 입력:** 만드는 화면(또는 서비스 → **Environment**)에서 `CLAUDE_CODE_OAUTH_TOKEN`(1번 토큰), `GEMINI_API_KEY`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY`를 입력합니다. 나머지(`SEARCH_ENGINE`, `CHAT_ENGINE`, `GEMINI_MODEL`, 하루 제한)는 `render.yaml` 값이 들어가 있고 필요하면 바꿉니다.
 5. **배포 확인:** 빌드 로그에 `claude --version` 결과가 찍히고, 서비스 주소(`https://pickit-xxxx.onrender.com`)의 `/health`가 `{"ok": true, ...}`를 돌려주면 성공입니다.
 6. **화면 연결:** `config.js`의 `RENDER_URL`에 그 주소(끝에 `/` 없이)를 넣고 push하면 GitHub Pages가 Render로 연결합니다.
 
@@ -335,7 +378,7 @@ ngrok http --url=<내도메인>.ngrok-free.app 5000  # 터미널 2
 
 알아둘 점 (무료 플랜):
 - 15분 동안 요청이 없으면 잠들고, 다음 접속 때 깨는 데 최대 1분 걸립니다. 화면에 "서버를 깨우는 중이에요 (최대 1분)"이 뜹니다.
-- 디스크가 유지되지 않아서 다시 켜지면 새로 검색한 캐시·하루 횟수·모니터링 기록이 초기화됩니다 (`demo/` 결과는 다시 불러옴).
+- 디스크가 유지되지 않아서 다시 켜지면 새로 검색한 캐시·모니터링 기록이 초기화됩니다 (`demo/` 결과는 다시 불러옴). 하루 사용 횟수는 Supabase `usage_logs`에서 세므로 유지됩니다.
 - 메모리가 512MB라 검색을 동시에 여러 개 돌리면 부족할 수 있습니다.
 - 검색은 내 Claude 구독 사용량을 씁니다. 토큰을 공개 서비스에 써도 되는지 Anthropic 이용 약관을 확인하세요.
 
@@ -345,22 +388,101 @@ ngrok http --url=<내도메인>.ngrok-free.app 5000  # 터미널 2
 python make_demo.py   # cache/ → demo/ 복사 (검색 비용 등 내부 정보는 제외)
 ```
 
+## 회원가입·로그인 (Supabase Auth)
+
+### 로그인 흐름
+1. 헤더의 **로그인** → 이메일+비밀번호로 로그인 또는 회원가입 (`supabase-js` 2.45.4, CDN 버전 고정). 가입 확인 메일의 링크를 누르면 로그인할 수 있어요.
+2. 로그인하면 헤더에 **이메일 앞부분 · 오늘 검색 3/5 · 로그아웃**이 보이고, admin이면 **🛠 관리자** 버튼도 보여요.
+3. 새 검색·상담 요청에는 `Authorization: Bearer <로그인 토큰>`이 붙어요.
+4. 서버(`auth.py`)는 토큰을 Supabase(`/auth/v1/user`)에 물어 확인하고, 없거나 틀리면 **Claude·Gemini를 부르기 전에 401**로 막아요. 확인된 사용자 id는 사용 기록에 씁니다.
+5. 로그인 창에는 "서비스 개선을 위해 상담 질문 내용이 기록돼요" 안내가 있어요.
+
+### 회원 전용 기능과 하루 제한
+표는 [보안 장치 3](#3-회원-전용-기능과-하루-사용-제한-계정-기준)에 있어요. 요약하면:
+
+- **비회원**: 최근 검색, 공유 링크, 데모, 필터·정렬은 그대로. 새 검색은 "🔒 새 검색은 회원 전용이에요" + 로그인/회원가입 버튼, 챗봇은 가운데 안내 카드(자물쇠 · 로그인하고 상담받기 · 회원 혜택 3줄)만 보이고 예시 질문·입력창은 숨김
+- **회원**: 계정당 하루 새 검색 5회(`DAILY_LIMIT`), 상담 30회(`CHAT_DAILY_LIMIT`, 1:1 비교 포함)
+- **서버 전체 상한**: 모든 회원 합쳐 새 검색 하루 20회(`GLOBAL_SEARCH_LIMIT`). 넘으면 "오늘 검색이 모두 소진됐어요"
+- **admin**(`profiles.role = 'admin'`)과 내 PC 직접 접속: 둘 다 무제한, 서버 전체 상한에도 안 들어감(`exempt`)
+- 횟수는 **한국 시간 자정 기준, 성공한 것만** 셉니다 (저장된 결과·취소·실패·한도 초과는 안 셈). 같은 사람이 동시에 여러 번 보내도 넘지 않게 처리 중인 요청까지 셉니다.
+
+### Supabase 표와 RLS 규칙
+`supabase/schema.sql`에 모두 들어 있어요 (여러 번 실행해도 됨). 화면은 anon 키 + 로그인 토큰으로, 서버는 SERVICE 키로 접근합니다. SERVICE 키는 RLS를 건너뛰므로 서버에만 둡니다.
+
+| 표 | 내용 | 화면(로그인한 사람)이 할 수 있는 것 | 누가 쓰나 |
+|---|---|---|---|
+| `profiles` | `id`(auth 사용자 id), `email`, `role`(`user` 기본 / `admin`), `created_at` | 자기 행만 읽기·수정. **`role`·`id`는 못 바꿈** (열 단위 권한으로 `email`만 수정 허용) | 가입하면 트리거(`handle_new_user`)가 자동으로 한 줄 생성. admin 지정은 SQL Editor에서만 |
+| `favorites` | `user_id`, `item_key`(브랜드+모델), `item`(상품 정보 JSON, 8KB 이하), `query`(검색어), `created_at` | 자기 행만 읽기·추가·삭제. 넣을 수 있는 열도 제한 (`created_at`은 서버 시각만) | 화면이 `supabase-js`로 직접 |
+| `usage_logs` | `user_id`, `email`, `action`(search/chat/compare), `query`(검색어 또는 질문 원문, 300자), `engine`, `status`(ok·cached·limited·cancelled·timeout·error), `duration_ms`, `tokens`(Gemini 사용 토큰), `exempt`, `created_at` | 자기 기록만 읽기, admin은 전체 읽기. **쓰기·수정·삭제 불가** | 서버만 (SERVICE 키) |
+
+- admin 확인은 `public.is_admin()` 함수(security definer)로 해서 RLS 안에서 `profiles`를 다시 읽다가 꼬이지 않게 했어요.
+- 탈퇴(auth 사용자 삭제)하면 세 표의 행이 함께 지워집니다 (`on delete cascade`).
+
+### 찜 목록 저장 방식
+- **브라우저 저장소를 계정별로 분리**: 비회원은 `pickit:guest:*`, 회원은 `pickit:u:<user_id>:*` (숨긴 최근 검색어 등). 회원의 찜은 브라우저에 저장하지 않고 `favorites`의 내 행만 씁니다.
+- **로그아웃·계정 변경**: 브라우저의 `pickit:` 저장소 전부와 화면의 찜·대화·1:1 비교 답변·검색 결과·주소창 검색어를 지웁니다.
+- **로그인할 때 자동으로 합치지 않음**: 이 기기에 비회원 찜이 있으면 "이 기기에 저장된 찜 N개를 내 계정에 추가할까요?"라고 묻고, **예**일 때만 추가한 뒤 비회원 찜을 비웁니다. 아니오면 그 로그인 동안 다시 묻지 않습니다.
+- 이미 로그인된 상태로 페이지를 열면, 로그인 확인이 끝날 때까지 비회원 찜을 보여주지 않습니다.
+
+### 관리자 대시보드 (`admin.html`, `GET /admin/stats`)
+admin 계정으로 로그인하면 헤더에 **🛠 관리자** 버튼이 보입니다.
+
+| 영역 | 내용 |
+|---|---|
+| 조건 | 기간(오늘 / 7일 / 30일), 이메일 검색 (순위·최근 기록에 적용), 새로고침 |
+| 숫자 카드 | 전체 회원 수, 오늘 사용자 수, 오늘 새 검색 수, 오늘 상담 수 (성공한 것만) |
+| Gemini 사용량 | 오늘 호출 수·토큰 합계, `GEMINI_DAILY_LIMIT` 대비 남은 양 막대 (80% 주황, 100% 빨강) |
+| 서버 전체 새 검색 | 오늘 사용 수 / `GLOBAL_SEARCH_LIMIT` 막대 (admin·내 PC 제외) |
+| 최근 7일 사용량 | 일별 새 검색·상담 막대그래프 |
+| 사용자별 순위 | 이메일, 새 검색 수, 상담 수, 마지막 사용 시각 |
+| 최근 기록 | 시간, 이메일, 종류(검색/상담/비교), 내용(검색어나 질문), 결과, 응답 시간. 실패는 빨간 행, 한도 초과는 노란 행 (결과 칸에도 글자로 표시) |
+
+- **서버에서 막기**: `/admin/stats`는 토큰 확인 → `profiles.role`을 **캐시 없이 매번** 확인 → admin이 아니면 403 (기록을 읽지도 않음). `admin.html` 파일에는 숫자가 하나도 없어서, 일반 사용자가 주소를 직접 열어도 "관리자만 볼 수 있어요"만 보입니다. 헤더 버튼을 숨기는 건 편의일 뿐입니다.
+- 응답은 `Cache-Control: no-store`, 날짜는 한국 시간 기준. 기간 안의 기록은 최근 20,000개까지 집계합니다.
+
+### DB 준비 순서
+1. Supabase 대시보드 → **SQL Editor** → `supabase/schema.sql` 전체를 붙여 넣고 **Run**
+2. **Authentication → URL Configuration**: Site URL과 Redirect URLs에 `https://heejintv.github.io/shopping-agent/`
+3. **Project Settings → API Keys**: URL·anon(publishable) 키는 `config.js`에, 세 값(`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY`)은 `.env`와 Render 환경변수에
+4. 관리자 지정: `update public.profiles set role = 'admin' where email = '내이메일';`
+5. (점검) 찜이 섞였는지: `supabase/check_favorites.sql`을 한 덩어리씩 실행
+
+## 고친 버그 (2026-11-20)
+
+### 1. 계정끼리 찜 목록이 섞임
+- **증상**: A로 로그인 → 목도리 2개 찜 → 로그아웃해도 찜 2개가 그대로 보임 → B로 가입·로그인하면 B에게도 목도리 2개가 보임
+- **원인**: 로그인 중 DB(`favorites`) 동기화가 실패하면(예: 표를 아직 안 만듦) 찜이 **모든 계정이 같이 쓰는 브라우저 키**(`shopping-agent:wishlist`)에 저장됐어요. 로그아웃하면 그 키를 다시 읽어 화면에 남았고, B가 로그인할 때 **브라우저 찜을 DB에 자동으로 합치는** 코드가 A의 찜을 B 계정에 넣었어요.
+- **해결**
+  - 로그인 중에는 찜을 브라우저에 쓰지 않고 `favorites`의 내 `user_id` 행만 읽고 씀
+  - 브라우저 저장소 키를 비회원용(`pickit:guest:*`)·계정별(`pickit:u:<user_id>:*`)로 분리, 예전 공용 찜 키는 섞였을 수 있어 버림
+  - 로그아웃·계정 변경 시 브라우저 저장소와 화면 기록(찜·대화·검색 결과·주소창 검색어)을 모두 지움
+  - 자동 합치기를 없애고 "이 기기에 저장된 찜 N개를 내 계정에 추가할까요?" 확인 후에만 추가
+  - `favorites`는 `created_at`을 화면에서 넣지 못하게 막음. 이미 섞인 행은 `check_favorites.sql`의 "가입 전 시각으로 저장된 찜" 쿼리로 찾을 수 있음 (예전 코드가 브라우저의 찜 시각을 그대로 넣었기 때문)
+
+### 2. 내 PC 서버에서 `/health` 500 → 화면이 데모 모드로 빠짐
+- **증상**: `NameError: name 'PROXY_HEADERS' is not defined` (`is_local_request`), `GET /health 500`
+- **원인**: 하루 횟수를 `usage.json`(IP 기준)에서 Supabase(계정 기준)로 옮기면서 옛 코드 묶음을 지울 때, 바로 아래에 있던 `PROXY_HEADERS` 정의(ngrok 경유 요청을 구분하는 헤더 목록)까지 같이 지웠어요. 테스트는 `is_local_request`를 가짜로 바꿔 두어 이 함수가 실제로 실행되지 않아 못 잡았어요. Render에서는 이 줄에 닿기 전에 함수가 끝나서 문제가 없었어요.
+- **해결**
+  - `PROXY_HEADERS` 복원, pyflakes로 전체 `.py`를 검사해 정의 안 된 이름이 더 없음을 확인
+  - `tests/test_modes.py` 추가: `is_local_request`를 가짜로 바꾸지 않고 내 PC 모드(직접·허용 출처·ngrok 경유·다른 사이트)와 Render 모드에서 `/health`, `/me`, `/search`, `/search/stream`, `/chat`을 직접 호출. `RENDER=true`로 앱을 새로 불러와 `/health`도 확인. 고치기 전 코드로 돌리면 내 PC 모드 테스트가 바로 실패함
+
+## 테스트
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니다.
+
+| 파일 | 확인하는 것 |
+|---|---|
+| `tests/test_auth.py` | 새 검색·스트림·상담: 토큰 없음/틀림 401, 계정 한도 429, 서버 전체 상한(admin 예외), 동시 요청, `/me`, 사용 기록 |
+| `tests/test_members.py` | Supabase REST 요청 모양 (키 헤더, 개수 세기, `exempt` 필터), 기록 실패해도 응답은 정상 |
+| `tests/test_modes.py` | 내 PC·Render 모드에서 실제 `is_local_request`를 거쳐 API 호출 |
+| `tests/test_admin.py` | `/admin/stats` 401·403·200, 대시보드 집계, Gemini 토큰 기록 |
+
+화면(브라우저) 동작은 직접 확인합니다.
+
 ## 주의
 
 검색 결과와 챗봇 답변은 AI가 웹에서 수집한 정보를 바탕으로 하며, 가격은 수시로 바뀝니다. 구매 전에 반드시 링크에서 다시 확인하세요.
-
-## 로그인 (Supabase) · 상담 챗봇
-
-- 새 검색(`/search`, `/search/stream`)과 상담 챗봇(`/chat`)은 **로그인한 회원만** 쓸 수 있어요. 최근 검색·공유 링크는 로그인 없이 동작해요.
-- 화면은 `supabase-js`로 이메일+비밀번호 로그인을 하고, 요청에 `Authorization: Bearer <토큰>`을 붙여요.
-- 서버(`auth.py`)는 토큰을 Supabase(`/auth/v1/user`)로 확인하고, 없거나 틀리면 Claude·Gemini를 부르기 전에 401로 막아요.
-- 서버(`members.py`)는 SERVICE 키로 `profiles.role`(admin이면 무제한)을 읽고 `usage_logs`에 사용 기록을 남겨요. `GET /me`는 오늘 남은 횟수.
-- 찜 목록은 로그인하면 브라우저 찜과 Supabase `favorites`를 합치고, 그 뒤로는 DB 기준이에요 (RLS로 본인 것만).
-- 환경변수: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY` (`.env` 또는 Render 대시보드)
-  - `config.js`에는 URL과 anon 키만. **service 키는 서버 전용**이라 화면·GitHub·로그에 절대 넣지 않아요.
-- DB 준비: `supabase/schema.sql`을 Supabase SQL Editor에서 실행 (profiles·usage_logs·favorites 표, 가입 트리거, RLS)
-- 관리자 대시보드: `admin.html` + `GET /admin/stats?period=today|7d|30d&q=이메일` (`admin_stats.py`)
-  - 토큰 확인 + `profiles.role = 'admin'`을 매번 새로 확인한 뒤에만 응답, 아니면 403. 화면 파일에는 데이터가 없어요.
-  - 헤더의 "🛠 관리자" 버튼은 admin에게만 보여요 (버튼을 숨기는 것일 뿐, 실제 차단은 서버에서).
-- 찜 점검: `supabase/check_favorites.sql` (계정별 찜 개수, 여러 계정에 들어간 상품, 가입 전 시각으로 들어온 행)
-- 테스트: `python -m unittest discover -s tests -v`
