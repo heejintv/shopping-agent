@@ -452,7 +452,26 @@
   .auth-msg.ok { color: var(--value); }
   .auth-switch { font-size: 13px; color: var(--muted); text-align: center; margin: 6px 0 0; }
   .auth-switch button { border: 0; background: none; color: var(--accent); font-weight: 600; font-size: 13px; padding: 0 2px; }
-  .msg .login-go { display: block; margin-top: 8px; padding: 7px 14px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font-weight: 600; font-size: 13px; }
+  .usage-badge { font-size: 12px; font-weight: 700; color: var(--accent); background: var(--accent-soft); padding: 4px 10px; border-radius: 99px; white-space: nowrap; }
+  .usage-badge[hidden] { display: none; }
+  .ghost { padding: 10px 18px; border: 1px solid var(--accent); border-radius: 10px; background: var(--card); color: var(--accent); font-weight: 600; white-space: nowrap; }
+  .gate-btns { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+
+  /* 새 검색 회원 전용 안내 */
+  .gate { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px; padding: 6px 0; }
+  .gate p { margin: 0; color: var(--muted); font-size: 13px; }
+
+  /* 챗봇 로그인 전 화면: 예시 칩·입력창 숨기고 가운데 안내 카드 */
+  #chatBox.guest #chatEx, #chatBox.guest #chatForm, #chatBox.guest #chatCount { display: none; }
+  #chatBox.guest #chatLog { justify-content: center; align-items: center; padding: 24px; }
+  .chat-gate { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 16px; width: 100%; max-width: 280px; }
+  .chat-gate .lock { width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); }
+  .chat-gate .lock svg { width: 26px; height: 26px; }
+  .chat-gate h3 { margin: 0; font-size: 18px; }
+  .chat-gate ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; font-size: 14px; color: var(--muted); }
+  .chat-gate li::before { content: "✓ "; color: var(--accent); font-weight: 700; }
+  .chat-gate .gate-btns { width: 100%; flex-wrap: nowrap; }
+  .chat-gate .gate-btns button { flex: 1; }
   .status-link { text-decoration: none; display: inline-block; }
   .heart { border: 0; background: none; color: var(--muted); font-size: 20px; line-height: 1; padding: 4px; transition: transform .15s; }
   .heart:hover { color: var(--accent); transform: scale(1.12); }
@@ -646,6 +665,7 @@
       <button type="button" id="wishBtn" class="wish-btn"><span class="hc">♥</span> 찜 목록 (<span id="wishCount">0</span>)</button>
       <button type="button" id="loginBtn" class="wish-btn">로그인</button>
       <span class="user-box" id="userBox" hidden><span class="user-name" id="userName"></span>
+        <span class="usage-badge" id="usageBadge" hidden></span>
         <button type="button" id="logoutBtn" class="wish-btn">로그아웃</button></span>
     </div>
   </header>
@@ -855,6 +875,8 @@ const NGROK_HEADERS = { "ngrok-skip-browser-warning": "1" };
 
 let demoMode = false;
 let authUser = null;   // 로그인한 사람 {id, email} | null (아래 "로그인" 부분에서 정함)
+let serverReady = false;   // 검색 서버에 연결됐는지 (/me 호출 가능)
+const MEMBER_SEARCH_LIMIT = 5;   // 안내 문구용 (실제 한도는 서버가 정함)
 let recentList = [];  // [{query, file, searched_at, count}] — 서버 /history 또는 demo/index.json
 const norm = s => s.trim().split(/\s+/).join(" ").toLowerCase();
 
@@ -864,7 +886,7 @@ function setStatus(text, cls = "") {
 }
 
 function showRemaining(d) {
-  if (d && d.unlimited) setStatus("🟢 내 PC 서버 연결됨 (무제한)", "ok");
+  if (d && d.unlimited) setStatus(API_BASE === LOCAL_URL ? "🟢 내 PC 서버 연결됨 (무제한)" : "🟢 실시간 검색 가능 (무제한)", "ok");
   else if (d && d.remaining != null) setStatus(`🟢 실시간 검색 가능 (오늘 남은 ${d.remaining}회)`, "ok");
 }
 
@@ -1083,8 +1105,10 @@ async function connect() {
     return openFromUrl();
   }
   demoMode = false;
+  serverReady = true;
   $("demo").style.display = "none";
   showRemaining(d);
+  refreshUsage();
   loadRecent();
   openFromUrl();
 }
@@ -1104,11 +1128,12 @@ async function fetchDemo(q, c) {
   return fetchSaved(hit);
 }
 
-async function fetchLive(q, c, signal) {
+async function fetchLive(q, c, signal, token) {
   let url = API_BASE + "/search?q=" + encodeURIComponent(q);
   if (c) url += "&c=" + encodeURIComponent(c);
-  const res = await fetch(url, { headers: API_HEADERS, signal });
+  const res = await fetch(url, { headers: { ...API_HEADERS, Authorization: `Bearer ${token}` }, signal });
   const data = await res.json();
+  loginExpired(res, data);
   if (res.status === 429) setStatus(`🟡 오늘 새 검색 횟수를 모두 썼어요 (최근 검색은 계속 볼 수 있어요)`, "bad");
   if (!res.ok) throw new Error(data.error || res.statusText);
   showRemaining(data);
@@ -1122,6 +1147,21 @@ function showError(msg) {
   $("error").style.display = "block";
 }
 function hideError() { $("error").style.display = "none"; }
+
+// 서버가 "로그인 필요(401)"라고 하면 로그인 창을 다시 띄움
+function loginExpired(res, data) {
+  if (res.status === 401 && data?.login_required) openAuth("login", data.error || "다시 로그인해 주세요.");
+}
+
+// 비회원이 새 검색을 누르면: 회원 전용 안내 + 로그인/회원가입 버튼
+function showMemberGate() {
+  $("notice").innerHTML = `<div class="gate"><b>🔒 새 검색은 회원 전용이에요</b>
+    <p>최근 검색·공유 링크·필터·정렬은 로그인 없이 쓸 수 있어요.</p>
+    <div class="gate-btns"><button type="button" class="primary" data-auth="login">로그인</button>
+    <button type="button" class="ghost" data-auth="signup">회원가입</button></div></div>`;
+  $("notice").style.display = "block";
+  $("notice").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
 
 connect();
 
@@ -1139,6 +1179,9 @@ $("f").addEventListener("submit", async e => {
     catch (err) { showError(err.message); }
     return;
   }
+  if (!authUser) return showMemberGate();
+  const token = await authToken();
+  if (!token) return openAuth("login", "로그인이 만료됐어요. 다시 로그인해 주세요.");
   $("btn").disabled = true;
   $("results").style.display = "none";
   $("notice").style.display = "none";
@@ -1150,7 +1193,7 @@ $("f").addEventListener("submit", async e => {
   };
   tick();
   timer = setInterval(tick, 1000);
-  const ctl = { abort: new AbortController(), jobId: null, cancelled: false, mode: "stream" };
+  const ctl = { abort: new AbortController(), jobId: null, cancelled: false, mode: "stream", token };
   searchCtl = ctl;
   resetSteps();
   $("cancelBtn").disabled = false;
@@ -1158,7 +1201,7 @@ $("f").addEventListener("submit", async e => {
     let data;
     try {
       data = await fetchSearch(q, c, ctl);
-      if (!data.cached) loadRecent();  // 새로 저장된 검색어를 목록에 반영
+      if (!data.cached) { loadRecent(); refreshUsage(); }  // 새로 저장된 검색어를 목록에 반영, 헤더 남은 횟수 갱신
     } catch (err) {
       if (!(err instanceof TypeError)) throw err;  // TypeError = 서버 연결 자체가 안 됨
       setStatus("");
@@ -1229,7 +1272,7 @@ async function fetchSearch(q, c, ctl) {
     ctl.mode = "fallback";
     setStep({ step: "search", label: "AI가 웹 검색 중 (기존 방식으로 전환)" });
     try {
-      return await fetchLive(q, c, ctl.abort.signal);
+      return await fetchLive(q, c, ctl.abort.signal, ctl.token);
     } catch (e) {
       if (e.name === "AbortError") throw new SearchCancelled();
       throw e;
@@ -1240,14 +1283,16 @@ async function fetchSearch(q, c, ctl) {
 async function fetchStream(q, c, ctl) {
   let res;
   try {
-    res = await fetch(`${API_BASE}/search/stream?${shareParams(q, c)}`, { headers: API_HEADERS, signal: ctl.abort.signal });
+    res = await fetch(`${API_BASE}/search/stream?${shareParams(q, c)}`,
+      { headers: { ...API_HEADERS, Authorization: `Bearer ${ctl.token}` }, signal: ctl.abort.signal });
   } catch (e) {
     if (ctl.cancelled) throw new SearchCancelled();
     throw new StreamUnavailable();
   }
   if (!(res.headers.get("Content-Type") || "").includes("text/event-stream")) {
-    if ([400, 403, 429].includes(res.status)) {   // 입력·출처·제한 오류는 그대로 보여줌
+    if ([400, 401, 403, 429, 503].includes(res.status)) {   // 입력·로그인·출처·제한 오류는 그대로 보여줌
       const d = await res.json().catch(() => ({}));
+      loginExpired(res, d);
       throw new Error(d.error || res.statusText);
     }
     throw new StreamUnavailable();   // 예전 서버(404) 등
@@ -1276,7 +1321,7 @@ async function fetchStream(q, c, ctl) {
         else if (event === "result") { showRemaining(d); return d; }
         else if (event === "cancelled") throw new SearchCancelled();
         else if (event === "error") {
-          if (d.status === 429) setStatus("🟡 오늘 새 검색 횟수를 모두 썼어요 (최근 검색은 계속 볼 수 있어요)", "bad");
+          if (d.status === 429) { setStatus("🟡 오늘 새 검색 횟수를 모두 썼어요 (최근 검색은 계속 볼 수 있어요)", "bad"); refreshUsage(); }
           const err = new Error(d.error || "검색 중 오류가 났어요.");
           err.final = true;
           throw err;
@@ -1482,6 +1527,7 @@ function chatReset(result) {
   chatHistory = [];
   $("chatLog").innerHTML = "";
   $("chatCount").textContent = "";
+  $("chatBox").classList.toggle("guest", !authUser);   // 로그인 전: 예시 칩·입력창 숨김
   if (!authUser) chatLoginNotice();
   else if (!result) chatAdd("info", "먼저 상품을 검색해주세요.");
   else if (demoMode) chatAdd("info", "데모 모드에서는 챗봇을 쓸 수 없어요. 검색 서버에 연결되면 이용할 수 있어요.");
@@ -1494,7 +1540,11 @@ async function chatAsk(question, opts = {}) {
   const cmp = opts.compare || null;
   question = question.trim().split(/\s+/).join(" ");
   if (!question || chatBusy || demoMode || (!cmp && !chatResult)) return;
-  if (!authUser) { if (cmp) openAuth("login", "로그인하면 상담을 받을 수 있어요."); else chatLoginNotice(); return; }
+  if (!authUser) {   // 로그인 전: 챗봇 창은 안내 카드가 대신하고, 1:1 비교는 로그인 창을 띄움
+    opts.onError?.("로그인하면 AI 비교를 쓸 수 있어요.");
+    if (cmp) openAuth("login", "로그인하면 상담을 받을 수 있어요.");
+    return;
+  }
   const token = await authToken();
   if (!token) { opts.onError?.("로그인이 만료됐어요. 다시 로그인해 주세요."); return openAuth("login", "로그인이 만료됐어요. 다시 로그인해 주세요."); }
   const who = authUser.id;
@@ -1517,9 +1567,9 @@ async function chatAsk(question, opts = {}) {
     const data = await res.json().catch(() => ({}));
     if (sentFor !== chatResult || who !== authUser?.id) return;   // 기다리는 동안 새 검색을 했거나 로그아웃했으면 버림
     wait.remove();
-    if (data.unlimited === false && data.remaining != null) $("chatCount").textContent = `오늘 남은 대화 ${data.remaining}회`;
+    if (data.unlimited === false && data.remaining != null) $("chatCount").textContent = `오늘 남은 상담 ${data.remaining}회`;
     if (res.status === 401 && data.login_required) {   // 토큰이 만료·무효: 로그인 창 다시 띄우기
-      openAuth("login", data.error || "다시 로그인해 주세요.");
+      loginExpired(res, data);
       throw new Error(data.error || "다시 로그인해 주세요.");
     }
     if (!res.ok) throw new Error(data.error || "잠시 후 다시 시도해주세요.");
@@ -1659,12 +1709,45 @@ try {
 } catch (_) { sb = null; }   // 설정이 잘못돼도 검색은 그대로 동작
 let authMode = "login";   // "login" | "signup"
 
+// 로그인 전 챗봇 화면: 가운데 안내 카드 (자물쇠 · 제목 · 회원 혜택 3줄 · 버튼)
 function chatLoginNotice() {
-  const div = chatAdd("info", "로그인하면 상담을 받을 수 있어요.");
-  const b = document.createElement("button");
-  b.type = "button"; b.className = "login-go"; b.textContent = "로그인 / 회원가입";
-  b.addEventListener("click", () => openAuth("login"));
-  div.appendChild(b);
+  const card = document.createElement("div");
+  card.className = "chat-gate";
+  card.innerHTML = `<div class="lock" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/>
+      <path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></div>
+    <h3>로그인하고 상담받기</h3>
+    <ul><li>새 검색 하루 ${MEMBER_SEARCH_LIMIT}회</li><li>AI 상담</li><li>찜 목록 동기화</li></ul>
+    <div class="gate-btns"><button type="button" class="primary" data-auth="login">로그인</button>
+      <button type="button" class="ghost" data-auth="signup">회원가입</button></div>`;
+  $("chatLog").appendChild(card);
+}
+
+// data-auth="login|signup" 버튼은 어디에 있든 로그인 창을 엶 (검색 안내·챗봇 카드)
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-auth]");
+  if (b) openAuth(b.dataset.auth);
+});
+
+// 헤더의 "오늘 검색 3/5" (남은/한도)
+async function refreshUsage() {
+  const who = authUser?.id;
+  const badge = $("usageBadge");
+  if (!who || !serverReady || demoMode) { badge.hidden = true; return; }
+  const token = await authToken();
+  if (!token) return;
+  try {
+    const res = await fetch(API_BASE + "/me", { headers: { ...API_HEADERS, Authorization: `Bearer ${token}` } });
+    const d = await res.json();
+    if (who !== authUser?.id) return;
+    if (!res.ok) throw new Error(d.error);
+    badge.textContent = d.unlimited ? "오늘 검색 무제한" : `오늘 검색 ${d.search.remaining}/${d.search.limit}`;
+    badge.title = d.unlimited ? (d.role === "admin" ? "관리자 계정" : "내 PC 서버")
+      : `오늘 남은 새 검색 ${d.search.remaining}회 · 상담 ${d.chat.remaining}회`;
+    badge.hidden = false;
+  } catch (_) {
+    if (who === authUser?.id) badge.hidden = true;
+  }
 }
 
 // 챗봇에 보낼 토큰 (만료가 가까우면 supabase-js가 새로 받아 옴)
@@ -1774,7 +1857,20 @@ function setAuthUser(user) {
   $("cmpAnswer").hidden = true;           // 1:1 비교 답변 상자 지우기
   $("cmpAnswer").textContent = "";
   cmpAnswered = null;
-  if (!next) $("authEmail").value = "";
+  // 찜: 이전 계정 목록을 지우고 브라우저 저장분으로 되돌린 뒤, 로그인했으면 DB와 합침
+  wishCloud = false;
+  wishList = loadWish();
+  wishChecked.clear();
+  refreshWish();
+  $("usageBadge").hidden = true;
+  if (next) {
+    if ($("notice").querySelector(".gate")) $("notice").style.display = "none";   // 회원 전용 안내 닫기
+    syncWishOnLogin(next.id);
+    refreshUsage();
+  } else {
+    $("authEmail").value = "";
+    if ($("cmpSheet").classList.contains("open") || $("wishSheet").classList.contains("open")) closeSheets();
+  }
 }
 
 renderAuth();
@@ -1788,19 +1884,23 @@ const WISH_MAX = 100;
 const wishKey = p => norm(`${p.brand || ""} ${p.model || ""}`);
 const strList = v => Array.isArray(v) ? v.filter(x => typeof x === "string").slice(0, 5) : [];
 
+const validWish = w => w && typeof w === "object" && typeof w.key === "string" && w.model;
+
 function loadWish() {
   try {
     const v = JSON.parse(localStorage.getItem(WISH_KEY) || "[]");
-    return Array.isArray(v) ? v.filter(w => w && typeof w === "object" && typeof w.key === "string" && w.model) : [];
+    return Array.isArray(v) ? v.filter(validWish) : [];
   } catch (_) {
     return [];
   }
 }
 function saveWish() {
+  if (wishCloud) return;   // 로그인 중에는 DB(favorites)가 기준이라 브라우저에 저장하지 않음
   try { localStorage.setItem(WISH_KEY, JSON.stringify(wishList)); } catch (_) { /* 저장 실패: 화면은 그대로 */ }
 }
 
 let wishList = loadWish();
+let wishCloud = false;   // true = 로그인해서 Supabase favorites 표와 동기화 중
 let wishChecked = new Set();   // 비교하려고 체크한 상품 key (최대 2개)
 const isWished = key => wishList.some(w => w.key === key);
 
@@ -1815,6 +1915,7 @@ function toggleWish(p, d) {
   if (isWished(key)) {
     wishList = wishList.filter(w => w.key !== key);
     wishChecked.delete(key);
+    cloudWishRemove([key]);
   } else {
     wishList.unshift({
       key, brand: p.brand || "", model: p.model,
@@ -1826,10 +1927,70 @@ function toggleWish(p, d) {
       query: d?.query || "", condition: d?.condition || null,
       saved_at: new Date().toISOString(),
     });
+    cloudWishAdd(wishList[0]);
+    cloudWishRemove(wishList.slice(WISH_MAX).map(w => w.key));   // 100개를 넘어 밀려난 것
     wishList = wishList.slice(0, WISH_MAX);
   }
   saveWish();
   refreshWish();
+}
+
+// ---------- 찜 동기화 (Supabase favorites) ----------
+// 로그인하면 브라우저 찜 + DB 찜을 합치고, 그 뒤로는 DB가 기준. 비회원은 브라우저(localStorage)에만 저장
+// 화면은 바로 바꾸고 DB 저장은 뒤에서 함 (실패하면 상태줄에 안내)
+
+const wishTime = w => Date.parse(w.saved_at) || 0;
+const wishFromRow = r => ({ ...(r.item || {}), key: r.item_key, query: r.query ?? r.item?.query ?? "", saved_at: r.created_at });
+const wishRow = w => ({
+  user_id: authUser.id, item_key: w.key, item: w, query: String(w.query || "").slice(0, 300) || null,
+  created_at: Date.parse(w.saved_at) ? new Date(w.saved_at).toISOString() : undefined,   // 찜한 순서 유지
+});
+
+async function cloudOp(run) {
+  if (!wishCloud || !sb || !authUser) return;
+  try {
+    const { error } = await run();
+    if (error) throw error;
+  } catch (err) {
+    console.warn("찜 저장 실패", err);
+    setStatus("🟡 찜 목록을 저장하지 못했어요. 새로고침 후 다시 시도해 주세요.", "bad");
+  }
+}
+function cloudWishAdd(w) {
+  cloudOp(() => sb.from("favorites").upsert([wishRow(w)], { onConflict: "user_id,item_key", ignoreDuplicates: true }));
+}
+function cloudWishRemove(keys) {
+  if (keys.length) cloudOp(() => sb.from("favorites").delete().eq("user_id", authUser.id).in("item_key", keys));
+}
+function cloudWishClear() {
+  cloudOp(() => sb.from("favorites").delete().eq("user_id", authUser.id));
+}
+
+async function syncWishOnLogin(uid) {
+  if (!sb) return;
+  try {
+    const { data, error } = await sb.from("favorites").select("item_key,item,query,created_at")
+      .order("created_at", { ascending: false }).limit(WISH_MAX);
+    if (error) throw error;
+    if (authUser?.id !== uid) return;   // 그사이 로그아웃·계정 변경
+    const db = (data || []).map(wishFromRow).filter(validWish);
+    const have = new Set(db.map(w => w.key));
+    const add = loadWish().filter(w => !have.has(w.key)).slice(0, Math.max(0, WISH_MAX - db.length));
+    if (add.length) {
+      const { error: e2 } = await sb.from("favorites")
+        .upsert(add.map(wishRow), { onConflict: "user_id,item_key", ignoreDuplicates: true });
+      if (e2) throw e2;
+    }
+    if (authUser?.id !== uid) return;
+    wishList = [...db, ...add].sort((a, b) => wishTime(b) - wishTime(a)).slice(0, WISH_MAX);
+    wishCloud = true;
+    try { localStorage.removeItem(WISH_KEY); } catch (_) { /* 무시 */ }   // 이제 DB에 있으니 브라우저 사본은 지움
+    wishChecked.clear();
+    refreshWish();
+  } catch (err) {
+    console.warn("찜 동기화 실패", err);
+    if (authUser?.id === uid) setStatus("🟡 찜 목록 동기화에 실패했어요 (이 브라우저에만 저장돼요)", "bad");
+  }
 }
 
 function refreshWish() {
@@ -1918,6 +2079,7 @@ $("wishBody").addEventListener("click", e => {
   if (!del) return;
   wishList = wishList.filter(w => w.key !== del.dataset.key);
   wishChecked.delete(del.dataset.key);
+  cloudWishRemove([del.dataset.key]);
   saveWish();
   refreshWish();
 });
@@ -1925,6 +2087,7 @@ $("wishClear").addEventListener("click", () => {
   if (!wishList.length || !confirm(`찜한 상품 ${wishList.length}개를 모두 지울까요?`)) return;
   wishList = [];
   wishChecked.clear();
+  cloudWishClear();
   saveWish();
   refreshWish();
 });

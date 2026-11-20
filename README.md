@@ -183,13 +183,17 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 - **내 PC 판별**: ngrok을 거친 요청도 서버에는 127.0.0.1로 보여서, `X-Forwarded-For` 같은 전달 헤더가 있으면 외부 요청으로 봅니다. 내 브라우저에서 다른 사이트가 몰래 `localhost:5000`을 부르는 경우도 무제한으로 치지 않습니다.
 - 서버는 `127.0.0.1`에서만 받고, 외부 공개는 ngrok 터널로만 합니다. 디버그 모드는 끕니다.
 
-### 3. 하루 사용 제한 (외부 접속 기준)
+### 3. 회원 전용 기능과 하루 사용 제한 (계정 기준)
 
-| 항목 | 외부 접속 (ngrok) | 내 PC | 설정 |
-|---|---|---|---|
-| 새 검색 (AI 실행) | 하루 10회 (Render는 5회) | 무제한 (Render는 내 PC 구분 없이 모두 외부) | `DAILY_LIMIT` |
-| 저장된 검색 결과 보기 | 무제한 | 무제한 | — |
-| 상담 챗봇 | 하루 30회 | 무제한 | `CHAT_DAILY_LIMIT` |
+| 항목 | 비회원 | 회원 | admin · 내 PC | 설정 |
+|---|---|---|---|---|
+| 새 검색 (AI 실행) | 불가 (로그인 안내) | 계정당 하루 5회 | 무제한 | `DAILY_LIMIT` |
+| 최근 검색·공유 링크·데모·필터·정렬 | 가능 | 가능 | 가능 | — |
+| 상담 챗봇 (1:1 비교 포함) | 불가 (로그인 안내) | 계정당 하루 30회 | 무제한 | `CHAT_DAILY_LIMIT` |
+| 찜 목록 | 이 브라우저에만 | Supabase에 저장 (기기 간 동기화) | 같음 | — |
+
+- 하루 횟수는 Supabase `usage_logs` 표에서 셉니다 (한국 시간 자정 기준, 성공한 것만). 서버를 다시 켜도 유지돼요.
+- 저장된 결과(캐시)·취소·실패는 횟수에 넣지 않습니다. Render에서는 "내 PC" 구분 없이 모두 계정 기준입니다.
 
 ### 4. 그 밖의 장치
 - **AI 도구 제한**: 검색용 Claude는 웹 검색·웹페이지 읽기만, 챗봇용 Claude는 도구 없이 답변만 합니다. 파일 수정이나 명령 실행이 불가능합니다.
@@ -245,14 +249,16 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | `CHAT_ENGINE` | `gemini` | 상담 챗봇 엔진. `gemini` 또는 `claude` |
 | `GEMINI_API_KEY` | — | Gemini API 키 ([발급](https://aistudio.google.com/apikey)) |
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Gemini 모델 이름 |
-| `DAILY_LIMIT` | `10` | 외부 접속 새 검색 하루 최대 횟수 |
-| `CHAT_DAILY_LIMIT` | `30` | 외부 접속 챗봇 대화 하루 최대 횟수 |
+| `DAILY_LIMIT` | `5` | 회원 한 명의 새 검색 하루 최대 횟수 |
+| `CHAT_DAILY_LIMIT` | `30` | 회원 한 명의 상담 하루 최대 횟수 |
+| `SUPABASE_URL`, `SUPABASE_ANON_KEY` | — | 로그인 확인 |
+| `SUPABASE_SERVICE_KEY` | — | 서버 전용. 등급 확인·사용 기록 (화면·GitHub·로그에 절대 넣지 않음) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | — | (Render) `claude -p` 로그인 토큰. 내 PC에서 `claude setup-token`으로 발급 |
 | `DATA_DIR` | 프로젝트 폴더 | 캐시·하루 횟수·모니터링 기록을 둘 폴더 |
 | `SEED_DEMO` | — | `1`이면 처음 켜질 때 `demo/` 결과를 캐시로 불러옴 (Render에서는 자동) |
 | `RENDER`, `RENDER_EXTERNAL_URL` | (Render가 자동 설정) | Render에서 도는지 판별, Render 주소를 허용 출처에 추가 |
 
-Render에서는 `.env`를 읽지 않고 Render 대시보드의 환경변수만 씁니다. `DAILY_LIMIT` 기본값은 Render에서 `5`입니다.
+Render에서는 `.env`를 읽지 않고 Render 대시보드의 환경변수만 씁니다.
 
 ## 실행 방법
 
@@ -338,10 +344,12 @@ python make_demo.py   # cache/ → demo/ 복사 (검색 비용 등 내부 정보
 
 ## 로그인 (Supabase) · 상담 챗봇
 
-- 상담 챗봇(`/chat`)은 **로그인한 사람만** 쓸 수 있어요. 검색·최근 검색·공유 링크는 로그인 없이 그대로 동작해요.
-- 화면은 `supabase-js`로 이메일+비밀번호 로그인을 하고, 챗봇 요청에 `Authorization: Bearer <토큰>`을 붙여요.
-- 서버(`auth.py`)는 토큰을 Supabase(`/auth/v1/user`)로 확인하고, 없거나 틀리면 Gemini를 부르기 전에 401로 막아요.
+- 새 검색(`/search`, `/search/stream`)과 상담 챗봇(`/chat`)은 **로그인한 회원만** 쓸 수 있어요. 최근 검색·공유 링크는 로그인 없이 동작해요.
+- 화면은 `supabase-js`로 이메일+비밀번호 로그인을 하고, 요청에 `Authorization: Bearer <토큰>`을 붙여요.
+- 서버(`auth.py`)는 토큰을 Supabase(`/auth/v1/user`)로 확인하고, 없거나 틀리면 Claude·Gemini를 부르기 전에 401로 막아요.
+- 서버(`members.py`)는 SERVICE 키로 `profiles.role`(admin이면 무제한)을 읽고 `usage_logs`에 사용 기록을 남겨요. `GET /me`는 오늘 남은 횟수.
+- 찜 목록은 로그인하면 브라우저 찜과 Supabase `favorites`를 합치고, 그 뒤로는 DB 기준이에요 (RLS로 본인 것만).
 - 환경변수: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY` (`.env` 또는 Render 대시보드)
   - `config.js`에는 URL과 anon 키만. **service 키는 서버 전용**이라 화면·GitHub·로그에 절대 넣지 않아요.
-- DB 준비: `supabase/schema.sql`을 Supabase SQL Editor에서 실행 (profiles 표·가입 트리거·RLS)
+- DB 준비: `supabase/schema.sql`을 Supabase SQL Editor에서 실행 (profiles·usage_logs·favorites 표, 가입 트리거, RLS)
 - 테스트: `python -m unittest discover -s tests -v`

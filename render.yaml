@@ -25,7 +25,7 @@ services:
         value: gemini
       - key: GEMINI_MODEL
         value: gemini-3.5-flash-lite
-      - key: DAILY_LIMIT          # 새 검색 하루 최대 횟수 (Render에서는 모든 요청에 적용)
+      - key: DAILY_LIMIT          # 회원 한 명의 새 검색 하루 최대 횟수
         value: "5"
       - key: CHAT_DAILY_LIMIT
         value: "30"

@@ -62,3 +62,87 @@ grant update (email) on public.profiles to authenticated;
 
 -- 관리자 지정은 SQL Editor(관리자 권한)에서만:
 --   update public.profiles set role = 'admin' where email = '내이메일@example.com';
+
+
+-- =====================================================================
+-- 여기부터 추가분 (사용 기록·찜 목록). 위 부분을 이미 실행했어도 파일 전체를 다시 실행해도 됨
+-- =====================================================================
+
+-- 5) admin 확인 함수: RLS 정책 안에서 profiles를 읽을 때 쓰는 도우미
+--    security definer라서 profiles의 RLS와 상관없이 "지금 로그인한 사람"의 role만 확인
+create or replace function public.is_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1 from public.profiles
+    where id = (select auth.uid()) and role = 'admin'
+  );
+$$;
+revoke execute on function public.is_admin() from public, anon;
+grant execute on function public.is_admin() to authenticated;
+
+-- 6) usage_logs: 새 검색·상담 사용 기록 (서버가 SERVICE 키로만 씀)
+--    하루 사용 횟수 = 오늘(한국 시간) status='ok'인 줄 수
+create table if not exists public.usage_logs (
+  id          bigint generated always as identity primary key,
+  user_id     uuid not null references auth.users (id) on delete cascade,
+  email       text,
+  action      text not null check (action in ('search', 'chat', 'compare')),
+  query       text check (char_length(query) <= 300),
+  engine      text,
+  status      text not null,          -- ok · cached · limited · cancelled · timeout · error
+  duration_ms integer,                -- 응답 시간(밀리초)
+  created_at  timestamptz not null default now()
+);
+-- 오늘 횟수를 빨리 세기 위한 색인
+create index if not exists usage_logs_user_day
+  on public.usage_logs (user_id, action, status, created_at desc);
+
+alter table public.usage_logs enable row level security;
+
+drop policy if exists "usage_logs: 본인 또는 admin 읽기" on public.usage_logs;
+create policy "usage_logs: 본인 또는 admin 읽기"
+  on public.usage_logs for select
+  to authenticated
+  using ((select auth.uid()) = user_id or (select public.is_admin()));
+-- insert·update·delete 정책 없음 + 권한 회수 → 화면에서는 쓰기·수정·삭제 불가 (SERVICE 키는 RLS를 건너뜀)
+revoke all on public.usage_logs from anon, authenticated;
+grant select on public.usage_logs to authenticated;
+
+-- 7) favorites: 찜 목록 (로그인한 사람의 브라우저가 supabase-js로 직접 읽고 씀)
+create table if not exists public.favorites (
+  id         bigint generated always as identity primary key,
+  user_id    uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  item_key   text not null check (char_length(item_key) between 1 and 300),   -- "브랜드 모델" (같은 상품 중복 방지)
+  item       jsonb not null check (jsonb_typeof(item) = 'object' and pg_column_size(item) <= 8192),  -- 상품 정보
+  query      text check (char_length(query) <= 300),                           -- 찜할 때의 검색어
+  created_at timestamptz not null default now(),
+  unique (user_id, item_key)
+);
+
+alter table public.favorites enable row level security;
+
+drop policy if exists "favorites: 본인만 읽기" on public.favorites;
+create policy "favorites: 본인만 읽기"
+  on public.favorites for select
+  to authenticated
+  using ((select auth.uid()) = user_id);
+
+drop policy if exists "favorites: 본인만 추가" on public.favorites;
+create policy "favorites: 본인만 추가"
+  on public.favorites for insert
+  to authenticated
+  with check ((select auth.uid()) = user_id);
+
+drop policy if exists "favorites: 본인만 삭제" on public.favorites;
+create policy "favorites: 본인만 삭제"
+  on public.favorites for delete
+  to authenticated
+  using ((select auth.uid()) = user_id);
+
+revoke all on public.favorites from anon, authenticated;
+grant select, insert, delete on public.favorites to authenticated;
