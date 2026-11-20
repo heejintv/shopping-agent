@@ -62,6 +62,7 @@ class MemberApiTest(unittest.TestCase):
             mock.patch.object(server.stats, "record_request"),
             mock.patch.object(server, "DAILY_LIMIT", 5),   # .env 값과 상관없이 기본 한도로 테스트
             mock.patch.dict(server.LIMITS, {"search": 5, "chat": 30}),
+            mock.patch.object(server, "GLOBAL_SEARCH_LIMIT", 20),
         ]
         started = [p.start() for p in patches]
         self.fetch, self.answer, self.search = started[0], started[5], started[6]
@@ -102,7 +103,8 @@ class MemberApiTest(unittest.TestCase):
         self.assertEqual(seen["uid"], USERS["good-token"]["id"])   # 확인된 사용자 id가 이후 처리에 넘어감
         self.assertEqual(self.logs[-1]["action"], "chat")
         self.assertEqual(self.logs[-1]["status"], "ok")
-        self.assertEqual(self.logs[-1]["query"], "무선 마우스")      # 질문 원문이 아니라 검색어
+        self.assertEqual(self.logs[-1]["query"], CHAT_BODY["question"])   # 질문 원문을 기록
+        self.assertFalse(self.logs[-1]["exempt"])
         self.assertEqual(members.quota._pending, {})                 # 잡아 둔 칸을 놓음
 
     def test_supabase_not_configured_503(self):
@@ -167,10 +169,52 @@ class MemberApiTest(unittest.TestCase):
         """동시에 들어온 요청(아직 기록 전)도 한도에 셈."""
         uid = USERS["good-token"]["id"]
         self.used[(uid, "search")] = 4
-        self.assertEqual(members.quota.reserve(uid, "search", 5), 0)
-        self.assertIsNone(members.quota.reserve(uid, "search", 5))
-        members.quota.release(uid, "search")
+        t = members.quota.reserve(uid, "search", 5)
+        self.assertEqual(t.remaining, 0)
+        with self.assertRaises(members.LimitReached) as cm:
+            members.quota.reserve(uid, "search", 5)
+        self.assertEqual(cm.exception.scope, "user")
+        t.release()
         self.assertEqual(members.quota._pending, {})
+
+    def test_global_pending_counts(self):
+        """서버 전체 상한도 처리 중인 요청을 셈 (다른 회원끼리 동시에 보내도 20을 안 넘음)."""
+        self.used[(None, "search")] = 19
+        t = members.quota.reserve("u-a", "search", 5, 20)
+        with self.assertRaises(members.LimitReached) as cm:
+            members.quota.reserve("u-b", "search", 5, 20)
+        self.assertEqual(cm.exception.scope, "global")
+        t.release()
+        self.assertEqual(members.quota._pending, {})
+
+    # ---------- 서버 전체 새 검색 상한 ----------
+
+    def test_global_limit_blocks_member(self):
+        self.used[(None, "search")] = 20
+        res = self.search_get(GOOD, q="전체 상한")
+        self.assertEqual(res.status_code, 429)
+        d = res.get_json()
+        self.assertEqual(d["scope"], "global")
+        self.assertIn("오늘 검색이 모두 소진됐어요", d["error"])
+        self.search.assert_not_called()
+        self.assertEqual(self.logs[-1]["status"], "limited")
+
+    def test_global_limit_blocks_stream(self):
+        self.used[(None, "search")] = 20
+        body = self.client.get("/search/stream", query_string={"q": "전체 상한 스트림"}, headers=GOOD).get_data(as_text=True)
+        self.assertIn("event: error", body)
+        self.assertIn("소진", body)
+        self.search.assert_not_called()
+
+    def test_global_limit_admin_exempt(self):
+        self.used[(None, "search")] = 20
+        res = self.search_get(ADMIN, q="관리자 전체 상한")
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(self.logs[-1]["exempt"])   # admin 사용은 전체 상한에 안 셈
+
+    def test_global_limit_does_not_affect_chat(self):
+        self.used[(None, "search")] = 20
+        self.assertEqual(self.chat(GOOD).status_code, 200)
 
     def test_stream_no_token_401(self):
         res = self.client.get("/search/stream", query_string={"q": "x"})
@@ -198,12 +242,14 @@ class MemberApiTest(unittest.TestCase):
         self.assertEqual(d["role"], "user")
         self.assertEqual(d["search"], {"used": 2, "limit": 5, "remaining": 3})
         self.assertEqual(d["chat"]["remaining"], 30)
+        self.assertEqual(d["global_search"], {"used": 0, "limit": 20, "remaining": 20})
         self.assertEqual(self.client.get("/me").status_code, 401)
 
     def test_me_admin(self):
         d = self.client.get("/me", headers=ADMIN).get_json()
         self.assertTrue(d["unlimited"])
         self.assertIsNone(d["search"]["limit"])
+        self.assertNotIn("global_search", d)
 
     def test_cors_allows_authorization_header(self):
         res = self.client.options("/chat", headers={

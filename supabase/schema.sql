@@ -146,3 +146,18 @@ create policy "favorites: 본인만 삭제"
 
 revoke all on public.favorites from anon, authenticated;
 grant select, insert, delete on public.favorites to authenticated;
+
+
+-- =====================================================================
+-- 추가분 2: 서버 전체 새 검색 상한 · 찜 보호 강화 (파일 전체를 다시 실행해도 됨)
+-- =====================================================================
+
+-- 8) usage_logs.exempt: admin·내 PC 사용 표시 (서버 전체 하루 상한 GLOBAL_SEARCH_LIMIT에 안 셈)
+alter table public.usage_logs add column if not exists exempt boolean not null default false;
+create index if not exists usage_logs_day
+  on public.usage_logs (action, status, created_at desc) where not exempt;
+
+-- 9) favorites: 화면에서 넣을 수 있는 열을 제한
+--    user_id는 RLS가 "본인"만 허용하고, created_at은 서버 시각(now())만 쓰게 함
+revoke insert on public.favorites from authenticated;
+grant insert (user_id, item_key, item, query) on public.favorites to authenticated;

@@ -47,6 +47,14 @@ class MembersTest(unittest.TestCase):
         self.assertEqual(req.get_header("Apikey"), "sb_secret_test")
         self.assertIsNone(req.get_header("Authorization"))   # 새 형식 키는 apikey 헤더에만
 
+    def test_count_today_global_excludes_exempt(self):
+        with mock.patch.dict("os.environ", ENV), \
+             mock.patch("urllib.request.urlopen", return_value=FakeResp(headers={"Content-Range": "*/7"})) as op:
+            self.assertEqual(members.count_today(None, "search"), 7)
+        url = op.call_args[0][0].full_url
+        self.assertIn("exempt=eq.false", url)
+        self.assertNotIn("user_id", url)
+
     def test_legacy_jwt_key_also_in_authorization(self):
         env = {**ENV, "SUPABASE_SERVICE_KEY": "eyJlegacy"}
         with mock.patch.dict("os.environ", env), \
@@ -70,6 +78,7 @@ class MembersTest(unittest.TestCase):
         row = json.loads(op.call_args[0][0].data)
         self.assertEqual(len(row["query"]), 300)
         self.assertEqual(row["duration_ms"], 12)
+        self.assertIs(row["exempt"], False)
         with mock.patch.dict("os.environ", {"SUPABASE_URL": "", "SUPABASE_SERVICE_KEY": ""}):
             members.log_usage("u1", None, "chat", "ok")   # 설정이 없어도 오류 없이 넘어감
 

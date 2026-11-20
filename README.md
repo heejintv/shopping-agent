@@ -190,10 +190,15 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | 새 검색 (AI 실행) | 불가 (로그인 안내) | 계정당 하루 5회 | 무제한 | `DAILY_LIMIT` |
 | 최근 검색·공유 링크·데모·필터·정렬 | 가능 | 가능 | 가능 | — |
 | 상담 챗봇 (1:1 비교 포함) | 불가 (로그인 안내) | 계정당 하루 30회 | 무제한 | `CHAT_DAILY_LIMIT` |
-| 찜 목록 | 이 브라우저에만 | Supabase에 저장 (기기 간 동기화) | 같음 | — |
+| 서버 전체 새 검색 | — | 모든 회원 합쳐 하루 20회 ("오늘 검색이 모두 소진됐어요") | 예외 | `GLOBAL_SEARCH_LIMIT` |
+| 찜 목록 | 이 기기에만 (`pickit:guest:*`) | Supabase `favorites`의 내 행만 | 같음 | — |
 
 - 하루 횟수는 Supabase `usage_logs` 표에서 셉니다 (한국 시간 자정 기준, 성공한 것만). 서버를 다시 켜도 유지돼요.
 - 저장된 결과(캐시)·취소·실패는 횟수에 넣지 않습니다. Render에서는 "내 PC" 구분 없이 모두 계정 기준입니다.
+- admin·내 PC 사용은 `usage_logs.exempt=true`로 기록돼 서버 전체 상한에 들어가지 않아요.
+- 브라우저 저장소는 비회원(`pickit:guest:*`)과 계정별(`pickit:u:<user_id>:*`)로 나뉘고, 로그아웃하면 모두 지웁니다.
+  로그인할 때 비회원 찜이 있으면 "이 기기에 저장된 찜 N개를 내 계정에 추가할까요?"라고 묻고, 예일 때만 추가합니다.
+- 상담 기록(`usage_logs.query`)에는 질문 원문을 300자까지 남깁니다 (로그인 창에 안내).
 
 ### 4. 그 밖의 장치
 - **AI 도구 제한**: 검색용 Claude는 웹 검색·웹페이지 읽기만, 챗봇용 Claude는 도구 없이 답변만 합니다. 파일 수정이나 명령 실행이 불가능합니다.
@@ -251,6 +256,7 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Gemini 모델 이름 |
 | `DAILY_LIMIT` | `5` | 회원 한 명의 새 검색 하루 최대 횟수 |
 | `CHAT_DAILY_LIMIT` | `30` | 회원 한 명의 상담 하루 최대 횟수 |
+| `GLOBAL_SEARCH_LIMIT` | `20` | 서버 전체(모든 회원 합계) 새 검색 하루 최대 횟수. admin·내 PC 제외 |
 | `SUPABASE_URL`, `SUPABASE_ANON_KEY` | — | 로그인 확인 |
 | `SUPABASE_SERVICE_KEY` | — | 서버 전용. 등급 확인·사용 기록 (화면·GitHub·로그에 절대 넣지 않음) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | — | (Render) `claude -p` 로그인 토큰. 내 PC에서 `claude setup-token`으로 발급 |
@@ -352,4 +358,5 @@ python make_demo.py   # cache/ → demo/ 복사 (검색 비용 등 내부 정보
 - 환경변수: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY` (`.env` 또는 Render 대시보드)
   - `config.js`에는 URL과 anon 키만. **service 키는 서버 전용**이라 화면·GitHub·로그에 절대 넣지 않아요.
 - DB 준비: `supabase/schema.sql`을 Supabase SQL Editor에서 실행 (profiles·usage_logs·favorites 표, 가입 트리거, RLS)
+- 찜 점검: `supabase/check_favorites.sql` (계정별 찜 개수, 여러 계정에 들어간 상품, 가입 전 시각으로 들어온 행)
 - 테스트: `python -m unittest discover -s tests -v`

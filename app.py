@@ -11,7 +11,8 @@
 - 새 검색(/search, /search/stream)과 상담 챗봇(/chat)은 Supabase로 로그인한 회원만 (auth.py)
   최근 검색(/history)·공유 링크(/cached)는 로그인 없이 동작
 - 회원은 계정당 하루 새 검색 DAILY_LIMIT회(기본 5), 상담 CHAT_DAILY_LIMIT회(기본 30). 캐시된 결과는 횟수 안 셈
-  profiles.role이 admin이거나 내 PC에서 직접 온 요청(is_local_request)은 무제한
+- 서버 전체 새 검색도 하루 GLOBAL_SEARCH_LIMIT회(기본 20)까지
+  profiles.role이 admin이거나 내 PC에서 직접 온 요청(is_local_request)은 둘 다 예외(무제한)
 - 사용 기록은 Supabase usage_logs 표에 저장하고 하루 횟수도 거기서 셈 (members.py, SERVICE 키는 서버에서만)
 - CORS는 GitHub Pages 주소(ALLOWED_ORIGIN)만 허용
 - /search/stream: 새 검색의 진행 단계를 실시간으로 보냄 (Server-Sent Events). 취소하면 claude를 멈추고 횟수에서 빼지 않음
@@ -73,8 +74,11 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 DAILY_LIMIT = int(os.environ.get("DAILY_LIMIT") or "5")
 CHAT_DAILY_LIMIT = int(os.environ.get("CHAT_DAILY_LIMIT") or "30")
 LIMITS = {"search": DAILY_LIMIT, "chat": CHAT_DAILY_LIMIT}
+# 서버 전체 새 검색 하루 상한 (모든 회원 합계, admin·내 PC 제외). 검색 비용 보호용
+GLOBAL_SEARCH_LIMIT = int(os.environ.get("GLOBAL_SEARCH_LIMIT") or "20")
 LIMIT_MESSAGES = {"search": "오늘 새 검색 {n}회를 모두 썼어요. 내일 다시 시도하세요.",
                   "chat": "오늘 상담 {n}회를 모두 썼어요. 내일 다시 시도하세요."}
+GLOBAL_LIMIT_MESSAGE = "오늘 검색이 모두 소진됐어요. 내일 다시 시도해 주세요. (최근 검색은 계속 볼 수 있어요)"
 MEMBER_DOWN = "회원 정보를 확인할 수 없어요. 잠시 후 다시 시도해주세요."
 ASYNC_LOG = True   # 사용 기록을 응답과 따로(백그라운드) 남김. 테스트에서는 False
 ALLOWED_ORIGIN = "https://heejintv.github.io"
@@ -267,31 +271,44 @@ def is_unlimited(user: dict) -> bool:
     return members.get_role(user["id"]) == "admin"
 
 
+def limit_body(kind: str, scope: str) -> dict:
+    """한도 초과 응답 내용. scope: "user"(내 계정) 또는 "global"(서버 전체)."""
+    if scope == "global":
+        return {"error": GLOBAL_LIMIT_MESSAGE, "scope": "global", "unlimited": False, "remaining": 0,
+                "limit": LIMITS[kind]}
+    n = LIMITS[kind]
+    return {"error": LIMIT_MESSAGES[kind].format(n=n), "scope": "user", "unlimited": False, "remaining": 0, "limit": n}
+
+
+def take_quota(user_id: str, kind: str) -> members.Ticket:
+    """한도 칸 잡기 (새 검색은 서버 전체 상한도). LimitReached·MemberError는 부른 쪽에서 처리."""
+    return members.quota.reserve(user_id, kind, LIMITS[kind], GLOBAL_SEARCH_LIMIT if kind == "search" else None)
+
+
 def reserve(user: dict, kind: str, unlimited: bool):
-    """하루 한도에서 한 칸 잡기. (잡았는지, 남은 횟수, 오류 응답)"""
+    """하루 한도에서 한 칸 잡기. (잡은 칸 또는 None, 오류 응답 또는 None)"""
     if unlimited:
-        return False, None, None
+        return None, None
     try:
-        left = members.quota.reserve(user["id"], kind, LIMITS[kind])
+        return take_quota(user["id"], kind), None
+    except members.LimitReached as e:
+        return None, (jsonify(limit_body(kind, e.scope)), 429)
     except members.MemberError as e:
         app.logger.warning("quota check failed: %s", e)
-        return False, None, (jsonify(error=MEMBER_DOWN), 503)
-    if left is None:
-        n = LIMITS[kind]
-        return False, None, (jsonify(error=LIMIT_MESSAGES[kind].format(n=n), unlimited=False,
-                                     remaining=0, limit=n), 429)
-    return True, left, None
+        return None, (jsonify(error=MEMBER_DOWN), 503)
 
 
-def finish(user: dict, action: str, status: str, t0: float, query=None, engine=None, release: str | None = None):
-    """사용 기록을 남기고, 잡아 둔 한도 칸(release)을 놓는다. 기록이 끝난 뒤 놓아야 횟수가 정확함."""
+def finish(user: dict, action: str, status: str, t0: float, query=None, engine=None,
+           ticket: "members.Ticket | None" = None, exempt: bool = False):
+    """사용 기록을 남기고, 잡아 둔 한도 칸(ticket)을 놓는다. 기록이 끝난 뒤 놓아야 횟수가 정확함.
+    exempt: admin·내 PC 사용 (서버 전체 상한에 안 셈)."""
     def run():
         try:
             members.log_usage(user["id"], user.get("email"), action, status, query=query, engine=engine,
-                              duration_ms=(time.time() - t0) * 1000)
+                              duration_ms=(time.time() - t0) * 1000, exempt=exempt)
         finally:
-            if release:
-                members.quota.release(user["id"], release)
+            if ticket:
+                ticket.release()
     if ASYNC_LOG:
         threading.Thread(target=run, daemon=True).start()
     else:
@@ -644,7 +661,7 @@ def search():
     t0 = time.time()
     timings = {}
     record = lambda **kw: stats.record_request("search", (time.time() - t0) * 1000, query=q, **kw)  # noqa: E731
-    done = lambda status, **kw: finish(user, "search", status, t0, query=q, **kw)  # noqa: E731
+    done = lambda status, **kw: finish(user, "search", status, t0, query=q, exempt=unlimited, **kw)  # noqa: E731
     with lock:
         timings["cache"] = (time.time() - t0) * 1000
         if path.exists():  # 캐시된 결과는 횟수 차감 없음
@@ -655,35 +672,35 @@ def search():
             done("cached", engine=data.get("engine"))
             return jsonify(data)
 
-        held, left, err = reserve(user, "search", unlimited)
+        ticket, err = reserve(user, "search", unlimited)
         if err:
             if err[1] == 429:
                 record(limited=True)
                 done("limited")
             return err
-        release = "search" if held else None
+        left = ticket.remaining if ticket else None
 
         engine = search_engine()
         try:
             data = perform_search(q, c, path, engine, timings=timings)
         except subprocess.TimeoutExpired:
             record(ok=False, code=504)
-            done("timeout", engine=engine, release=release)
+            done("timeout", engine=engine, ticket=ticket)
             return jsonify(error=f"검색 시간이 {CLAUDE_TIMEOUT}초를 넘었어요. 다시 시도해 주세요."), 504
         except EngineError as e:  # Gemini 한도 초과·키 오류 등은 이유를 화면에 보여줌
             app.logger.warning("gemini search failed: %s (%s)", e, e.__cause__)
             record(ok=False, code=e.code)
-            done("error", engine=engine, release=release)
+            done("error", engine=engine, ticket=ticket)
             return jsonify(error=str(e)), 502
         except Exception:  # 실패한 결과는 캐시에 저장하지 않음
             app.logger.exception("search failed")
             record(ok=False)
-            done("error", engine=engine, release=release)
+            done("error", engine=engine, ticket=ticket)
             return jsonify(error="검색 중 오류가 났어요. 서버 로그를 확인하세요."), 502
         data.update(cached=False, **quota_info(unlimited, "search", left))
         log_steps(q, timings)
         record(steps=timings)
-        done("ok", engine=engine, release=release)
+        done("ok", engine=engine, ticket=ticket)
         return jsonify(data)
 
 
@@ -723,7 +740,7 @@ def search_stream():
     def worker():
         t0 = time.time()
         record = lambda **kw: stats.record_request("search", (time.time() - t0) * 1000, query=q, **kw)  # noqa: E731
-        held = False
+        ticket = None
         engine = None
         status = "error"   # 사용 기록에 남길 결과 (ok·cached·limited·cancelled·timeout·error)
         timings = {}
@@ -743,14 +760,14 @@ def search_stream():
                     raise Cancelled()
                 left = None
                 if not unlimited:
-                    left = members.quota.reserve(user["id"], "search", DAILY_LIMIT)   # 오류면 MemberError
-                    if left is None:
+                    try:
+                        ticket = take_quota(user["id"], "search")   # Supabase 오류면 MemberError
+                    except members.LimitReached as e:
                         record(limited=True)
                         status = "limited"
-                        job.emit("error", {"error": LIMIT_MESSAGES["search"].format(n=DAILY_LIMIT),
-                                           "status": 429, "unlimited": False, "remaining": 0, "limit": DAILY_LIMIT})
+                        job.emit("error", {**limit_body("search", e.scope), "status": 429})
                         return
-                    held = True
+                    left = ticket.remaining
                 engine = search_engine()
                 data = perform_search(q, c, path, engine, step, job, timings)
                 data.update(cached=False, **quota_info(unlimited, "search", left))
@@ -760,7 +777,7 @@ def search_stream():
                 job.emit("result", data)
         except Cancelled:
             status = "cancelled"   # 취소된 검색은 status가 ok가 아니라 하루 횟수에 안 셈
-            job.emit("cancelled", {"refunded": held})
+            job.emit("cancelled", {"refunded": ticket is not None})
         except members.MemberError as e:
             app.logger.warning("quota check failed: %s", e)
             job.emit("error", {"error": MEMBER_DOWN, "status": 503})
@@ -777,7 +794,7 @@ def search_stream():
             record(ok=False)
             job.emit("error", {"error": "검색 중 오류가 났어요. 서버 로그를 확인하세요.", "status": 502})
         finally:
-            finish(user, "search", status, t0, query=q, engine=engine, release="search" if held else None)
+            finish(user, "search", status, t0, query=q, engine=engine, ticket=ticket, exempt=unlimited)
             job.emit(None)   # 끝 표시
             _jobs.pop(job.id, None)
 
@@ -855,22 +872,20 @@ def chat_api():
     kind = "compare" if compare else "chat"
     t0 = time.time()
     record = lambda **kw: stats.record_request(kind, (time.time() - t0) * 1000, **kw)  # noqa: E731
-    # 사용 기록의 query에는 사용자가 쓴 질문 대신 검색어(비교는 두 상품 이름)를 남김
-    names = [f"{p.get('brand') or ''} {p.get('model') or ''}".strip() for p in results.get("products", [])]
-    topic = " vs ".join(names) if compare else (results.get("query") or "")
+    # 사용 기록의 query에는 질문 원문(300자까지)을 남김 (서비스 개선용, 로그인 창에서 안내)
+    topic = question
     try:
         unlimited = is_unlimited(user)
     except members.MemberError as e:
         app.logger.warning("role check failed: %s", e)
         return jsonify(error=MEMBER_DOWN), 503
-    held, left, err = reserve(user, "chat", unlimited)
+    ticket, err = reserve(user, "chat", unlimited)
     if err:
         if err[1] == 429:
             record(limited=True)
-            finish(user, kind, "limited", t0, query=topic)
+            finish(user, kind, "limited", t0, query=topic, exempt=unlimited)
         return err
-    release = "chat" if held else None
-    info = quota_info(unlimited, "chat", left)
+    info = quota_info(unlimited, "chat", ticket.remaining if ticket else None)
 
     try:
         out = chat.answer(question, results, history, compare)
@@ -878,19 +893,20 @@ def chat_api():
         app.logger.warning("chat failed: %s (%s)", e, e.__cause__)
         status = 503 if str(e) == chat.BUSY_MESSAGE else 502
         record(ok=False, code=e.code)
-        finish(user, kind, "error", t0, query=topic, engine=chat.chat_engine(), release=release)
+        finish(user, kind, "error", t0, query=topic, engine=chat.chat_engine(), ticket=ticket, exempt=unlimited)
         return jsonify(error=str(e), **info), status
     except Exception:
         app.logger.exception("chat failed")
         record(ok=False)
-        finish(user, kind, "error", t0, query=topic, engine=chat.chat_engine(), release=release)
+        finish(user, kind, "error", t0, query=topic, engine=chat.chat_engine(), ticket=ticket, exempt=unlimited)
         return jsonify(error="답변 중 오류가 났어요. 잠시 후 다시 시도해주세요.", **info), 502
     if out.get("reasons_fixed"):
         app.logger.info("chat compare: 이유 %d줄을 일반 장점 문장으로 바꿈", out["reasons_fixed"])
     if out["fallback"]:
         app.logger.info("chat: gemini busy → claude로 재시도함")
     record()
-    finish(user, kind, "ok", t0, query=topic, engine="claude" if out["fallback"] else chat.chat_engine(), release=release)
+    finish(user, kind, "ok", t0, query=topic, engine="claude" if out["fallback"] else chat.chat_engine(),
+           ticket=ticket, exempt=unlimited)
     return jsonify(**out, **info)
 
 
@@ -911,6 +927,10 @@ def me():
             used = members.quota.used(user["id"], kind)
             out[kind] = {"used": used, "limit": None if unlimited else limit,
                          "remaining": None if unlimited else max(0, limit - used)}
+        if not unlimited:   # 서버 전체 새 검색이 다 떨어졌는지 (헤더에 "오늘 검색 소진")
+            g_used = members.quota.used(None, "search")
+            out["global_search"] = {"used": g_used, "limit": GLOBAL_SEARCH_LIMIT,
+                                    "remaining": max(0, GLOBAL_SEARCH_LIMIT - g_used)}
     except members.MemberError as e:
         app.logger.warning("me failed: %s", e)
         return jsonify(error=MEMBER_DOWN), 503
