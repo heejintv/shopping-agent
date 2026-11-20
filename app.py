@@ -225,6 +225,8 @@ _locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
 
 
+# ngrok은 요청을 127.0.0.1로 전달하면서 이런 헤더를 붙인다. 하나라도 있으면 외부 요청
+PROXY_HEADERS = ("X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP", "Forwarded")
 LOCAL_ORIGINS = {ALLOWED_ORIGIN, "http://localhost:5000", "http://127.0.0.1:5000"} | ({PUBLIC_URL} if PUBLIC_URL else set())
 
 
