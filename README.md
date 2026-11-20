@@ -335,3 +335,13 @@ python make_demo.py   # cache/ → demo/ 복사 (검색 비용 등 내부 정보
 ## 주의
 
 검색 결과와 챗봇 답변은 AI가 웹에서 수집한 정보를 바탕으로 하며, 가격은 수시로 바뀝니다. 구매 전에 반드시 링크에서 다시 확인하세요.
+
+## 로그인 (Supabase) · 상담 챗봇
+
+- 상담 챗봇(`/chat`)은 **로그인한 사람만** 쓸 수 있어요. 검색·최근 검색·공유 링크는 로그인 없이 그대로 동작해요.
+- 화면은 `supabase-js`로 이메일+비밀번호 로그인을 하고, 챗봇 요청에 `Authorization: Bearer <토큰>`을 붙여요.
+- 서버(`auth.py`)는 토큰을 Supabase(`/auth/v1/user`)로 확인하고, 없거나 틀리면 Gemini를 부르기 전에 401로 막아요.
+- 환경변수: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY` (`.env` 또는 Render 대시보드)
+  - `config.js`에는 URL과 anon 키만. **service 키는 서버 전용**이라 화면·GitHub·로그에 절대 넣지 않아요.
+- DB 준비: `supabase/schema.sql`을 Supabase SQL Editor에서 실행 (profiles 표·가입 트리거·RLS)
+- 테스트: `python -m unittest discover -s tests -v`

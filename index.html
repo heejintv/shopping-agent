@@ -21,6 +21,8 @@
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%232563eb'/%3E%3Cstop offset='1' stop-color='%237c3aed'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M11 11V9a5 5 0 0 1 10 0v2' fill='none' stroke='url(%23g)' stroke-width='2.6' stroke-linecap='round'/%3E%3Cpath d='M6 11h20l-1.4 15.3A3 3 0 0 1 21.6 29H10.4a3 3 0 0 1-3-2.7z' fill='url(%23g)'/%3E%3Cpath d='M11.4 19.6l3.3 3.3 6-6.5' fill='none' stroke='%23fff' stroke-width='2.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
 <script src="config.js"></script>
+<!-- 로그인(Supabase). 버전을 고정해서 CDN이 바뀌어도 그대로 동작 -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <style>
   :root {
     --bg: #f5f6f8; --card: #fff; --text: #171b24; --muted: #6b7280; --line: #e6e8ec; --soft: #f0f2f5;
@@ -435,6 +437,22 @@
   .wish-btn:hover { border-color: var(--accent); color: var(--accent); }
   .wish-btn .hc { color: var(--accent); }
   .top-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+
+  /* 로그인 */
+  .user-box { display: inline-flex; align-items: center; gap: 8px; }
+  .user-box[hidden] { display: none; }
+  .user-name { font-size: 14px; font-weight: 600; color: var(--muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sheet.auth { width: 380px; }
+  .auth-form { display: flex; flex-direction: column; gap: 10px; }
+  .auth-form label { font-size: 13px; font-weight: 600; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+  .auth-form input { padding: 10px 12px; font-size: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--text); }
+  .auth-form .primary { margin-top: 4px; padding: 12px; }
+  .auth-msg { font-size: 13px; min-height: 1.2em; margin: 0; }
+  .auth-msg.err { color: #dc2626; }
+  .auth-msg.ok { color: var(--value); }
+  .auth-switch { font-size: 13px; color: var(--muted); text-align: center; margin: 6px 0 0; }
+  .auth-switch button { border: 0; background: none; color: var(--accent); font-weight: 600; font-size: 13px; padding: 0 2px; }
+  .msg .login-go { display: block; margin-top: 8px; padding: 7px 14px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font-weight: 600; font-size: 13px; }
   .status-link { text-decoration: none; display: inline-block; }
   .heart { border: 0; background: none; color: var(--muted); font-size: 20px; line-height: 1; padding: 4px; transition: transform .15s; }
   .heart:hover { color: var(--accent); transform: scale(1.12); }
@@ -626,6 +644,9 @@
     <div class="top-actions">
       <a class="wish-btn status-link" href="status.html">📊 서버 상태</a>
       <button type="button" id="wishBtn" class="wish-btn"><span class="hc">♥</span> 찜 목록 (<span id="wishCount">0</span>)</button>
+      <button type="button" id="loginBtn" class="wish-btn">로그인</button>
+      <span class="user-box" id="userBox" hidden><span class="user-name" id="userName"></span>
+        <button type="button" id="logoutBtn" class="wish-btn">로그아웃</button></span>
     </div>
   </header>
 
@@ -766,6 +787,20 @@
     <button type="button" class="primary" id="cmpAsk">🤖 AI에게 물어보기</button></div>
 </section>
 
+<section class="sheet center auth" id="authSheet" role="dialog" aria-label="로그인">
+  <div class="sheet-head"><b id="authTitle">로그인</b>
+    <button type="button" class="sheet-x" data-close aria-label="닫기">×</button></div>
+  <div class="sheet-body">
+    <form class="auth-form" id="authForm">
+      <label>이메일<input type="email" id="authEmail" autocomplete="email" required maxlength="254"></label>
+      <label>비밀번호<input type="password" id="authPw" autocomplete="current-password" required minlength="6" maxlength="72"></label>
+      <p class="auth-msg" id="authMsg" role="status"></p>
+      <button class="primary" id="authSubmit">로그인</button>
+    </form>
+    <p class="auth-switch"><span id="authSwitchText">처음이신가요?</span> <button type="button" id="authSwitch">회원가입</button></p>
+  </div>
+</section>
+
 <div id="chatBox" role="dialog" aria-label="Pickit 상담">
   <div class="chat-head"><div class="chat-title"><svg class="logo" aria-hidden="true"><use href="#pk-logo"/></svg>
     <b>Pickit 상담<small>지금 보고 있는 검색 결과 안에서 골라 드려요</small></b></div>
@@ -819,6 +854,7 @@ let API_HEADERS = {};
 const NGROK_HEADERS = { "ngrok-skip-browser-warning": "1" };
 
 let demoMode = false;
+let authUser = null;   // 로그인한 사람 {id, email} | null (아래 "로그인" 부분에서 정함)
 let recentList = [];  // [{query, file, searched_at, count}] — 서버 /history 또는 demo/index.json
 const norm = s => s.trim().split(/\s+/).join(" ").toLowerCase();
 
@@ -1432,10 +1468,10 @@ function chatAdd(cls, text) {
 }
 
 function chatSetEnabled() {
-  const off = chatBusy || !chatResult || demoMode;
-  $("cmpAsk").disabled = chatBusy || demoMode;
+  const off = chatBusy || !chatResult || demoMode || !authUser;
+  $("cmpAsk").disabled = chatBusy || demoMode;   // 로그인 안 했으면 누를 때 로그인 창을 띄움
   $("chatSend").disabled = off;
-  $("chatIn").disabled = !chatResult || demoMode;
+  $("chatIn").disabled = !chatResult || demoMode || !authUser;
   for (const b of $("chatEx").querySelectorAll("button")) b.disabled = off;
 }
 
@@ -1446,7 +1482,8 @@ function chatReset(result) {
   chatHistory = [];
   $("chatLog").innerHTML = "";
   $("chatCount").textContent = "";
-  if (!result) chatAdd("info", "먼저 상품을 검색해주세요.");
+  if (!authUser) chatLoginNotice();
+  else if (!result) chatAdd("info", "먼저 상품을 검색해주세요.");
   else if (demoMode) chatAdd("info", "데모 모드에서는 챗봇을 쓸 수 없어요. 검색 서버에 연결되면 이용할 수 있어요.");
   else chatAdd("info", `“${result.query || ""}” 검색 결과로 상담해 드려요.\n예산·용도·취향을 알려 주세요.`);
   chatSetEnabled();
@@ -1457,6 +1494,10 @@ async function chatAsk(question, opts = {}) {
   const cmp = opts.compare || null;
   question = question.trim().split(/\s+/).join(" ");
   if (!question || chatBusy || demoMode || (!cmp && !chatResult)) return;
+  if (!authUser) { if (cmp) openAuth("login", "로그인하면 상담을 받을 수 있어요."); else chatLoginNotice(); return; }
+  const token = await authToken();
+  if (!token) { opts.onError?.("로그인이 만료됐어요. 다시 로그인해 주세요."); return openAuth("login", "로그인이 만료됐어요. 다시 로그인해 주세요."); }
+  const who = authUser.id;
   if (question.length > CHAT_MAX) return chatAdd("err", `질문은 ${CHAT_MAX}자까지 쓸 수 있어요.`);
   const sentFor = chatResult;
   clearAiBadge();   // 다음 질문을 하면 이전 추천 배지 제거
@@ -1468,15 +1509,19 @@ async function chatAsk(question, opts = {}) {
   try {
     const res = await fetch(API_BASE + "/chat", {
       method: "POST",
-      headers: { ...API_HEADERS, "Content-Type": "application/json" },
+      headers: { ...API_HEADERS, "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify(cmp
         ? { question, mode: "compare", results: { products: cmp.map(compareProduct) } }
         : { question, results: chatResult, history: chatHistory.slice(-6) }),
     });
     const data = await res.json().catch(() => ({}));
-    if (sentFor !== chatResult) return;   // 기다리는 동안 새 검색을 했으면 버림
+    if (sentFor !== chatResult || who !== authUser?.id) return;   // 기다리는 동안 새 검색을 했거나 로그아웃했으면 버림
     wait.remove();
     if (data.unlimited === false && data.remaining != null) $("chatCount").textContent = `오늘 남은 대화 ${data.remaining}회`;
+    if (res.status === 401 && data.login_required) {   // 토큰이 만료·무효: 로그인 창 다시 띄우기
+      openAuth("login", data.error || "다시 로그인해 주세요.");
+      throw new Error(data.error || "다시 로그인해 주세요.");
+    }
     if (!res.ok) throw new Error(data.error || "잠시 후 다시 시도해주세요.");
     if (cmp) {   // 비교 답변: 상품명을 누르면 비교 화면에서 그 상품 강조 (검색 결과 대화 기록에는 넣지 않음)
       const i = Number.isInteger(data.pick_id) && cmp[data.pick_id] ? data.pick_id : null;
@@ -1490,7 +1535,7 @@ async function chatAsk(question, opts = {}) {
     chatHistory.push({ role: "user", text: question }, { role: "assistant", text: data.answer });
     chatHistory = chatHistory.slice(-6);
   } catch (err) {
-    if (sentFor !== chatResult) return;
+    if (sentFor !== chatResult || who !== authUser?.id) return;
     wait.remove();
     const msg = err instanceof TypeError ? "서버에 연결할 수 없어요. 잠시 후 다시 시도해주세요." : err.message;
     chatAdd("err", msg);
@@ -1601,6 +1646,138 @@ $("chatFab").addEventListener("click", () => {
 $("chatClose").addEventListener("click", () => $("chatBox").classList.remove("open", "peek"));
 $("chatForm").addEventListener("submit", e => { e.preventDefault(); chatAsk($("chatIn").value); });
 $("chatEx").addEventListener("click", e => { if (e.target.tagName === "BUTTON") chatAsk(e.target.textContent); });
+
+// ---------- 로그인 (Supabase) ----------
+// config.js의 SUPABASE_URL·SUPABASE_ANON_KEY(공개 키)만 씀. 관리자 키(service key)는 화면에 절대 두지 않음
+// 로그인 상태(토큰)는 supabase-js가 브라우저 localStorage에 보관하고 자동으로 갱신함
+
+const SB_URL = cfgUrl("SUPABASE_URL");
+const SB_KEY = String(window.APP_CONFIG?.SUPABASE_ANON_KEY || "").trim();
+let sb = null;
+try {
+  if (SB_URL && SB_KEY && window.supabase) sb = window.supabase.createClient(SB_URL, SB_KEY);
+} catch (_) { sb = null; }   // 설정이 잘못돼도 검색은 그대로 동작
+let authMode = "login";   // "login" | "signup"
+
+function chatLoginNotice() {
+  const div = chatAdd("info", "로그인하면 상담을 받을 수 있어요.");
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "login-go"; b.textContent = "로그인 / 회원가입";
+  b.addEventListener("click", () => openAuth("login"));
+  div.appendChild(b);
+}
+
+// 챗봇에 보낼 토큰 (만료가 가까우면 supabase-js가 새로 받아 옴)
+async function authToken() {
+  if (!sb) return null;
+  try {
+    const { data } = await sb.auth.getSession();
+    return data.session?.access_token || null;
+  } catch (_) { return null; }
+}
+
+function renderAuth() {
+  $("loginBtn").hidden = !!authUser;
+  $("userBox").hidden = !authUser;
+  const name = authUser ? String(authUser.email || "").split("@")[0] : "";
+  $("userName").textContent = name;   // textContent: 이메일에 이상한 글자가 있어도 실행 안 됨
+  $("userName").title = authUser?.email || "";
+}
+
+function setAuthMode(mode) {
+  authMode = mode;
+  const login = mode === "login";
+  $("authTitle").textContent = login ? "로그인" : "회원가입";
+  $("authSheet").setAttribute("aria-label", login ? "로그인" : "회원가입");
+  $("authSubmit").textContent = login ? "로그인" : "가입하기";
+  $("authPw").autocomplete = login ? "current-password" : "new-password";
+  $("authSwitchText").textContent = login ? "처음이신가요?" : "이미 계정이 있나요?";
+  $("authSwitch").textContent = login ? "회원가입" : "로그인";
+  setAuthMsg("");
+}
+
+function setAuthMsg(text, cls = "") {
+  $("authMsg").textContent = text;
+  $("authMsg").className = "auth-msg" + (cls ? " " + cls : "");
+}
+
+function openAuth(mode = "login", note = "") {
+  setAuthMode(mode);
+  $("authPw").value = "";
+  if (!sb) setAuthMsg("로그인 기능이 아직 설정되지 않았어요. (config.js의 SUPABASE_URL·SUPABASE_ANON_KEY)", "err");
+  else if (note) setAuthMsg(note);
+  openSheet("authSheet");
+  setTimeout(() => $("authEmail").focus(), 50);
+}
+
+// Supabase 영어 오류를 쉬운 한국어로
+function authErrorText(err) {
+  const m = String(err?.message || "");
+  if (/invalid login credentials/i.test(m)) return "이메일 또는 비밀번호가 맞지 않아요.";
+  if (/already registered|already been registered/i.test(m)) return "이미 가입된 이메일이에요. 로그인해 주세요.";
+  if (/email not confirmed/i.test(m)) return "가입 확인 메일의 링크를 먼저 눌러 주세요.";
+  if (/password.*(at least|characters)/i.test(m)) return "비밀번호는 6자 이상으로 해주세요.";
+  if (/rate limit|too many/i.test(m)) return "요청이 너무 많아요. 잠시 후 다시 시도해 주세요.";
+  if (/invalid.*email|email.*invalid/i.test(m)) return "이메일 주소를 확인해 주세요.";
+  if (err instanceof TypeError || /fetch/i.test(m)) return "서버에 연결할 수 없어요. 잠시 후 다시 시도해 주세요.";
+  return "잠시 후 다시 시도해 주세요.";
+}
+
+$("authForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  if (!sb) return setAuthMsg("로그인 기능이 아직 설정되지 않았어요.", "err");
+  const email = $("authEmail").value.trim();
+  const password = $("authPw").value;
+  if (password.length < 6) return setAuthMsg("비밀번호는 6자 이상으로 해주세요.", "err");
+  $("authSubmit").disabled = true;
+  setAuthMsg(authMode === "login" ? "로그인하는 중..." : "가입하는 중...");
+  try {
+    if (authMode === "login") {
+      const { error } = await sb.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      closeSheets();
+    } else {
+      const { data, error } = await sb.auth.signUp({
+        email, password, options: { emailRedirectTo: location.origin + location.pathname },
+      });
+      if (error) throw error;
+      if (data.session) closeSheets();   // 메일 확인을 끈 프로젝트는 바로 로그인됨
+      else {
+        setAuthMode("login");
+        setAuthMsg("확인 메일을 보냈어요. 메일의 링크를 누른 뒤 로그인해 주세요.", "ok");
+      }
+    }
+    $("authPw").value = "";
+  } catch (err) {
+    setAuthMsg(authErrorText(err), "err");
+  } finally {
+    $("authSubmit").disabled = false;
+  }
+});
+$("authSwitch").addEventListener("click", () => setAuthMode(authMode === "login" ? "signup" : "login"));
+$("loginBtn").addEventListener("click", () => openAuth("login"));
+$("logoutBtn").addEventListener("click", async () => {
+  $("logoutBtn").disabled = true;
+  try { await sb?.auth.signOut(); } catch (_) { /* 서버에 못 알려도 이 브라우저에서는 로그아웃 */ }
+  setAuthUser(null);   // signOut이 실패해도 화면은 바로 로그아웃 상태로
+  $("logoutBtn").disabled = false;
+});
+
+// 로그인한 사람이 바뀌면(로그인·로그아웃·다른 계정) 이전 사람의 상담 화면을 모두 지움
+function setAuthUser(user) {
+  const next = user ? { id: user.id, email: user.email || "" } : null;
+  const changed = (next?.id || null) !== (authUser?.id || null);
+  authUser = next;
+  renderAuth();
+  if (!changed) return chatSetEnabled();
+  chatReset(chatResult);                  // 대화 내용·대화 기록·남은 횟수·AI 추천 배지 지우기
+  $("cmpAnswer").hidden = true;           // 1:1 비교 답변 상자 지우기
+  $("cmpAnswer").textContent = "";
+  cmpAnswered = null;
+  if (!next) $("authEmail").value = "";
+}
+
+renderAuth();
 chatReset(null);
 
 // ---------- 찜하기 ----------
@@ -2200,6 +2377,10 @@ syncFeatures();
   };
   step();
 })();
+
+// 로그인 상태 감시는 모든 변수가 준비된 맨 끝에서 시작
+// 처음 열 때(INITIAL_SESSION)·로그인·로그아웃·토큰 갱신·다른 탭에서 로그아웃 모두 여기로 옴
+if (sb) sb.auth.onAuthStateChange((_event, session) => setAuthUser(session?.user || null));
 </script>
 </body>
 </html>

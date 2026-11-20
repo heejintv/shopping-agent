@@ -11,6 +11,7 @@
 - ngrok을 거쳐 들어온 새 검색(claude 실행)은 하루 DAILY_LIMIT회(기본 10회)까지. 캐시된 결과는 제한 없음
 - 내 PC에서 직접 온 요청은 무제한 (is_local_request 참고)
 - 상담 챗봇(/chat, chat.py)은 외부 요청만 하루 CHAT_DAILY_LIMIT회(기본 30회)까지
+- 상담 챗봇은 Supabase로 로그인한 사람만 (auth.py). 검색·최근 검색·공유 링크는 로그인 없이 동작
 - CORS는 GitHub Pages 주소(ALLOWED_ORIGIN)만 허용
 - /search/stream: 새 검색의 진행 단계를 실시간으로 보냄 (Server-Sent Events). 취소하면 claude를 멈추고 횟수를 되돌림
 - Render 배포(환경변수 RENDER=true): 모든 요청을 외부로 보고 하루 제한 적용, 처음 켜질 때 demo/ 결과를 캐시로 불러옴
@@ -31,8 +32,9 @@ import time
 from datetime import date
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, g, jsonify, request, send_from_directory
 
+import auth
 import chat
 import stats
 from gemini import EngineError, call_gemini
@@ -503,8 +505,8 @@ def cors(resp):
     if request.headers.get("Origin") == ALLOWED_ORIGIN:
         resp.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
         # ngrok 무료 도메인의 경고 페이지를 건너뛰는 헤더를 브라우저가 보낼 수 있게 허용
-        # Content-Type: 챗봇(/chat)이 JSON을 POST로 보냄
-        resp.headers["Access-Control-Allow-Headers"] = "ngrok-skip-browser-warning, Content-Type"
+        # Content-Type: 챗봇(/chat)이 JSON을 POST로 보냄, Authorization: 챗봇에 Supabase 로그인 토큰을 같이 보냄
+        resp.headers["Access-Control-Allow-Headers"] = "ngrok-skip-browser-warning, Content-Type, Authorization"
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST"
         resp.headers["Access-Control-Max-Age"] = "600"
         # GitHub Pages(공개 사이트)에서 http://localhost:5000 을 부를 때 크롬이 요구하는 헤더
@@ -768,6 +770,13 @@ def chat_api():
     origin = request.headers.get("Origin")
     if origin and origin not in LOCAL_ORIGINS:
         return jsonify(error="허용되지 않은 출처예요."), 403
+    # 로그인 확인: Gemini를 부르기 전에 막는다. 확인된 사용자는 g.user_id로 이후 기록에 쓸 수 있음
+    try:
+        user = auth.verify(request.headers.get("Authorization"))
+    except auth.AuthError as e:
+        return jsonify(error=str(e), login_required=e.status == 401), e.status
+    g.user_id = user["id"]
+    g.user_email = user["email"]
     if not request.is_json:
         return jsonify(error="JSON으로 보내 주세요."), 415
     body = request.get_json(silent=True)

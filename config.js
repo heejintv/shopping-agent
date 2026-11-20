@@ -5,4 +5,9 @@ window.APP_CONFIG = {
   RENDER_URL: "https://pickit-31qt.onrender.com",
   // ngrok 고정 도메인 (내 PC 서버를 공개할 때)
   SERVER_URL: "https://eternity-generic-diligent.ngrok-free.dev",
+
+  // 로그인(Supabase). Supabase 대시보드 → Project Settings → API 에서 복사
+  // 여기에는 Project URL과 anon(public) 키만! service_role 키는 절대 넣지 마세요 (공개 저장소라 누구나 봄)
+  SUPABASE_URL: "",
+  SUPABASE_ANON_KEY: "",
 };
