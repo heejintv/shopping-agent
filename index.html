@@ -82,14 +82,12 @@
   .fit.high { background: var(--value-soft); color: var(--value); }
   .fit.mid { background: var(--cheap-soft); color: var(--cheap); }
   .fit.low { background: var(--soft); color: var(--muted); }
-  td.fit-c { min-width: 130px; max-width: 200px; font-size: 13px; }
+  td.fit-c { font-size: 13px; }
   td.fit-c .fit-why { display: block; color: var(--muted); margin-top: 4px; }
   .pick .fit { align-self: flex-start; margin-top: 8px; }
   table.no-fit .fit-col { display: none !important; }
   table.no-rating .rating-col { display: none !important; }
   .rating-note { font-size: 13px; margin-top: 10px; }
-  td.model { min-width: 180px; }
-  td.pc-cell { width: 30%; }   /* 장점·단점이 남는 공간을 나눠 씀 */
   #status { margin-top: 10px; font-size: 13px; color: var(--muted); min-height: 20px; }
   #status.ok { color: var(--value); }
   #status.bad { color: var(--bad); }
@@ -294,11 +292,18 @@
   .badge.value { background: var(--value-soft); color: var(--value); }
   .badge.quality { background: var(--quality-soft); color: var(--quality); }
   .badge.cheap { background: var(--cheap-soft); color: var(--cheap); }
-  td.price { white-space: nowrap; font-weight: 700; min-width: 120px; }
+  td.price { font-weight: 700; }
   .mini { height: 4px; background: var(--soft); border-radius: 4px; margin-top: 6px; }
   .mini i { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
-  td.price .store-sub { color: var(--muted); font-size: 12px; font-weight: 400; white-space: nowrap; }   /* 가격 아래(옆) 쇼핑몰 */
-  @media (max-width: 640px) { td.price .store-sub { white-space: normal; } }   /* 휴대폰: 긴 쇼핑몰 이름이 화면 밖으로 넘치지 않게 줄바꿈 */
+  td.price .store-sub { color: var(--muted); font-size: 12px; font-weight: 400; }   /* 가격 아래(옆) 쇼핑몰 */
+  /* PC 표 전용 너비·줄바꿈 (휴대폰 카드에는 적용 안 함) */
+  @media (min-width: 761px) {
+    td.model { min-width: 180px; }
+    td.fit-c { min-width: 130px; max-width: 200px; }
+    td.pc-cell { width: 30%; }   /* 장점·단점이 남는 공간을 나눠 씀 */
+    td.price { white-space: nowrap; min-width: 120px; }
+    td.price .store-sub { white-space: nowrap; }
+  }
   td.rating, td.link { white-space: nowrap; }
   ul.pc { margin: 0; padding-left: 16px; }
   .pros li::marker { color: var(--value); }
@@ -316,9 +321,11 @@
     tr { padding: 12px 0; border-bottom: 1px solid var(--line); }
     tbody tr:last-child { border-bottom: 0; }
     td { border: 0; padding: 3px 0; max-width: none !important; }
-    td[data-label]::before { content: attr(data-label); display: inline-block; width: 52px; color: var(--muted); font-size: 12px; font-weight: 400; }
-    td.pc-cell { display: flex; }
-    td.pc-cell::before { flex: none; }
+    td[data-label]::before { content: attr(data-label); display: inline-block; width: 56px; color: var(--muted); font-size: 12px; font-weight: 400; }
+    /* 장점·단점: 라벨 56px 고정, 목록은 나머지 전체 너비 */
+    td.pc-cell { display: grid; grid-template-columns: 56px minmax(0, 1fr); }
+    td.pc-cell > * { min-width: 0; word-break: keep-all; overflow-wrap: anywhere; }
+    td.pc-cell ul.pc { padding-left: 14px; }
     td.price .mini { display: none; }
   }
 

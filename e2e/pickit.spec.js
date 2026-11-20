@@ -65,3 +65,12 @@ test("5. 휴대폰 크기(390px)에서 가로 스크롤 없음", async ({ page }
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(0);
 });
+
+test("6. 휴대폰 크기(390px)에서 장점 목록 칸이 카드 너비의 60% 이상", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openHome(page, "/?q=" + encodeURIComponent("무선 마우스"));
+  const row = page.locator("#table tbody tr").first();
+  const card = await row.boundingBox();
+  const pros = await row.locator('td[data-label="장점"] ul').boundingBox();
+  expect(pros.width).toBeGreaterThanOrEqual(card.width * 0.6);
+});
