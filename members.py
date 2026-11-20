@@ -80,10 +80,10 @@ def _request(method: str, path: str, params: dict | None = None, body=None, extr
 _role_cache: dict[str, tuple[float, str]] = {}
 
 
-def get_role(user_id: str) -> str:
-    """profiles.role ('user' | 'admin'). 행이 없으면 'user'."""
+def get_role(user_id: str, fresh: bool = False) -> str:
+    """profiles.role ('user' | 'admin'). 행이 없으면 'user'. fresh=True면 기억해 둔 값 없이 새로 확인."""
     hit = _role_cache.get(user_id)
-    if hit and time.time() - hit[0] < ROLE_CACHE_SEC:
+    if hit and not fresh and time.time() - hit[0] < ROLE_CACHE_SEC:
         return hit[1]
     _, raw = _request("GET", "profiles", {"select": "role", "id": f"eq.{user_id}", "limit": "1"})
     rows = json.loads(raw.decode("utf-8") or "[]")
@@ -91,6 +91,40 @@ def get_role(user_id: str) -> str:
     role = "admin" if role == "admin" else "user"
     _role_cache[user_id] = (time.time(), role)
     return role
+
+
+# ---------- 관리자 대시보드용 읽기 ----------
+
+PAGE = 1000          # 한 번에 받는 행 수 (Supabase 기본 최대값)
+MAX_ROWS = 20000     # 대시보드 한 번에 읽는 최대 행 수
+
+
+def count_rows(table: str, params: dict | None = None) -> int:
+    headers, _ = _request("GET", table, {"select": "id", "limit": "1", **(params or {})},
+                          extra={"Prefer": "count=exact"})
+    return parse_count(headers.get("Content-Range"))
+
+
+def select_rows(table: str, params: dict, max_rows: int = MAX_ROWS) -> tuple[list[dict], bool]:
+    """여러 쪽으로 나눠 읽는다. (행 목록, max_rows에서 잘렸는지)"""
+    rows: list[dict] = []
+    while len(rows) < max_rows:
+        _, raw = _request("GET", table, {**params, "limit": str(PAGE), "offset": str(len(rows))})
+        page = json.loads(raw.decode("utf-8") or "[]")
+        if not isinstance(page, list):
+            raise MemberError(f"Supabase {table} 응답을 읽을 수 없어요.")
+        rows.extend(r for r in page if isinstance(r, dict))
+        if len(page) < PAGE:
+            return rows, False
+    return rows[:max_rows], True
+
+
+def usage_since(start_iso: str) -> tuple[list[dict], bool]:
+    """start_iso 이후의 사용 기록 (최신순)."""
+    return select_rows("usage_logs", {
+        "select": "created_at,user_id,email,action,status,query,engine,duration_ms,tokens,exempt",
+        "created_at": f"gte.{start_iso}", "order": "created_at.desc",
+    })
 
 
 # ---------- 오늘 사용 횟수 ----------
@@ -125,7 +159,8 @@ def count_today(user_id: str | None, kind: str) -> int:
 # ---------- 기록 ----------
 
 def log_usage(user_id: str, email: str | None, action: str, status: str, query: str | None = None,
-              engine: str | None = None, duration_ms: float | None = None, exempt: bool = False) -> None:
+              engine: str | None = None, duration_ms: float | None = None, exempt: bool = False,
+              tokens: int | None = None) -> None:
     """usage_logs에 한 줄 쓴다. 실패해도 응답은 그대로 (경고 로그만, 내용·키는 남기지 않음).
     exempt=True: 한도 예외(admin·내 PC) 사용이라 서버 전체 상한에 안 셈."""
     row = {
@@ -133,6 +168,8 @@ def log_usage(user_id: str, email: str | None, action: str, status: str, query: 
         "query": (query or "")[:QUERY_MAX] or None, "engine": engine,
         "duration_ms": None if duration_ms is None else int(duration_ms), "exempt": bool(exempt),
     }
+    if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens >= 0:
+        row["tokens"] = tokens   # Gemini가 알려 준 사용 토큰 수 (모르면 열을 비워 둠)
     try:
         _request("POST", "usage_logs", body=row, extra={"Prefer": "return=minimal"})
     except MemberError as e:

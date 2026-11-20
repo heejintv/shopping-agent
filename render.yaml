@@ -31,6 +31,8 @@ services:
         value: "30"
       - key: GLOBAL_SEARCH_LIMIT  # 서버 전체 새 검색 하루 최대 횟수 (admin 제외)
         value: "20"
+      - key: GEMINI_DAILY_LIMIT   # 관리자 대시보드: Gemini 하루 무료 호출 한도 (AI Studio의 RPD 값에 맞추세요)
+        value: "1000"
       - key: DISABLE_AUTOUPDATER  # 서버에서 Claude CLI가 스스로 업데이트하지 않게
         value: "1"
       - key: GEMINI_API_KEY       # 비밀: 대시보드에서 입력

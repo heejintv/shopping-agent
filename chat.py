@@ -215,7 +215,8 @@ def split_pick(text: str, results: dict) -> tuple[str, int | None]:
 
 
 def answer(question: str, results: dict, history: list[dict], is_compare: bool = False) -> dict:
-    """{"answer", "pick_id", "engine", "fallback"}를 돌려준다. 실패하면 EngineError (메시지는 화면용).
+    """{"answer", "pick_id", "engine", "fallback", "tokens"}를 돌려준다. 실패하면 EngineError (메시지는 화면용).
+    tokens: Gemini가 알려 준 사용 토큰 수 (Claude로 답했거나 모르면 None)
     비교 모드면 서버가 두 상품의 숫자를 먼저 비교해서 프롬프트에 넣고, 답을 받은 뒤 이유 줄을 숫자로 검사한다."""
     cmp = compare.compare_facts(results["products"]) if is_compare else None
     out = _answer(build_prompt(question, results, history, cmp))
@@ -228,10 +229,11 @@ def answer(question: str, results: dict, history: list[dict], is_compare: bool =
     return out
 
 
-def _call(engine: str, prompt: str) -> str:
-    """엔진 하나를 호출하고 성공·실패(429/503/504 구분)를 모니터링에 기록한다."""
+def _call(engine: str, prompt: str, usage: dict | None = None) -> str:
+    """엔진 하나를 호출하고 성공·실패(429/503/504 구분)를 모니터링에 기록한다. usage: Gemini 토큰 수를 받을 dict."""
     try:
-        text = chat_claude(SYSTEM, prompt, CLAUDE_TIMEOUT) if engine == "claude" else chat_gemini(SYSTEM, prompt, GEMINI_TIMEOUT)
+        text = (chat_claude(SYSTEM, prompt, CLAUDE_TIMEOUT) if engine == "claude"
+                else chat_gemini(SYSTEM, prompt, GEMINI_TIMEOUT, usage))
     except EngineError as e:
         stats.record_engine(engine, False, e.code)
         raise
@@ -244,15 +246,17 @@ def _call(engine: str, prompt: str) -> str:
 
 def _answer(prompt: str) -> dict:
     if chat_engine() == "claude":
-        return {"answer": _call("claude", prompt), "engine": "claude", "fallback": False}
+        return {"answer": _call("claude", prompt), "engine": "claude", "fallback": False, "tokens": None}
+    usage = {}
     try:
-        return {"answer": _call("gemini", prompt), "engine": "gemini", "fallback": False}
+        text = _call("gemini", prompt, usage)
+        return {"answer": text, "engine": "gemini", "fallback": False, "tokens": usage.get("tokens")}
     except EngineError as e:
         if e.code not in RETRY_CODES:
             raise
         first = e
     stats.bump("fallbacks")
     try:  # Gemini 한도 초과·혼잡 → claude로 한 번만 다시
-        return {"answer": _call("claude", prompt), "engine": "claude", "fallback": True}
+        return {"answer": _call("claude", prompt), "engine": "claude", "fallback": True, "tokens": None}
     except EngineError as e:
         raise EngineError(BUSY_MESSAGE, first.code) from e

@@ -440,7 +440,7 @@
 
   /* 로그인 */
   .user-box { display: inline-flex; align-items: center; gap: 8px; }
-  .user-box[hidden] { display: none; }
+  .user-box[hidden], .wish-btn[hidden] { display: none; }
   .user-name { font-size: 14px; font-weight: 600; color: var(--muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sheet.auth { width: 380px; }
   .auth-form { display: flex; flex-direction: column; gap: 10px; }
@@ -663,6 +663,7 @@
     </svg><b>Pickit</b><span>픽잇</span></a>
     <div class="top-actions">
       <a class="wish-btn status-link" href="status.html">📊 서버 상태</a>
+      <a class="wish-btn" id="adminLink" href="admin.html" hidden>🛠 관리자</a>
       <button type="button" id="wishBtn" class="wish-btn"><span class="hc">♥</span> 찜 목록 (<span id="wishCount">0</span>)</button>
       <button type="button" id="loginBtn" class="wish-btn">로그인</button>
       <span class="user-box" id="userBox" hidden><span class="user-name" id="userName"></span>
@@ -1786,7 +1787,7 @@ document.addEventListener("click", e => {
 async function refreshUsage() {
   const who = authUser?.id;
   const badge = $("usageBadge");
-  if (!who || !serverReady || demoMode) { badge.hidden = true; return; }
+  if (!who || !serverReady || demoMode) { badge.hidden = true; $("adminLink").hidden = true; return; }
   const token = await authToken();
   if (!token) return;
   try {
@@ -1800,8 +1801,9 @@ async function refreshUsage() {
     badge.title = d.unlimited ? (d.role === "admin" ? "관리자 계정" : "내 PC 서버")
       : `오늘 남은 새 검색 ${left}회 · 상담 ${d.chat.remaining}회`;
     badge.hidden = false;
+    $("adminLink").hidden = d.role !== "admin";   // 버튼만 숨김. 대시보드 데이터는 서버가 admin에게만 줌
   } catch (_) {
-    if (who === authUser?.id) badge.hidden = true;
+    if (who === authUser?.id) { badge.hidden = true; $("adminLink").hidden = true; }
   }
 }
 
@@ -1913,6 +1915,7 @@ function setAuthUser(user) {
   if (changed && prev) wipeAccountScreen();
   if (changed) {
     $("usageBadge").hidden = true;
+    $("adminLink").hidden = true;
     chatReset(chatResult);                  // 대화 내용·대화 기록·남은 횟수·AI 추천 배지 지우기
     $("cmpAnswer").hidden = true;           // 1:1 비교 답변 상자 지우기
     $("cmpAnswer").textContent = "";

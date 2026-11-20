@@ -256,6 +256,7 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Gemini 모델 이름 |
 | `DAILY_LIMIT` | `5` | 회원 한 명의 새 검색 하루 최대 횟수 |
 | `CHAT_DAILY_LIMIT` | `30` | 회원 한 명의 상담 하루 최대 횟수 |
+| `GEMINI_DAILY_LIMIT` | — | 관리자 대시보드의 Gemini 하루 무료 호출 한도 (남은 양 막대) |
 | `GLOBAL_SEARCH_LIMIT` | `20` | 서버 전체(모든 회원 합계) 새 검색 하루 최대 횟수. admin·내 PC 제외 |
 | `SUPABASE_URL`, `SUPABASE_ANON_KEY` | — | 로그인 확인 |
 | `SUPABASE_SERVICE_KEY` | — | 서버 전용. 등급 확인·사용 기록 (화면·GitHub·로그에 절대 넣지 않음) |
@@ -358,5 +359,8 @@ python make_demo.py   # cache/ → demo/ 복사 (검색 비용 등 내부 정보
 - 환경변수: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY` (`.env` 또는 Render 대시보드)
   - `config.js`에는 URL과 anon 키만. **service 키는 서버 전용**이라 화면·GitHub·로그에 절대 넣지 않아요.
 - DB 준비: `supabase/schema.sql`을 Supabase SQL Editor에서 실행 (profiles·usage_logs·favorites 표, 가입 트리거, RLS)
+- 관리자 대시보드: `admin.html` + `GET /admin/stats?period=today|7d|30d&q=이메일` (`admin_stats.py`)
+  - 토큰 확인 + `profiles.role = 'admin'`을 매번 새로 확인한 뒤에만 응답, 아니면 403. 화면 파일에는 데이터가 없어요.
+  - 헤더의 "🛠 관리자" 버튼은 admin에게만 보여요 (버튼을 숨기는 것일 뿐, 실제 차단은 서버에서).
 - 찜 점검: `supabase/check_favorites.sql` (계정별 찜 개수, 여러 계정에 들어간 상품, 가입 전 시각으로 들어온 행)
 - 테스트: `python -m unittest discover -s tests -v`

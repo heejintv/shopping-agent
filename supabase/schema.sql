@@ -161,3 +161,13 @@ create index if not exists usage_logs_day
 --    user_id는 RLS가 "본인"만 허용하고, created_at은 서버 시각(now())만 쓰게 함
 revoke insert on public.favorites from authenticated;
 grant insert (user_id, item_key, item, query) on public.favorites to authenticated;
+
+
+-- =====================================================================
+-- 추가분 3: 관리자 대시보드 (파일 전체를 다시 실행해도 됨)
+-- =====================================================================
+
+-- 10) usage_logs.tokens: Gemini 응답에 사용 토큰 수가 있으면 저장 (Claude·캐시 등은 비어 있음)
+alter table public.usage_logs add column if not exists tokens integer check (tokens is null or tokens >= 0);
+-- 대시보드가 기간별로 최신순으로 읽을 때 쓰는 색인
+create index if not exists usage_logs_created on public.usage_logs (created_at desc);

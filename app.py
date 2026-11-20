@@ -17,6 +17,7 @@
 - CORS는 GitHub Pages 주소(ALLOWED_ORIGIN)만 허용
 - /search/stream: 새 검색의 진행 단계를 실시간으로 보냄 (Server-Sent Events). 취소하면 claude를 멈추고 횟수에서 빼지 않음
 - /me: 로그인한 사람의 등급과 오늘 남은 횟수
+- /admin/stats: 관리자 대시보드 (admin.html). 토큰 확인 + profiles.role=admin일 때만, 아니면 403
 - Render 배포(환경변수 RENDER=true): 모든 요청을 외부로 보고 하루 제한 적용, 처음 켜질 때 demo/ 결과를 캐시로 불러옴
 - /stats: 모니터링 요약 (stats.py, 화면은 status.html). 질문 원문·IP는 기록하지 않음
 """
@@ -32,10 +33,12 @@ import signal
 import subprocess
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 from flask import Flask, Response, g, jsonify, request, send_from_directory
 
+import admin_stats
 import auth
 import chat
 import members
@@ -78,6 +81,8 @@ LIMITS = {"search": DAILY_LIMIT, "chat": CHAT_DAILY_LIMIT}
 GLOBAL_SEARCH_LIMIT = int(os.environ.get("GLOBAL_SEARCH_LIMIT") or "20")
 LIMIT_MESSAGES = {"search": "오늘 새 검색 {n}회를 모두 썼어요. 내일 다시 시도하세요.",
                   "chat": "오늘 상담 {n}회를 모두 썼어요. 내일 다시 시도하세요."}
+# Gemini 하루 무료 호출 한도 (관리자 대시보드의 남은 양 막대용. 0이면 막대 없이 호출 수만)
+GEMINI_DAILY_LIMIT = int(os.environ.get("GEMINI_DAILY_LIMIT") or "0")
 GLOBAL_LIMIT_MESSAGE = "오늘 검색이 모두 소진됐어요. 내일 다시 시도해 주세요. (최근 검색은 계속 볼 수 있어요)"
 MEMBER_DOWN = "회원 정보를 확인할 수 없어요. 잠시 후 다시 시도해주세요."
 ASYNC_LOG = True   # 사용 기록을 응답과 따로(백그라운드) 남김. 테스트에서는 False
@@ -301,13 +306,13 @@ def reserve(user: dict, kind: str, unlimited: bool):
 
 
 def finish(user: dict, action: str, status: str, t0: float, query=None, engine=None,
-           ticket: "members.Ticket | None" = None, exempt: bool = False):
+           ticket: "members.Ticket | None" = None, exempt: bool = False, tokens: int | None = None):
     """사용 기록을 남기고, 잡아 둔 한도 칸(ticket)을 놓는다. 기록이 끝난 뒤 놓아야 횟수가 정확함.
-    exempt: admin·내 PC 사용 (서버 전체 상한에 안 셈)."""
+    exempt: admin·내 PC 사용 (서버 전체 상한에 안 셈). tokens: Gemini 사용 토큰 수."""
     def run():
         try:
             members.log_usage(user["id"], user.get("email"), action, status, query=query, engine=engine,
-                              duration_ms=(time.time() - t0) * 1000, exempt=exempt)
+                              duration_ms=(time.time() - t0) * 1000, exempt=exempt, tokens=tokens)
         finally:
             if ticket:
                 ticket.release()
@@ -565,6 +570,12 @@ def status_page():
     return send_from_directory(BASE_DIR, "status.html")
 
 
+@app.get("/admin.html")
+def admin_page():
+    """화면 틀만 보냄 (데이터는 없음). 숫자는 /admin/stats가 admin에게만 줌."""
+    return send_from_directory(BASE_DIR, "admin.html")
+
+
 @app.get("/stats")
 def stats_api():
     """모니터링 요약. 검색 API와 같은 CORS 규칙 + 허용하지 않은 출처는 거절."""
@@ -702,7 +713,7 @@ def search():
         data.update(cached=False, **quota_info(unlimited, "search", left))
         log_steps(q, timings)
         record(steps=timings)
-        done("ok", engine=engine, ticket=ticket)
+        done("ok", engine=engine, ticket=ticket, tokens=data.get("tokens"))
         return jsonify(data)
 
 
@@ -744,6 +755,7 @@ def search_stream():
         record = lambda **kw: stats.record_request("search", (time.time() - t0) * 1000, query=q, **kw)  # noqa: E731
         ticket = None
         engine = None
+        tokens = None
         status = "error"   # 사용 기록에 남길 결과 (ok·cached·limited·cancelled·timeout·error)
         timings = {}
         try:
@@ -776,6 +788,7 @@ def search_stream():
                 log_steps(q, timings)
                 record(steps=timings)
                 status = "ok"
+                tokens = data.get("tokens")
                 job.emit("result", data)
         except Cancelled:
             status = "cancelled"   # 취소된 검색은 status가 ok가 아니라 하루 횟수에 안 셈
@@ -796,7 +809,7 @@ def search_stream():
             record(ok=False)
             job.emit("error", {"error": "검색 중 오류가 났어요. 서버 로그를 확인하세요.", "status": 502})
         finally:
-            finish(user, "search", status, t0, query=q, engine=engine, ticket=ticket, exempt=unlimited)
+            finish(user, "search", status, t0, query=q, engine=engine, ticket=ticket, exempt=unlimited, tokens=tokens)
             job.emit(None)   # 끝 표시
             _jobs.pop(job.id, None)
 
@@ -907,8 +920,8 @@ def chat_api():
     if out["fallback"]:
         app.logger.info("chat: gemini busy → claude로 재시도함")
     record()
-    finish(user, kind, "ok", t0, query=topic, engine="claude" if out["fallback"] else chat.chat_engine(),
-           ticket=ticket, exempt=unlimited)
+    finish(user, kind, "ok", t0, query=topic, engine=out.get("engine") or chat.chat_engine(),
+           ticket=ticket, exempt=unlimited, tokens=out.get("tokens"))
     return jsonify(**out, **info)
 
 
@@ -937,6 +950,42 @@ def me():
         app.logger.warning("me failed: %s", e)
         return jsonify(error=MEMBER_DOWN), 503
     return jsonify(out)
+
+
+@app.get("/admin/stats")
+def admin_stats_api():
+    """관리자 대시보드 데이터. 토큰 확인 → profiles.role이 admin인지 새로 확인 → SERVICE 키로 읽어서 정리.
+    ?period=today|7d|30d (기본 today), ?q=이메일 일부 (순위·최근 기록에 적용)"""
+    origin = request.headers.get("Origin")
+    if origin and origin not in LOCAL_ORIGINS:
+        return jsonify(error="허용되지 않은 출처예요."), 403
+    user, err = login_user()
+    if err:
+        return err
+    try:
+        role = members.get_role(user["id"], fresh=True)   # 권한이 막 바뀌었어도 바로 반영
+    except members.MemberError as e:
+        app.logger.warning("admin role check failed: %s", e)
+        return jsonify(error=MEMBER_DOWN), 503
+    if role != "admin":
+        return jsonify(error="관리자만 볼 수 있어요."), 403
+
+    period = request.args.get("period") or "today"
+    if period not in admin_stats.PERIODS:
+        return jsonify(error="기간은 today, 7d, 30d 중 하나예요."), 400
+    q = " ".join((request.args.get("q") or "").split())[:100]
+    now = datetime.now(admin_stats.KST)
+    try:
+        rows, truncated = members.usage_since(admin_stats.fetch_start(now, period).isoformat())
+        total = members.count_rows("profiles")
+    except members.MemberError as e:
+        app.logger.warning("admin stats failed: %s", e)
+        return jsonify(error=MEMBER_DOWN), 503
+    out = admin_stats.build(rows, total, now, period, q, gemini_limit=GEMINI_DAILY_LIMIT,
+                            global_limit=GLOBAL_SEARCH_LIMIT, truncated=truncated)
+    resp = jsonify(out)
+    resp.headers["Cache-Control"] = "no-store"   # 관리자 데이터는 브라우저·중간 서버에 남기지 않음
+    return resp
 
 
 if __name__ == "__main__":

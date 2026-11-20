@@ -143,8 +143,9 @@ def _client(timeout: int):
     return genai.Client(api_key=key, http_options=types.HttpOptions(timeout=timeout * 1000)), types
 
 
-def chat_gemini(system: str, prompt: str, timeout: int) -> str:
-    """도구 없이(웹 검색 안 함) 답변 텍스트만 받는다. 실패하면 EngineError(code 포함)."""
+def chat_gemini(system: str, prompt: str, timeout: int, usage: dict | None = None) -> str:
+    """도구 없이(웹 검색 안 함) 답변 텍스트만 받는다. 실패하면 EngineError(code 포함).
+    usage에 dict를 넘기면 사용 토큰 수를 usage["tokens"]에 넣어 준다 (응답에 있을 때만)."""
     client, types = _client(timeout)
     config = types.GenerateContentConfig(system_instruction=system, temperature=0.4)
     try:
@@ -154,6 +155,9 @@ def chat_gemini(system: str, prompt: str, timeout: int) -> str:
     text = (resp.text or "").strip()
     if not text:
         raise EngineError("Gemini가 빈 답변을 보냈어요. 다시 시도해 주세요.")
+    if usage is not None:
+        meta = getattr(resp, "usage_metadata", None)
+        usage["tokens"] = getattr(meta, "total_token_count", None) if meta else None
     return text
 
 
