@@ -230,6 +230,7 @@ app = Flask(__name__)
 if not app.debug:
     import logging
     app.logger.setLevel(logging.INFO)   # 단계별 시간 같은 info 로그도 남김 (gunicorn·Render 로그)
+react_graph.logger = app.logger   # ⚡ functionCall·find_in_results 후보를 Render 로그에 (가린 채로)
 
 # 같은 검색어가 동시에 들어오면 claude를 한 번만 실행하도록 검색어별 잠금
 _locks: dict[str, threading.Lock] = {}

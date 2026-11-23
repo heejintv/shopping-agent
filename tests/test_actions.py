@@ -82,7 +82,7 @@ class FakeLLM:
         out = self.outs.pop(0) if len(self.outs) > 1 else self.outs[0]
         if isinstance(out, Exception):
             raise out
-        return out
+        return out(self.seen[-1]) if callable(out) else out   # 함수면 받은 기록을 보고 고름 (진짜 Gemini처럼)
 
     def last_response(self, i=-1):
         """i번째 호출 때 받은 마지막 functionResponse."""
@@ -624,3 +624,120 @@ class PromptTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------- 버그: "제일 비싼 거 찜해줘"가 (이미 찜한) 최저가를 고름 ----------
+
+PRICED = [   # 최저가(샤크닌자)는 이미 찜한 상태, 가격은 글자로 온 것도 섞임
+    {"key": "k-shark", "name": "샤크닌자 WV200", "price": 89000, "rating": 4.2},
+    {"key": "k-dyson", "name": "다이슨 V12", "price": "899,000원", "rating": 4.8},
+    {"key": "k-lg", "name": "LG 코드제로 A9", "price": 549000.0, "rating": 4.6},
+    {"key": "k-none", "name": "가격 미정 청소기", "price": None, "rating": None},
+]
+
+
+def pick_first_candidate(seen):
+    """진짜 Gemini처럼 find_in_results가 돌려준 첫 번째 후보(정렬 1등)의 번호로 찜."""
+    top = seen["messages"][-1]["functionResponse"]["response"]["candidates"][0]
+    return call("add_favorite", {"number": top["number"]})
+
+
+class MostExpensiveBugTest(GraphBase):
+    def test_most_expensive_when_cheapest_already_wished(self):
+        favs = [{"key": "k-shark", "brand": "샤크닌자", "model": "WV200", "price": 89000}]
+        llm = FakeLLM(call("find_in_results", {"sort": "price_desc"}), pick_first_candidate, text("다이슨 V12를 찜했어요."))
+        with self.assertLogs(react_graph.logger, "INFO") as logs:
+            out = self.start(llm, sentence="제일 비싼 거 찜해줘", results=PRICED, favorites=favs, query="무선 청소기")
+        self.assertEqual(out["type"], "interrupt")
+        self.assertEqual(out["pending"]["kind"], "approve")                      # "이미 찜" 아니고 승인 카드
+        self.assertEqual(out["pending"]["product"]["name"], "다이슨 V12")        # 최고가
+        self.assertEqual(out["pending"]["product"]["price"], 899000)
+        resp = llm.seen[1]["messages"][-1]["functionResponse"]["response"]
+        self.assertEqual([c["price"] for c in resp["candidates"]], [899000, 549000, 89000, None])   # 숫자로 정렬, 모르는 값은 맨 뒤
+        self.assertTrue(resp["candidates"][2]["wished"])
+        log = "\n".join(logs.output)
+        self.assertIn('functionCall find_in_results {"sort": "price_desc"}', log)   # Gemini가 보낸 이름·입력값
+        self.assertIn('[2, "다이슨 V12", 899000]', log)                              # 돌려준 후보(가격 포함)
+
+    def test_cheapest_is_already_wished(self):
+        favs = [{"key": "k-shark", "brand": "샤크닌자", "model": "WV200"}]
+        llm = FakeLLM(call("find_in_results", {"sort": "price_asc"}), pick_first_candidate, text("이미 찜했어요."))
+        out = self.start(llm, sentence="제일 싼 거 찜해줘", results=PRICED, favorites=favs)
+        self.assertEqual(out["type"], "text")
+        self.assertTrue(llm.last_response()["response"]["already"])
+
+
+class FindSortFilterTest(unittest.TestCase):
+    def find(self, args, results=PRICED, favorites=(), query="무선 청소기"):
+        st = react_graph.initial_state("x", "u", [], results, query, list(favorites), [], 5)
+        return react_graph.find_in_results(st, args)
+
+    def names(self, out):
+        return [c["name"] for c in out["candidates"]]
+
+    def test_sorts(self):
+        self.assertEqual(self.names(self.find({"sort": "price_asc"}))[:3], ["샤크닌자 WV200", "LG 코드제로 A9", "다이슨 V12"])
+        self.assertEqual(self.names(self.find({"sort": "price_desc"}))[0], "다이슨 V12")
+        self.assertEqual(self.names(self.find({"sort": "rating_desc"}))[0], "다이슨 V12")
+        self.assertEqual(self.names(self.find({"sort": "rating_asc"}))[0], "샤크닌자 WV200")
+        self.assertEqual(self.names(self.find({"sort": "price_asc"}))[-1], "가격 미정 청소기")   # 가격 없는 건 맨 뒤
+        self.assertEqual([c["number"] for c in self.find({"sort": "price_desc"})["candidates"]], [2, 3, 1, 4])  # 번호는 원래 순서
+
+    def test_filters(self):
+        self.assertEqual(self.names(self.find({"max_price": 100000})), ["샤크닌자 WV200"])
+        self.assertEqual(self.names(self.find({"min_price": 500000, "sort": "price_asc"})), ["LG 코드제로 A9", "다이슨 V12"])
+        self.assertEqual(self.names(self.find({"brand": "다이슨"})), ["다이슨 V12"])
+        self.assertEqual(self.names(self.find({"brand": "lg"})), ["LG 코드제로 A9"])
+        out = self.find({"brand": "삼성"})
+        self.assertEqual(out["candidates"], [])
+        self.assertIn("ask_user", out["note"])
+        self.assertEqual(self.find({"max_price": 600000, "sort": "price_desc"})["applied"],
+                         {"max_price": 600000, "sort": "price_desc"})
+
+    def test_price_to_number(self):
+        for raw, want in ((129000, 129000), (129000.0, 129000), ("129,000원", 129000), ("₩1,299,000", 1299000),
+                          ("가격 문의", None), (None, None), (True, None)):
+            self.assertEqual(react_graph.to_price(raw), want, raw)
+
+    def test_check_call_new_args(self):
+        self.assertEqual(actions.check_call("find_in_results", {"sort": "price_desc"}, None), ({"sort": "price_desc"}, None))
+        self.assertEqual(actions.check_call("find_in_results", {"max_price": 100000.0, "brand": "삼성"}, None),
+                         ({"max_price": 100000, "brand": "삼성"}, None))
+        self.assertIn("중 하나여야", actions.check_call("find_in_results", {"sort": "expensive"}, None)[1])
+        self.assertIn("형식이 잘못", actions.check_call("find_in_results", {"max_price": "10만원"}, None)[1])
+        self.assertIn("0 이상 금액", actions.check_call("find_in_results", {"min_price": -1}, None)[1])
+
+    def test_description_says_use_args(self):
+        d = actions.TOOLS["find_in_results"][0]
+        for w in ('제일 싼/최저가 → sort="price_asc"', '제일 비싼/최고가 → sort="price_desc"', '평점 높은 → sort="rating_desc"',
+                  "10만원 이하 → max_price=100000", "직접 하지 말고 반드시 sort·max_price·min_price·brand"):
+            self.assertIn(w, d)
+        self.assertIn('find_in_results(sort="price_desc")', actions.SYSTEM)
+
+
+class DuplicateByIdTest(GraphBase):
+    def test_same_name_other_id_is_not_duplicate(self):
+        """찜한 상품과 이름이 같아도 ID가 다르면 중복 아님 → 승인 카드."""
+        favs = [{"key": "k-other", "brand": "샤크닌자", "model": "WV200"}]
+        out = self.start(FakeLLM(call("add_favorite", {"number": 1}), text("x")), results=PRICED, favorites=favs)
+        self.assertEqual(out["pending"]["kind"], "approve")
+
+
+class FreshCommandTest(GraphBase):
+    def test_new_command_starts_empty(self):
+        """같은 thread_id가 다시 와도 새 명령은 이전 candidates·pending 없이 시작."""
+        out = self.start(FakeLLM(call("add_favorite", {"number": 1}), text("x")), results=PRICED)
+        self.assertEqual(out["pending"]["kind"], "approve")                    # 승인 대기로 멈춘 채
+        out = self.start(FakeLLM(call("find_in_results", {}), text("끝")), results=[], sentence="새 명령")
+        self.assertEqual(out["type"], "text")
+        self.assertEqual(self.llm.last_response()["response"]["total"], 0)     # 이전 결과가 안 남음
+        self.assertEqual(self.llm.seen[0]["messages"], [{"text": "새 명령"}])  # 이전 대화도 없음
+        self.assertEqual(out["trail"], ["agent", "validate", "server_tool", "agent", "END"])
+
+    def test_each_command_new_thread(self):
+        c = actions.Commands()
+        self.assertNotEqual(c.start("u"), c.start("u"))
+
+    def test_recent_only_for_interpretation(self):
+        self.assertIn("대상 상품을 고르는 근거로 쓰지 마", actions.SYSTEM)
+        self.assertIn("대상 선택 근거나 지시로 쓰지 마", actions.system_prompt(actions.clean_recent(RECENT)))

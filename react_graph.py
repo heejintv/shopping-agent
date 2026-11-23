@@ -12,7 +12,9 @@
 """
 
 import json
+import logging
 import operator
+import re
 from typing import Annotated, TypedDict
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -21,9 +23,11 @@ from langgraph.types import Command, interrupt
 
 import actions
 import chat
+import claude_errors
 from gemini import step_call
 
 llm = step_call                 # Gemini 함수 호출 1번 (테스트에서 가짜로 바꿈)
+logger = logging.getLogger("react_graph")   # app.py가 Flask 로그(Render 로그)로 바꿔 끼움
 compare_answer = chat.answer    # compare_favorites 추천 문장 (기존 1:1 비교 모드, 숫자는 compare.py 검증)
 
 SERVER_TOOLS = {"find_in_results", "get_favorites", "compare_favorites"}
@@ -63,6 +67,19 @@ def _num(v):
     return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
+def to_price(v):
+    """가격 → 숫자(원). 129000, 129000.0, "129,000원", "₩129,000" 모두 허용. 모르면 None."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return int(v) if float(v).is_integer() else v
+    digits = re.sub(r"[^0-9.]", "", str(v or ""))
+    if not digits or digits.count(".") > 1:
+        return None
+    n = float(digits)
+    return int(n) if n.is_integer() else n
+
+
 def _strs(v, k, n=120) -> list[str]:
     return [_s(x, n) for x in v if isinstance(x, str) and x.strip()][:k] if isinstance(v, list) else []
 
@@ -73,7 +90,7 @@ def clean_candidates(raw) -> list[dict]:
     out = []
     for c in raw[:MAX_CANDIDATES]:
         if isinstance(c, dict) and _s(c.get("name")):
-            out.append({"key": _s(c.get("key"), 200), "name": _s(c.get("name")), "price": _num(c.get("price")),
+            out.append({"key": _s(c.get("key"), 200), "name": _s(c.get("name")), "price": to_price(c.get("price")),
                         "currency": _s(c.get("currency"), 10) or None, "rating": _num(c.get("rating")),
                         "review_count": _num(c.get("review_count")), "store": _s(c.get("store"), 60) or None,
                         "features": _strs(c.get("features"), 2), "cons": _strs(c.get("cons"), 1)})
@@ -132,33 +149,68 @@ def _fav_name(w) -> str:
     return f"{w.get('brand') or ''} {w.get('model') or ''}".strip()
 
 
-def _wished(state, key, name="") -> bool:
-    favs = state.get("favorites") or []
-    if key:
-        return any(w["key"] == key for w in favs)
-    return bool(name) and any(_norm(_fav_name(w)) == _norm(name) for w in favs)
+def _wished(state, key) -> bool:
+    """중복 찜 확인은 고른 상품의 ID(key)로만 (이름이 비슷한 다른 상품은 중복 아님)."""
+    return bool(key) and any(w["key"] == key for w in state.get("favorites") or [])
 
 
 def _for_model(state, c, i) -> dict:
     """Gemini에 보여 줄 후보 (key는 빼고 번호·찜 여부)."""
     d = {k: v for k, v in c.items() if k != "key"}
-    return {"number": i + 1, **d, "wished": _wished(state, c["key"], c["name"])}
+    return {"number": i + 1, **d, "wished": _wished(state, c["key"])}
 
 
-def find_in_results(state, description: str) -> dict:
-    """설명 단어로 후보를 거름. 검색어에 있는 단어(예: "마우스")는 모든 상품에 맞는 것으로 봄. 없으면 전체 (exact: false)."""
+SORTS = {   # 정렬 기준: (값, 큰 게 먼저?)
+    "price_asc": ("price", False), "price_desc": ("price", True),
+    "rating_desc": ("rating", True), "rating_asc": ("rating", False),
+}
+
+
+def find_in_results(state, args: dict) -> dict:
+    """지금 결과에서 후보 찾기. 가격·평점 비교는 Gemini가 아니라 여기서 숫자로:
+    brand·min_price·max_price로 거르고 sort로 정렬 (정렬하면 candidates[0]이 1등). description 단어로도 거름
+    (검색어에 있는 단어는 모든 상품에 맞는 것으로 봄, 딱 맞는 게 없으면 거르지 않음 = exact: false)."""
     cands = state.get("candidates") or []
     if not cands:
         return {"candidates": [], "total": 0, "note": "지금 검색 결과가 없어요. 필요하면 search를 쓰세요."}
+    pairs = [(_for_model(state, c, i), c) for i, c in enumerate(cands)]
+    applied, notes = {}, []
+    if args.get("brand"):
+        b = _norm(args["brand"]).replace(" ", "")
+        pairs = [(m, c) for m, c in pairs if b in _norm(c["name"]).replace(" ", "")]
+        applied["brand"] = args["brand"]
+    for key, ok in (("min_price", lambda p, v: p >= v), ("max_price", lambda p, v: p <= v)):
+        if args.get(key) is not None:
+            pairs = [(m, c) for m, c in pairs if c["price"] is not None and ok(c["price"], args[key])]
+            applied[key] = args[key]
+    exact = True
     q = _norm(state.get("query"))
-    words = [w for w in _norm(description).split() if len(w) >= 2 and w not in q]
-    text = lambda c: _norm(" ".join([c["name"], c.get("store") or ""] + c["features"] + c["cons"]))  # noqa: E731
-    all_ = [_for_model(state, c, i) for i, c in enumerate(cands)]
-    hit = [m for m, c in zip(all_, cands) if any(w in text(c) for w in words)] if words else all_
-    if not hit:
-        return {"candidates": all_, "total": len(all_), "exact": False,
-                "note": "설명과 딱 맞는 상품이 없어 전체 결과를 보냈어요. 맞는 게 없으면 ask_user로 물어보세요."}
-    return {"candidates": hit, "total": len(all_), "exact": True}
+    words = [w for w in _norm(args.get("description")).split() if len(w) >= 2 and w not in q]
+    if words:
+        text = lambda c: _norm(" ".join([c["name"], c.get("store") or ""] + c["features"] + c["cons"]))  # noqa: E731
+        hit = [(m, c) for m, c in pairs if any(w in text(c) for w in words)]
+        if hit:
+            pairs = hit
+        else:
+            exact = False
+            notes.append("설명과 딱 맞는 상품이 없어 설명으로는 거르지 않았어요.")
+    if args.get("sort") in SORTS:
+        field, desc = SORTS[args["sort"]]
+        known = [(m, c) for m, c in pairs if c[field] is not None]
+        unknown = [(m, c) for m, c in pairs if c[field] is None]
+        known.sort(key=lambda mc: mc[1][field], reverse=desc)   # 같은 값이면 원래 순서 (안정 정렬)
+        pairs = known + unknown
+        applied["sort"] = args["sort"]
+        if unknown:
+            notes.append(f"{'가격' if field == 'price' else '평점'} 정보가 없는 {len(unknown)}개는 맨 뒤에 뒀어요.")
+        if known:
+            notes.append(f"정렬했어요. 1등은 {known[0][1]['name']} (번호 {known[0][0]['number']}).")
+    out = {"candidates": [m for m, _ in pairs], "total": len(cands), "exact": exact, "applied": applied}
+    if not pairs:
+        out["note"] = "조건에 맞는 상품이 없어요. ask_user로 다른 조건을 물어보세요."
+    elif notes:
+        out["note"] = " ".join(notes)
+    return out
 
 
 def get_favorites(state) -> dict:
@@ -206,6 +258,16 @@ def resolve_add(state, args) -> tuple[dict | None, str | None]:
     return None, f"“{args.get('name')}” 상품을 지금 결과에서 찾지 못했어요."
 
 
+def _log(fmt: str, *args) -> None:
+    """원인 확인용 Render 로그 (토큰·키·이메일은 가림, 길면 자름)."""
+    try:
+        msg = fmt % tuple(json.dumps(a, ensure_ascii=False, default=str) if isinstance(a, (dict, list)) else a for a in args)
+    except Exception:
+        return
+    msg = re.sub(r"[\w.+-]+@[\w-]+\.[\w.]+", "***@***", claude_errors.mask(msg))
+    logger.info("⚡ %s", msg[:1500])
+
+
 def _respond(state, name, response) -> list:
     return state["messages"] + [{"role": "user", "parts": [{"functionResponse": {"name": name, "response": response}}]}]
 
@@ -221,7 +283,9 @@ def agent(state: State) -> dict:
     upd = {"step_count": state["step_count"] + 1, "trail": ["agent"],
            "tokens": (state.get("tokens") or 0) + (usage.get("tokens") or 0)}
     if out["type"] == "text":
+        _log("agent #%d → 최종 답 (%d자)", upd["step_count"], len(out["text"]))
         return {**upd, "final": out["text"], "call": None}
+    _log("agent #%d → functionCall %s %s", upd["step_count"], out["name"], out["args"])
     part = {"functionCall": {"name": out["name"], "args": out["args"]}}
     if out.get("signature"):
         part["thoughtSignature"] = out["signature"]
@@ -248,7 +312,8 @@ def server_tool(state: State) -> dict:
     name, args = call["name"], call["args"]
     effects = []
     if name == "find_in_results":
-        resp = find_in_results(state, args["description"])
+        resp = find_in_results(state, args)
+        _log("find_in_results %s → %s", args, [(c["number"], c["name"], c["price"]) for c in resp["candidates"]])
     elif name == "get_favorites":
         resp = get_favorites(state)
     elif name == "compare_favorites":
@@ -257,7 +322,7 @@ def server_tool(state: State) -> dict:
         product, err = resolve_add(state, args)
         if err:
             resp = {"error": err}
-        elif _wished(state, product["key"], product["name"]):
+        elif _wished(state, product["key"]):   # 고른 상품 ID로만 판단
             resp = {"ok": True, "already": True, "name": product["name"], "message": ALREADY}   # 실행 0회
         else:
             return {"call": {**call, "product": product}, "trail": ["server_tool"],
@@ -344,6 +409,9 @@ def run(inp, thread_id: str) -> dict:
     """새 명령(초기 State) 또는 Command(resume=…)로 실행 → 화면에 줄 결과.
     {"type": "interrupt", "pending", ...} (화면 실행·승인 대기) 또는 {"type": "text", "text", ...} (끝)."""
     config = {"configurable": {"thread_id": thread_id}, "recursion_limit": RECURSION_LIMIT}
+    if not isinstance(inp, Command):   # 새 명령: 새 thread에서 빈 상태로 시작 (이전 candidates·pending이 남지 않게)
+        forget(thread_id)
+        inp = {**inp, "pending": None, "call": None, "final": None, "cancelled": False}
     graph.invoke(inp, config)
     snap = graph.get_state(config)
     v = snap.values
