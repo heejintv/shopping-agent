@@ -310,6 +310,8 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | `GET /stats` | 모니터링 요약 (가동 시간, 오늘 요청 수, 응답 시간, 엔진별 성공·실패, 캐시 적중률, 인기 검색어, 사이트별 링크 확인 `danawa 0/5`, 상태) |
 | `GET /health` | 서버 상태, 내 PC 직접 접속이면 `unlimited: true` (계정별 남은 횟수는 `/me`) |
 | `GET /me` | 🔒 로그인한 사람의 등급(`role`)과 오늘 남은 새 검색·상담 횟수, 서버 전체 남은 새 검색 |
+| `POST /admin/report` · `GET /admin/report` | 🔒👑 일일 운영 보고서 만들기(뒤에서 실행) · 상태와 초안 보기 |
+| `POST /admin/report/approve` | 🔒👑 `{id}` 초안 승인 → `logs/reports/report-날짜.json` 저장 (Render 무료는 재시작하면 사라짐) |
 | `GET /admin/stats?period=today\|7d\|30d&q=이메일` | 🔒👑 관리자 대시보드 데이터. admin이 아니면 403 |
 
 🔒 = `Authorization: Bearer <Supabase 로그인 토큰>` 필요 (없거나 틀리면 401, AI 호출 전에 막음). 👑 = `profiles.role = 'admin'`만.
@@ -326,6 +328,8 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | `auth.py` | Supabase 로그인 토큰 확인 (`Authorization: Bearer`) |
 | `members.py` | SERVICE 키로 Supabase 읽기·쓰기: 등급(`profiles.role`), 사용 기록(`usage_logs`), 계정별·서버 전체 하루 한도 |
 | `admin_stats.py` | 관리자 대시보드 집계 (숫자 카드, Gemini 사용량, 순위, 최근 기록, 7일 그래프) |
+| `daily_report.py` | 일일 보고서 집계(어제 KST, 출처 포함, 개인정보 가림)와 숫자 대조. AI 없음 |
+| `report_crew.py` | CrewAI 작성·검토 Agent (Gemini만, 보고서 하나에 최대 5번, 수정 최대 2번). Python 3.13 이하 필요 |
 | `admin.html` | 관리자 대시보드 화면 (데이터는 `/admin/stats`에서만 받음) |
 | `supabase/schema.sql` | Supabase 표 3개·가입 트리거·RLS 규칙. SQL Editor에서 실행 |
 | `supabase/check_favorites.sql` | 찜이 계정끼리 섞였는지 점검하는 SQL (읽기 전용, 삭제문은 주석) |
@@ -534,7 +538,7 @@ admin 계정으로 로그인하면 헤더에 **🛠 관리자** 버튼이 보입
 python -m unittest discover -s tests -v
 ```
 
-Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니다. 현재 **191개** 통과.
+Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니다. 현재 **217개** 통과 (crewai가 없는 Python 3.14에서는 Crew 테스트 9개를 건너뜀).
 
 | 파일 | 확인하는 것 |
 |---|---|
@@ -542,6 +546,7 @@ Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니
 | `tests/test_members.py` | Supabase REST 요청 모양 (키 헤더, 개수 세기, `exempt` 필터), 기록 실패해도 응답은 정상 |
 | `tests/test_modes.py` | 내 PC·Render 모드에서 실제 `is_local_request`를 거쳐 API 호출 |
 | `tests/test_admin.py` | `/admin/stats` 401·403·200, 대시보드 집계, Gemini 토큰 기록 |
+| `tests/test_report.py` | 일일 보고서 집계·마스킹·숫자 대조, Crew 호출 상한(가짜 Gemini), 권한·승인 |
 | `tests/test_actions.py` | ⚡ 입력값 검사, 그래프 흐름(interrupt/resume), 승인 카드, 중복 찜, 검색 확인, 여러 개 선택, 비교 창 열림 확인 (Gemini 가짜 응답) |
 | `tests/test_intent.py` | 자동 ⚡ 키워드, 조사, 선택지 맞추기 (`node`로 `intent.js` 실행) |
 | `tests/test_recent.py` | 최근 검색 순서 (한국 시간, 저장된 결과로 다시 검색해도 맨 앞) |

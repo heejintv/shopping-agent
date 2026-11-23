@@ -2,3 +2,4 @@ flask>=3.1
 gunicorn>=23.0  # 배포용 서버 (Render). 내 PC에서는 python app.py로 실행
 google-genai>=1.0  # Gemini(상담 챗봇, SEARCH_ENGINE=gemini)에 필요
 langgraph>=1.2,<2  # ⚡ ReAct 반복 (StateGraph·interrupt·MemorySaver)
+crewai>=1.15.44,<1.16; python_version < "3.14"  # 관리자 일일 보고서. 3.14는 아직 지원 안 함 (Render는 3.12)

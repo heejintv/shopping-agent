@@ -127,6 +127,15 @@ def usage_since(start_iso: str) -> tuple[list[dict], bool]:
     })
 
 
+def usage_between(start: datetime, end: datetime) -> tuple[list[dict], bool]:
+    """start 이상 end 미만의 사용 기록 (최신순, 일일 보고서용)."""
+    return select_rows("usage_logs", {
+        "select": "created_at,user_id,action,status,query,engine,duration_ms,tokens",   # 이메일은 읽지 않음
+        "and": f'(created_at.gte."{start.isoformat()}",created_at.lt."{end.isoformat()}")',
+        "order": "created_at.desc",
+    })
+
+
 # ---------- 오늘 사용 횟수 ----------
 
 def today_start() -> str:

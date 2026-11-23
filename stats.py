@@ -96,7 +96,7 @@ def record_request(kind: str, ms: float, ok: bool = True, cached: bool = False,
     if limited:
         ev["limited"] = True
     if not ok and code is not None:
-        ev["code"] = code_key(code)
+        ev["code"] = "401" if str(code) in ("401", "403") else code_key(code)   # 401: 로그인·토큰 (일일 보고서)
     if query and kind == "search":
         ev["query"] = " ".join(query.split()).lower()[:100]
     with _lock:

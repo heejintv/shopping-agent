@@ -76,6 +76,14 @@
   .check-res.fail { background: var(--bad-soft); color: var(--bad); }
   .check-detail { color: var(--muted); font-size: 13px; }
 
+  /* 일일 운영 보고서 */
+  #reportBody h3 { font-size: 14px; margin: 16px 0 4px; }
+  #reportBody ul { margin: 0; padding-left: 20px; }
+  #reportBody li { margin: 3px 0; overflow-wrap: anywhere; }
+  #reportBody details { margin-top: 14px; }
+  #reportBody summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+  .report-actions { display: flex; gap: 8px; margin-top: 16px; }
+
   /* 숫자 카드 */
   .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 16px; }
   .tile { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px 18px; box-shadow: var(--shadow); min-width: 0; }
@@ -200,6 +208,20 @@
         <button type="button" class="ghost" id="claudeCheck">Claude 연결 확인</button>
         <span id="claudeResult" class="check-res" hidden></span>
         <span id="claudeDetail" class="check-detail" aria-live="polite"></span>
+      </div>
+    </section>
+
+    <section class="panel" id="reportPanel">
+      <div class="panel-head"><h2>일일 운영 보고서</h2><span class="na">어제(한국 시간) 집계 · AI 초안은 승인 전에 확인하세요</span></div>
+      <div class="check-row">
+        <button type="button" class="ghost" id="reportMake">보고서 만들기</button>
+        <span id="reportVerdict" class="check-res" hidden></span>
+        <span id="reportMsg" class="check-detail" aria-live="polite"></span>
+      </div>
+      <div id="reportBody" hidden></div>
+      <div class="report-actions" id="reportActions" hidden>
+        <button type="button" class="primary" id="reportApprove">승인</button>
+        <button type="button" class="ghost" id="reportRedo">다시 만들기</button>
       </div>
     </section>
 
@@ -448,6 +470,77 @@ async function claudeCheck() {
 }
 $("claudeCheck").addEventListener("click", claudeCheck);
 
+// ---------- 일일 운영 보고서 (/admin/report: 뒤에서 만들고 상태를 물어봄) ----------
+let report = null, reportTimer = null;
+
+async function reportCall(path, method = "GET", body) {
+  clearTimeout(reportTimer);
+  for (const id of ["reportMake", "reportApprove", "reportRedo"]) $(id).disabled = true;
+  try {
+    const t = await token();
+    if (!t) return showGate("관리자 계정으로 Pickit에 로그인한 뒤 다시 열어 주세요.");
+    if (base === null && !(await connect())) throw new TypeError();
+    const headers = { ...baseHeaders, Authorization: `Bearer ${t}` };
+    if (body) headers["Content-Type"] = "application/json";
+    const res = await fetch(base + path, { method, headers, cache: "no-store", body: body && JSON.stringify(body) });
+    const d = await res.json().catch(() => ({}));
+    if (res.status === 401) return showGate("로그인이 만료됐어요. Pickit에서 다시 로그인해 주세요.");
+    if (res.status === 403) return showGate("이 계정은 관리자 권한이 없어요.");
+    if (!res.ok) throw new Error(d.error || `서버 오류 (${res.status})`);
+    showReport(d);
+  } catch (e) {
+    $("reportMsg").textContent = e instanceof TypeError ? "서버에 연결할 수 없어요" : "⚠️ " + e.message;
+    if (report?.state === "running") reportTimer = setTimeout(() => reportCall("/admin/report"), 5000);
+  } finally {
+    const busy = report?.state === "running";
+    for (const id of ["reportMake", "reportApprove", "reportRedo"]) $(id).disabled = busy;
+  }
+}
+
+function showReport(d) {
+  report = d;
+  const has = d.state === "draft" || d.state === "approved";
+  $("reportMake").hidden = has;
+  $("reportMake").textContent = d.state === "running" ? "만드는 중…" : "보고서 만들기";
+  $("reportBody").hidden = $("reportActions").hidden = $("reportVerdict").hidden = !has;
+  if (!has) {
+    $("reportMsg").textContent = d.state === "running" ? "집계하고 초안을 쓰고 검토하는 중이에요 (몇 분 걸릴 수 있어요)"
+      : d.state === "error" ? "⚠️ " + d.error : "";
+    if (d.state === "running") reportTimer = setTimeout(() => reportCall("/admin/report"), 3000);
+    return;
+  }
+  const pass = d.verdict === "검토 통과";
+  $("reportVerdict").className = "check-res " + (pass ? "ok" : "fail");
+  $("reportVerdict").textContent = (pass ? "✅ " : "⚠️ ") + d.verdict;
+  $("reportMsg").textContent = `${d.aggregates.date} · 수정 ${d.fixes}번 · Gemini ${d.calls}번 · 토큰 ${num(d.tokens)}개`
+    + (d.state === "approved" ? ` · 승인됨 ${fmtTime(d.approved_at)}` : "");
+  $("reportApprove").hidden = d.state === "approved";
+  const list = (title, lines) => `<h3>${title}</h3><ul>${lines.map(x => `<li>${esc(x)}</li>`).join("") || "<li>없음</li>"}</ul>`;
+  const val = (v, u) => v == null ? "기록 없음" : `${num(v)}${esc(u || "")}`;
+  const where = { summary: "요약", anomalies: "이상 징후", suggestions: "⚡ 개선 제안" };
+  const unit = Object.fromEntries(d.aggregates.metrics.map(m => [m.id, m.unit]));
+  $("reportBody").innerHTML = (d.problems.length ? list("검토 지적", d.problems) : "")
+    + list("요약", d.draft.summary) + list("이상 징후", d.draft.anomalies) + list("⚡ 개선 제안", d.draft.suggestions)
+    + `<details open><summary>숫자별 근거 (${d.checks.length}개)</summary><div class="table-wrap"><table>
+      <thead><tr><th>위치</th><th class="num">초안</th><th class="num">집계값</th><th>항목</th><th>출처</th><th>결과</th></tr></thead><tbody>`
+    + d.checks.map(c => `<tr class="${c.ok ? "" : "row-bad"}"><td>${where[c.section]} ${c.line}번째 줄</td><td class="num">${esc(c.number)}</td>
+      <td class="num">${c.id in unit ? val(c.expected, unit[c.id]) : "-"}</td><td class="text">${esc(c.label || c.id || "-")}</td>
+      <td class="text">${esc(c.source || "-")}</td><td>${c.ok ? "✅" : "❌ " + esc(c.reason)}</td></tr>`).join("")
+    + `</tbody></table></div></details>
+      <details><summary>전체 집계 (${d.aggregates.metrics.length}개)</summary><div class="table-wrap"><table>
+      <thead><tr><th>항목</th><th class="num">값</th><th>출처</th></tr></thead><tbody>`
+    + d.aggregates.metrics.map(m => `<tr><td class="text">${esc(m.label)}${m.text ? `: “${esc(m.text)}”` : ""}</td>
+      <td class="num">${val(m.value, m.unit)}</td><td class="text">${esc(m.source)}</td></tr>`).join("")
+    + `</tbody></table></div>${list("참고", d.aggregates.notes)}</details>`;
+}
+const makeReport = () => reportCall("/admin/report", "POST");
+$("reportMake").addEventListener("click", makeReport);
+$("reportRedo").addEventListener("click", makeReport);
+$("reportApprove").addEventListener("click", () => {
+  if (report.verdict !== "검토 통과" && !confirm("검토에서 '수정 필요'로 나온 보고서예요. 그래도 승인할까요?")) return;
+  reportCall("/admin/report/approve", "POST", { id: report.id });
+});
+
 // ---------- 조작 ----------
 $("period").addEventListener("click", e => {
   const b = e.target.closest("button[data-p]");
@@ -461,7 +554,7 @@ $("q").addEventListener("input", () => { clearTimeout(qTimer); qTimer = setTimeo
 $("reload").addEventListener("click", load);
 
 if (!sb) showGate("로그인 기능이 설정되지 않았어요. (config.js)");
-else load();
+else load().then(() => { if (!$("dash").hidden) reportCall("/admin/report"); });   // 만들던 초안이 있으면 이어서 보기
 </script>
 </body>
 </html>

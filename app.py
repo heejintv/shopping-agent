@@ -20,6 +20,7 @@
 - /chat/action/step: 챗봇 ⚡. LangGraph(react_graph.py)로 ReAct 반복, 화면 실행·승인은 interrupt/resume (명령 하나에 상담 1회·Gemini 최대 5번)
 - /admin/stats: 관리자 대시보드 (admin.html). 토큰 확인 + profiles.role=admin일 때만, 아니면 403
 - /admin/claude-check: admin 전용. claude --version + 짧은 claude -p로 토큰이 살아 있는지 (성공/실패·원인 종류만)
+- /admin/report: admin 전용 일일 운영 보고서 (daily_report.py 집계 → report_crew.py CrewAI 초안·검토 → 관리자 승인)
 - Render 배포(환경변수 RENDER=true): 모든 요청을 외부로 보고 하루 제한 적용, 처음 켜질 때 demo/ 결과를 캐시로 불러옴
 - /stats: 모니터링 요약 (stats.py, 화면은 status.html). 질문 원문·IP는 기록하지 않음
 """
@@ -46,7 +47,9 @@ import admin_stats
 import auth
 import chat
 import claude_errors
+import daily_report
 import members
+import report_crew
 import stats
 from gemini import EngineError, call_gemini
 from gemini import model_name as gemini_model
@@ -1248,6 +1251,94 @@ def admin_stats_api():
     resp = jsonify(out)
     resp.headers["Cache-Control"] = "no-store"   # 관리자 데이터는 브라우저·중간 서버에 남기지 않음
     return resp
+
+
+# ---------- 일일 운영 보고서 (admin 전용) ----------
+# 만드는 데 몇 분 걸릴 수 있어 뒤에서 돌리고 화면이 GET으로 상태를 물어봄. 워커가 1개라 메모리에 하나만 둠
+
+REPORT_DIR = stats.LOG_DIR / "reports"   # 승인한 보고서 (Render 무료는 임시 디스크라 재시작하면 사라짐)
+_report_lock = threading.Lock()
+_report: dict = {"state": "none"}        # none | running | draft | approved | error
+
+
+def _report_response(status: int = 200):
+    with _report_lock:
+        resp = jsonify(_report)
+    resp.status_code = status
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+def _make_report(report_id: str) -> None:
+    global _report
+    try:
+        now = datetime.now(KST)
+        start, end = daily_report.yesterday(now)
+        rows, truncated = members.usage_between(start, end)
+        agg = daily_report.build(rows, daily_report.load_events(start, end), now, truncated, GEMINI_DAILY_LIMIT)
+        out = {"state": "draft", "id": report_id, "aggregates": agg, **report_crew.run(agg)}
+    except members.MemberError as e:
+        app.logger.warning("report failed: %s", e)
+        out = {"state": "error", "id": report_id, "error": MEMBER_DOWN}
+    except EngineError as e:
+        app.logger.warning("report failed: %s", e)
+        out = {"state": "error", "id": report_id, "error": str(e)}
+    except Exception:
+        app.logger.exception("report failed")
+        out = {"state": "error", "id": report_id, "error": "보고서를 만들지 못했어요. 서버 로그를 확인하세요."}
+    with _report_lock:
+        _report = out
+
+
+@app.get("/admin/report")
+def admin_report_get():
+    """지금 보고서 상태 (만드는 중·초안·승인됨·오류)."""
+    return require_admin() or _report_response()
+
+
+@app.post("/admin/report")
+def admin_report_make():
+    """보고서 만들기·다시 만들기. 만드는 중이면 409."""
+    global _report
+    err = require_admin()
+    if err:
+        return err
+    with _report_lock:
+        if _report["state"] == "running":
+            return jsonify(error="보고서를 만드는 중이에요. 잠시만 기다려 주세요."), 409
+        report_id = secrets.token_hex(8)
+        _report = {"state": "running", "id": report_id}
+    if ASYNC_LOG:
+        threading.Thread(target=_make_report, args=(report_id,), daemon=True).start()
+    else:
+        _make_report(report_id)
+    return _report_response(202)
+
+
+@app.post("/admin/report/approve")
+def admin_report_approve():
+    """{id}의 초안을 승인하고 logs/reports/report-날짜.json에 저장. 그 사이 다시 만들어졌으면 409."""
+    global _report
+    err = require_admin()
+    if err:
+        return err
+    body = request.get_json(silent=True)
+    report_id = body.get("id") if isinstance(body, dict) else None
+    with _report_lock:
+        if _report["state"] != "draft" or report_id != _report["id"]:
+            return jsonify(error="승인할 초안이 없거나 바뀌었어요. 다시 확인해 주세요."), 409
+        done = {**_report, "state": "approved", "approved_at": now_kst()}
+        try:
+            REPORT_DIR.mkdir(parents=True, exist_ok=True)
+            path = REPORT_DIR / f"report-{done['aggregates']['date']}.json"
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(done, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(path)
+        except OSError as e:
+            app.logger.warning("report save failed: %s", e)
+            return jsonify(error="보고서를 저장하지 못했어요."), 500
+        _report = done
+    return _report_response()
 
 
 if __name__ == "__main__":
