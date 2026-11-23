@@ -359,6 +359,9 @@
   #actMode:disabled { opacity: .5; cursor: default; }
   #actLog { padding: 0 14px 10px; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #chatBox.guest #actLog { display: none; }
+  .act-opts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .act-opts .act-ask { margin-top: 0; }
+  .act-ask:disabled { opacity: .5; cursor: default; }
   .msg .act-ask { display: block; margin-top: 8px; padding: 5px 11px; font-size: 13px; border-radius: 99px; border: 1px solid var(--accent); background: var(--card); color: var(--accent); }
   #chatCount { padding: 0 14px 8px; font-size: 12px; color: var(--muted); text-align: right; }
   .pick-link { color: inherit; font-weight: 700; text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px; }
@@ -1581,6 +1584,8 @@ const CHAT_MAX = 300;
 let chatResult = null;   // 챗봇에 보낼 지금 화면의 검색 결과
 let chatHistory = [];    // [{role: "user"|"assistant", text}] 최근 대화
 let chatBusy = false;
+let actMode = false;      // ⚡ 버튼을 켰는지
+let pendingAsk = null;    // ⚡ ask_user가 답을 기다리는 중이면 답을 받을 함수 (chatSetEnabled·chatReset이 먼저 쓰므로 여기서 선언)
 
 function chatAdd(cls, text) {
   const div = document.createElement("div");
@@ -1592,7 +1597,7 @@ function chatAdd(cls, text) {
 }
 
 function chatSetEnabled() {
-  const off = chatBusy || demoMode || !authUser;
+  const off = (chatBusy && !pendingAsk) || demoMode || !authUser;   // ⚡가 되묻는 중이면 답을 입력할 수 있게
   const act = actMode || !chatResult;   // 검색 결과가 없으면 입력은 ⚡ 명령으로 처리 (예: "에어팟 검색해서 제일 싼 거 찜해줘")
   $("cmpAsk").disabled = chatBusy || demoMode;   // 로그인 안 했으면 누를 때 로그인 창을 띄움
   $("chatSend").disabled = off;
@@ -1606,6 +1611,7 @@ function chatSetEnabled() {
 // 새 검색 결과가 화면에 뜨면 대화 내용 초기화
 function chatReset(result) {
   clearAiBadge();
+  cancelAsk();   // ⚡가 되묻는 중에 새 결과가 뜨면 그 명령은 멈춤
   chatResult = result;
   chatHistory = [];
   $("chatLog").innerHTML = "";
@@ -1778,18 +1784,22 @@ $("chatFab").addEventListener("click", () => {
 });
 $("chatClose").addEventListener("click", () => $("chatBox").classList.remove("open", "peek"));
 // ⚡가 꺼져 있어도 행동 명령(찜·검색 등, intent.js 키워드 판단)이거나 검색 결과가 없으면 ⚡로 처리 → 실행 기록에 "(자동 ⚡)"
+// ⚡가 ask_user로 되묻는 중이면 입력은 그 답
 $("chatForm").addEventListener("submit", e => {
   e.preventDefault();
   const text = $("chatIn").value;
+  if (pendingAsk) return answerAsk(text);
   if (actMode) return chatAct(text);
   if (!chatResult || window.isActionCommand?.(text)) return chatAct(text, { auto: true });
   chatAsk(text);
 });
 
-// ---------- 문장으로 실행 (함수 호출) ----------
-// 서버(/chat/action)는 Gemini가 고른 도구·입력값만 돌려줌. 실행은 여기서 기존 찜(toggleWish)·검색(#f 제출)을 그대로 부름
+// ---------- ⚡ 문장으로 실행 (Gemini Function Calling + ReAct 반복) ----------
+// 서버(/chat/action/step)는 Gemini가 고른 함수·입력값(functionCall)만 줌. 여기서 기존 찜(toggleWish)·검색(#f 제출)으로 실행하고
+// 결과를 functionResponse로 붙여 다시 보냄 → Gemini가 다음 함수를 고르거나 최종 답. 명령 하나에 최대 5번, 상담 횟수는 1회
 
-let actMode = false;
+const ACT_MAX = 5;
+const MARKS = "①②③④⑤";
 $("actMode").addEventListener("click", () => {
   actMode = !actMode;
   chatSetEnabled();
@@ -1798,7 +1808,7 @@ $("actMode").addEventListener("click", () => {
 
 const productLabel = p => `${p.brand || ""} ${p.model || ""}`.trim();
 
-// 상품명 → 지금 화면 검색 결과(또는 list)에서 가장 많이 겹치는 상품. 단어 절반 이상 맞아야 인정
+// 상품명 → list에서 가장 많이 겹치는 상품 (remove_favorite의 name용). 단어 절반 이상 맞아야 인정
 function findProduct(name, list) {
   const want = norm(name).split(" ").filter(Boolean);
   if (!want.length) return null;
@@ -1826,131 +1836,6 @@ function runSearch(q) {
   $("f").requestSubmit();   // 검색창 제출과 똑같이 (로그인·한도 검사도 그대로)
 }
 
-// 상품을 못 찾았을 때: "먼저 검색할까요?" 버튼
-function askSearchFirst(name) {
-  const div = chatAdd("bot", `지금 검색 결과에서 “${name}”을(를) 찾지 못했어요.`);
-  const b = document.createElement("button");
-  b.type = "button";
-  b.className = "act-ask";
-  b.textContent = `🔍 “${name}” 먼저 검색할까요?`;
-  b.addEventListener("click", () => { b.disabled = true; actLogLine(`search · ${name}`); runSearch(name); });
-  div.appendChild(b);
-}
-
-// 찜 단계 하나 실행 → {ok, text} (text는 실행 기록 문구). picked가 있으면 이름 대신 그 상품
-function runAction(tool, args, picked) {
-  const products = shownResult?.products || [];
-  const before = wishList.length;
-  const tag = (p, rest) => picked ? rest : `${tool} · ${p} · ${rest}`;
-  if (tool === "show_favorites") {
-    renderWishSheet(); openSheet("wishSheet");
-    chatAdd("bot", `찜 목록을 열었어요 (${wishList.length}개).`);
-    return { ok: true, text: `show_favorites · 찜 ${wishList.length}개` };
-  }
-  const name = picked ? productLabel(picked) : args.name;
-  if (tool === "add_favorite") {
-    const p = picked || findProduct(name, products);
-    if (!p) { askSearchFirst(name); return { ok: false, text: `${tool} · ${name} · 결과에 없음` }; }
-    if (isWished(wishKey(p))) {
-      chatAdd("bot", `“${productLabel(p)}”은(는) 이미 찜했어요.`);
-      return { ok: true, text: tag(productLabel(p), `이미 찜 (${before}개)`) };
-    }
-    toggleWish(p, shownResult);   // 하트 버튼과 같은 함수
-    chatAdd("bot", `♥ “${productLabel(p)}”을(를) 찜했어요.`);
-    return { ok: true, text: tag(productLabel(p), `찜 ${before}→${wishList.length}`) };
-  }
-  if (tool === "remove_favorite") {
-    // 고른 상품 → 검색 결과 → 찜 목록 순서로 찾음
-    const p = [picked, findProduct(name, products), findProduct(name, wishList)].find(x => x && isWished(wishKey(x)));
-    if (!p) {
-      if (picked || findProduct(name, products)) {
-        chatAdd("bot", `“${name}”은(는) 찜 목록에 없어요.`);
-        return { ok: true, text: tag(name, `찜에 없음 (${before}개)`) };
-      }
-      askSearchFirst(name);
-      return { ok: false, text: `${tool} · ${name} · 결과에 없음` };
-    }
-    toggleWish(p, shownResult);
-    chatAdd("bot", `♡ “${productLabel(p)}”을(를) 찜에서 뺐어요.`);
-    return { ok: true, text: tag(productLabel(p), `찜 ${before}→${wishList.length}`) };
-  }
-  return { ok: false, text: `${tool} · 모르는 동작` };
-}
-
-// pick 단계: Gemini를 다시 부르지 않고 지금 결과 데이터로 계산. {p, label} 또는 {error}
-const PICK_LABELS = { cheapest: "최저가", most_expensive: "최고가", top_rated: "평점 최고", lowest_rated: "평점 최저",
-  first: "첫 번째", last: "마지막", brand: "브랜드", index: "번호", price_under: "가격 이하", price_over: "가격 이상" };
-function pickProduct(products, { by, value }) {
-  const num = v => typeof v === "number" && isFinite(v);
-  const won = v => Number(v).toLocaleString("ko-KR") + "원";
-  const cheapestOf = list => list.reduce((a, b) => b.price < a.price ? b : a);
-  if (by === "first") return products[0] ? { p: products[0], label: "첫 번째" } : { error: "결과가 없어요." };
-  if (by === "last") {
-    const p = products[products.length - 1];
-    return p ? { p, label: "마지막" } : { error: "결과가 없어요." };
-  }
-  if (by === "most_expensive") {
-    const list = products.filter(p => num(p.price));
-    if (!list.length) return { error: "가격이 있는 상품이 없어요." };
-    return { p: list.reduce((a, b) => b.price > a.price ? b : a), label: "최고가" };
-  }
-  if (by === "price_under" || by === "price_over") {   // 그 가격대 안에서 결과 순서대로 첫 번째
-    const under = by === "price_under";
-    const p = products.find(x => num(x.price) && (under ? x.price <= value : x.price >= value));
-    const label = `${won(value)} ${under ? "이하" : "이상"}`;
-    if (p) return { p, label };
-    const list = products.filter(x => num(x.price));
-    const hint = list.length ? ` (결과 가격 ${won(cheapestOf(list).price)}~${won(list.reduce((a, b) => b.price > a.price ? b : a).price)})` : "";
-    return { error: `${label} 상품이 결과에 없어요${hint}.` };
-  }
-  if (by === "index") {
-    const p = products[value - 1];
-    return p ? { p, label: `${value}번째` } : { error: `${value}번째 상품이 없어요 (결과 ${products.length}개).` };
-  }
-  if (by === "cheapest") {
-    const list = products.filter(p => num(p.price));
-    if (!list.length) return { error: "가격이 있는 상품이 없어요." };
-    return { p: cheapestOf(list), label: "최저가" };
-  }
-  if (by === "top_rated") {
-    const list = products.filter(p => num(p.rating));
-    if (!list.length) return { error: "평점이 있는 상품이 없어요." };
-    const rc = p => num(p.review_count) ? p.review_count : 0;
-    return { p: list.reduce((a, b) => b.rating > a.rating || (b.rating === a.rating && rc(b) > rc(a)) ? b : a), label: "평점 최고" };
-  }
-  if (by === "lowest_rated") {
-    const list = products.filter(p => num(p.rating));
-    if (!list.length) return { error: "평점이 있는 상품이 없어요." };
-    return { p: list.reduce((a, b) => b.rating < a.rating ? b : a), label: "평점 최저" };
-  }
-  if (by === "brand") {
-    const w = norm(String(value || ""));
-    const p = products.find(x => norm(x.brand || "") === w) || products.find(x => norm(productLabel(x)).includes(w));
-    return p ? { p, label: `${value} 브랜드` } : { error: `“${value}” 브랜드 상품이 결과에 없어요.` };
-  }
-  return { error: "모르는 선택 기준이에요." };
-}
-
-// compare_favorites: 비교에 필요한 값만 보냄 (서버가 조건으로 거르고 기존 1:1 비교로 추천)
-const favForCompare = w => ({ key: w.key, brand: w.brand, model: w.model, query: w.query, price: w.price, currency: w.currency,
-  rating: w.rating, review_count: w.review_count, pros: w.pros, cons: w.cons, store: w.store });
-
-function showFavCompare(condition, r) {
-  const what = condition ? `“${condition}” ` : "";
-  if (r.error) {
-    chatAdd("info", r.error + (r.matched ? ` (${what}찜 ${r.matched}개)` : ""));
-    return actLogLine(`compare_favorites · ${condition || "전체"} · 맞는 찜 ${r.matched || 0}개 · 멈춤`);
-  }
-  const cmp = (r.keys || []).map(k => wishList.find(w => w.key === k));
-  const names = cmp.map(w => w ? `${w.brand || ""} ${w.model}`.trim() : "?");
-  chatAdd("info", `⚖️ 1:1 비교: ${names.join("  vs  ")}` + (r.matched > 2 ? `\n(${what}찜 ${r.matched}개 중 최근 2개)` : ""));
-  const ok = cmp.every(Boolean);
-  const i = Number.isInteger(r.pick_id) && cmp[r.pick_id] ? r.pick_id : null;
-  if (ok) chatAddAnswer(r.answer, i, k => openCompare(cmp, k), "👉 비교 화면에서 보기");
-  else chatAdd("bot", r.answer);   // 기다리는 동안 찜이 바뀜: 답만 보여 줌
-  actLogLine(`compare_favorites · ${condition || "전체"} · ${names.join(" vs ")}${i != null ? ` → 추천 ${names[i]}` : ""}`);
-}
-
 // 검색을 시작하고 "pickit:searchdone" 이벤트를 기다림 → {ok, result} | {ok: false, error}
 function searchAndWait(q) {
   return new Promise(resolve => {
@@ -1959,92 +1844,202 @@ function searchAndWait(q) {
   });
 }
 
-// 여러 단계 실행: ① 검색 → ② 선택 → ③ 찜. 단계가 실패하면 이유를 말하고 멈춤 (다음 단계 실행 안 함)
-async function runPlan(steps, who) {
-  const marks = "①②③";
-  const parts = [];
-  const show = (i, text) => { parts[i] = `${marks[i] || i + 1 + "."} ${text}`; actLogLine(parts.join(" → ")); };
-  const stop = (i, text, reason) => { show(i, `${text} · 멈춤`); chatAdd("err", reason); };
-  let picked = null;
-  for (let i = 0; i < steps.length; i++) {
-    if (who !== authUser?.id) return;   // 실행 중 로그아웃
-    const { tool, args } = steps[i];
-    if (tool === "search") {
-      if (searchCtl) return stop(i, "검색 못 함", "이미 진행 중인 검색이 있어요. 끝난 뒤 다시 해 주세요.");
-      show(i, `검색 중: ${args.query}`);
-      const r = await searchAndWait(args.query);
-      if (who !== authUser?.id) return;
-      if (!r.ok) return stop(i, `검색 실패: ${args.query}`, `검색 단계에서 멈췄어요: ${r.error}`);
-      const n = r.result?.products?.length || 0;
-      if (!n) return stop(i, `결과 0개: ${args.query}`, "검색 결과가 없어서 멈췄어요.");
-      show(i, `검색 완료: ${args.query} ${n}개`);
-      picked = null;
-    } else if (tool === "pick") {
-      const products = shownResult?.products || [];
-      if (!products.length) return stop(i, "선택 못 함", "고를 검색 결과가 없어요. 먼저 검색해 주세요.");
-      const r = pickProduct(products, args);
-      if (r.error) return stop(i, `${PICK_LABELS[args.by] || "선택"} 실패`, `고르기 단계에서 멈췄어요: ${r.error}`);
-      picked = r.p;
-      const price = fmtPrice(picked.price, picked.currency);
-      show(i, `${r.label} 선택: ${productLabel(picked)}${price ? " " + price : ""}`);
-      highlightProduct(products.indexOf(picked));
-    } else {
-      const r = runAction(tool, args, picked);
-      show(i, r.text);
-      if (!r.ok) return;
+// ask_user: 질문 + 선택 버튼. 버튼을 누르거나 입력창에 답하면 그 답으로 이어서 진행
+function askUser({ question, options = [] }) {
+  return new Promise(resolve => {
+    const div = chatAdd("bot", question);
+    const box = document.createElement("div");
+    box.className = "act-opts";
+    for (const o of options) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "act-ask";
+      b.textContent = o;
+      b.addEventListener("click", () => answerAsk(o));
+      box.appendChild(b);
     }
+    if (options.length) div.appendChild(box);
+    pendingAsk = v => {
+      pendingAsk = null;
+      for (const b of box.querySelectorAll("button")) b.disabled = true;
+      resolve(v);
+      chatSetEnabled();
+    };
+    chatSetEnabled();
+    if (!$("chatIn").disabled) $("chatIn").focus();
+  });
+}
+function answerAsk(text) {
+  text = String(text || "").trim().split(/\s+/).join(" ").slice(0, 200);
+  if (!text || !pendingAsk) return;
+  chatAdd("user", text);
+  $("chatIn").value = "";
+  pendingAsk({ answer: text });
+}
+function cancelAsk() { if (pendingAsk) pendingAsk({ cancelled: true }); }
+
+// Gemini에 돌려줄 후보 (번호는 지금 결과 순서, 1부터)
+const candidate = (p, i) => ({
+  number: i + 1, name: productLabel(p), price: typeof p.price === "number" ? p.price : null, currency: p.currency || null,
+  rating: typeof p.rating === "number" ? p.rating : null, review_count: typeof p.review_count === "number" ? p.review_count : null,
+  store: p.store || null, features: strList(p.pros).slice(0, 2), cons: strList(p.cons).slice(0, 1), wished: isWished(wishKey(p)),
+});
+
+// find_in_results: 설명 단어로 후보를 거름. 검색어에 있는 단어(예: "마우스")는 모든 상품에 맞는 것으로 봄
+// 딱 맞는 게 없으면 전체를 보내고 Gemini가 판단 (exact: false)
+function findInResults(description) {
+  const products = shownResult?.products || [];
+  if (!products.length) return { response: { candidates: [], total: 0, note: "지금 검색 결과가 없어요. 필요하면 search를 쓰세요." }, summary: "결과 없음" };
+  const q = norm(shownResult.query || "");
+  const words = norm(description || "").split(" ").filter(w => w.length >= 2 && !q.includes(w));
+  const text = p => norm([productLabel(p), p.store, ...strList(p.pros), ...strList(p.cons)].join(" "));
+  const all = products.map(candidate);
+  const hit = words.length ? all.filter((c, i) => words.some(w => text(products[i]).includes(w))) : all;
+  if (!hit.length) {
+    return { response: { candidates: all, total: all.length, exact: false,
+      note: "설명과 딱 맞는 상품이 없어 전체 결과를 보냈어요. 맞는 게 없으면 ask_user로 물어보세요." }, summary: `딱 맞는 후보 0개 (전체 ${all.length}개 전달)` };
   }
+  return { response: { candidates: hit, total: all.length, exact: true }, summary: `후보 ${hit.length}개` };
+}
+
+// compare_favorites용: 비교에 필요한 값만 보냄 (서버가 조건으로 거르고 기존 1:1 비교로 추천)
+const favForCompare = w => ({ key: w.key, brand: w.brand, model: w.model, query: w.query, price: w.price, currency: w.currency,
+  rating: w.rating, review_count: w.review_count, pros: w.pros, cons: w.cons, store: w.store });
+
+async function compareFavorites(condition, cmd) {
+  const token = await authToken();
+  if (!token) return { response: { error: "로그인이 만료됐어요." }, summary: "로그인 만료" };
+  const res = await fetch(API_BASE + "/chat/action/compare", {
+    method: "POST",
+    headers: { ...API_HEADERS, "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ cmd, condition, favorites: wishList.map(favForCompare) }),
+  });
+  const r = await res.json().catch(() => ({}));
+  if (!res.ok || r.error) {
+    const msg = r.error || "비교하지 못했어요.";
+    return { response: { error: msg, matched: r.matched ?? null }, summary: `멈춤: ${msg}`, stop: !!r.stop };
+  }
+  const cmp = (r.keys || []).map(k => wishList.find(w => w.key === k));
+  const names = cmp.map(w => w ? productLabel(w) : "?");
+  const what = condition ? `“${condition}” ` : "";
+  chatAdd("info", `⚖️ 1:1 비교: ${names.join("  vs  ")}` + (r.matched > 2 ? `\n(${what}찜 ${r.matched}개 중 최근 2개)` : ""));
+  const i = Number.isInteger(r.pick_id) && cmp[r.pick_id] ? r.pick_id : null;
+  if (cmp.every(Boolean)) chatAddAnswer(r.answer, i, k => openCompare(cmp, k), "👉 비교 화면에서 보기");
+  else chatAdd("bot", r.answer);   // 기다리는 동안 찜이 바뀜: 답만 보여 줌
+  return { response: { ok: true, compared: names, recommended: i != null ? names[i] : null,
+    note: "추천 문장은 화면에 이미 보였어요. 한 문장으로 마무리하세요." },
+    summary: `${names.join(" vs ")}${i != null ? ` → 추천 ${names[i]}` : ""}` };
+}
+
+// 함수 하나 실행 → {response(Gemini에 돌려줄 결과), summary(실행 기록 문구), stop?}
+async function execTool(name, args, cmd) {
+  const products = shownResult?.products || [];
+  const before = wishList.length;
+  const noItem = n => ({ response: { error: `${n}번 상품이 지금 결과에 없어요 (결과 ${products.length}개).` }, summary: `${n}번 없음` });
+  if (name === "find_in_results") return findInResults(args.description);
+  if (name === "search") {
+    if (searchCtl) return { response: { error: "이미 진행 중인 검색이 있어요." }, summary: "검색 중이라 못 함" };
+    actLogLine(`검색 중: ${args.query}`);
+    const r = await searchAndWait(args.query);
+    if (!r.ok) return { response: { error: r.error }, summary: `검색 실패: ${r.error}` };
+    const list = r.result?.products || [];
+    if (!list.length) return { response: { error: "검색 결과가 0개예요." }, summary: "결과 0개" };
+    return { response: { candidates: list.map(candidate), total: list.length }, summary: `검색 완료 ${list.length}개` };
+  }
+  if (name === "add_favorite") {
+    const p = products[args.number - 1];
+    if (!p) return noItem(args.number);
+    if (isWished(wishKey(p))) {
+      chatAdd("bot", `“${productLabel(p)}”은(는) 이미 찜했어요.`);
+      return { response: { ok: true, already: true, name: productLabel(p), count: before }, summary: `이미 찜 (${before}개)` };
+    }
+    toggleWish(p, shownResult);   // 하트 버튼과 같은 함수
+    chatAdd("bot", `♥ “${productLabel(p)}”을(를) 찜했어요.`);
+    return { response: { ok: true, name: productLabel(p), before, after: wishList.length }, summary: `찜 ${before}→${wishList.length}` };
+  }
+  if (name === "remove_favorite") {
+    const p = args.number ? products[args.number - 1] : (findProduct(args.name, products) || findProduct(args.name, wishList));
+    if (!p) return args.number ? noItem(args.number) : { response: { error: `“${args.name}”을(를) 찾지 못했어요.` }, summary: "못 찾음" };
+    if (!isWished(wishKey(p))) return { response: { error: `“${productLabel(p)}”은(는) 찜 목록에 없어요.` }, summary: "찜에 없음" };
+    toggleWish(p, shownResult);
+    chatAdd("bot", `♡ “${productLabel(p)}”을(를) 찜에서 뺐어요.`);
+    return { response: { ok: true, name: productLabel(p), before, after: wishList.length }, summary: `찜 ${before}→${wishList.length}` };
+  }
+  if (name === "show_favorites") {
+    renderWishSheet(); openSheet("wishSheet");
+    return { response: { count: wishList.length, items: wishList.slice(0, 20).map(productLabel) }, summary: `찜 ${wishList.length}개` };
+  }
+  if (name === "compare_favorites") return compareFavorites(args.condition || "", cmd);
+  if (name === "ask_user") {
+    const r = await askUser(args);
+    if (r.cancelled) return { response: { error: "사용자가 다른 일을 해서 멈췄어요." }, summary: "취소됨", stop: true };
+    return { response: { answer: r.answer }, summary: `“${r.answer}”` };
+  }
+  return { response: { error: `모르는 함수예요: ${name}` }, summary: "모르는 함수" };
+}
+
+// 실행 기록용 함수 표시: find_in_results("휴대용 마우스"), add_favorite(2), show_favorites
+function callLabel(name, args) {
+  const v = args.description ?? args.query ?? args.condition ?? args.number ?? args.name;
+  if (name === "ask_user" || v == null || v === "") return name;
+  return `${name}(${typeof v === "number" ? v : JSON.stringify(v)})`;
 }
 
 async function chatAct(sentence, opts = {}) {
   sentence = sentence.trim().split(/\s+/).join(" ");
   if (!sentence || chatBusy || demoMode) return;
   if (!authUser) return openAuth("login", "로그인하면 문장으로 실행할 수 있어요.");
-  const token = await authToken();
-  if (!token) return openAuth("login", "로그인이 만료됐어요. 다시 로그인해 주세요.");
   if (sentence.length > 200) return chatAdd("err", "문장은 200자까지 쓸 수 있어요.");
   const who = authUser.id;
-  const sentFor = chatResult;
   actAuto = !!opts.auto;   // 여기부터는 finally에서 항상 되돌림
   chatAdd("user", (actAuto ? "⚡(자동) " : "⚡ ") + sentence);
   $("chatIn").value = "";
   chatBusy = true; chatSetEnabled();
-  const wait = chatAdd("bot wait", "실행할 동작을 고르는 중...");
+  const contents = [{ role: "user", parts: [{ text: sentence }] }];
+  const log = [];
+  const show = () => actLogLine(log.join(" → "));
+  let cmd = null, wait = null;
   try {
-    const res = await fetch(API_BASE + "/chat/action", {
-      method: "POST",
-      headers: { ...API_HEADERS, "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        sentence, names: (shownResult?.products || []).slice(0, 10).map(productLabel),
-        results: chatResult, history: chatHistory.slice(-6),   // 계획을 못 세우면 서버가 같은 문장을 상담으로 답함
-        auto: actAuto,                                          // 자동 ⚡면 상담 답 위에 "아직 실행할 수 없어요" 한 줄
-        favorites: wishList.map(favForCompare),                 // compare_favorites용 (최신순)
-      }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (who !== authUser?.id || sentFor !== chatResult) return;
-    wait.remove();
-    if (data.unlimited === false && data.remaining != null) $("chatCount").textContent = `오늘 남은 상담 ${data.remaining}회`;
-    if (res.status === 401 && data.login_required) { loginExpired(res, data); throw new Error(data.error || "다시 로그인해 주세요."); }
-    if (!res.ok) throw new Error(data.error || "문장으로 실행하지 못했어요. 버튼으로 해 주세요.");
-    const steps = Array.isArray(data.steps) ? data.steps : [];
-    if (data.compare) return showFavCompare(steps[0]?.args?.condition || "", data.compare);
-    if (data.chat) {   // 계획을 못 세워서 상담으로 답함 (상담 횟수는 이 요청 한 번만)
-      const pick = validPick(data.chat.pick_id);
-      if (data.chat.note) chatAdd("info", data.chat.note);
-      chatAddAnswer(data.chat.answer, pick, highlightProduct, "👉 결과에서 보기");
-      if (pick != null) highlightProduct(pick);
-      chatHistory.push({ role: "user", text: sentence }, { role: "assistant", text: data.chat.answer });
-      chatHistory = chatHistory.slice(-6);
-      return actLogLine(data.chat.note ? "실행할 수 없는 명령 → 상담으로 답함" : "계획 없음 → 상담으로 답함");
+    for (let i = 0; i < ACT_MAX; i++) {
+      const token = await authToken();
+      if (!token) { openAuth("login", "로그인이 만료됐어요. 다시 로그인해 주세요."); throw new Error("로그인이 만료됐어요."); }
+      wait = chatAdd("bot wait", i ? "다음 단계를 고르는 중..." : "실행할 동작을 고르는 중...");
+      const res = await fetch(API_BASE + "/chat/action/step", {
+        method: "POST",
+        headers: { ...API_HEADERS, "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ contents, cmd }),
+      });
+      const data = await res.json().catch(() => ({}));
+      wait.remove(); wait = null;
+      if (who !== authUser?.id) return;   // 실행 중 로그아웃
+      if (data.unlimited === false && data.remaining != null) $("chatCount").textContent = `오늘 남은 상담 ${data.remaining}회`;
+      if (res.status === 401 && data.login_required) { loginExpired(res, data); throw new Error(data.error || "다시 로그인해 주세요."); }
+      if (!res.ok) throw new Error(data.error || "문장으로 실행하지 못했어요. 버튼으로 해 주세요.");
+      cmd = data.cmd || cmd;
+      if (data.type === "text") {   // 최종 답
+        chatAdd("bot", data.text);
+        log.push(data.rejected ? `거부: ${data.rejected}` : "완료");
+        return show();
+      }
+      const { name, args = {}, signature } = data.call || {};
+      contents.push({ role: "model", parts: [{ functionCall: { name, args }, ...(signature ? { thoughtSignature: signature } : {}) }] });
+      // 서버가 거부한 함수(입력값·권한 오류)는 실행하지 않고 사유를 Gemini에 돌려보냄
+      const r = data.rejected ? { response: { error: data.rejected }, summary: `거부: ${data.rejected}` } : await execTool(name, args, cmd);
+      if (who !== authUser?.id) return;
+      log.push(`${MARKS[i]} ${callLabel(name, args)}${r.summary ? " → " + r.summary : ""}`);
+      show();
+      if (r.stop) return;
+      contents.push({ role: "user", parts: [{ functionResponse: { name, response: r.response } }] });
     }
-    if (!steps.length) { chatAdd("info", data.message || "어떤 동작인지 알아듣지 못했어요. 버튼으로 해 주세요."); return actLogLine("계획 없음 · " + (data.message || "")); }
-    await runPlan(steps, who);
+    log.push(`최대 ${ACT_MAX}번이라 멈춤`); show();
+    chatAdd("err", `단계가 너무 많아서 멈췄어요 (명령 하나에 최대 ${ACT_MAX}번). 버튼으로 해 주세요.`);
   } catch (err) {
-    if (who !== authUser?.id || sentFor !== chatResult) return;
-    wait.remove();
+    wait?.remove();
+    if (who !== authUser?.id) return;
     chatAdd("err", err instanceof TypeError ? "서버에 연결할 수 없어요. 버튼으로 해 주세요." : err.message);
+    if (log.length) { log.push("멈춤"); show(); }
   } finally {
+    cancelAsk();
     chatBusy = false; actAuto = false; chatSetEnabled();
   }
 }

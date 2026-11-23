@@ -8,6 +8,7 @@ app.py의 JSON 스키마에 맞게 값을 정리해서 claude -p 결과와 똑�
 상담 챗봇(chat.py)은 검색 도구 없이 답변만 받는 chat_gemini()를 쓴다.
 """
 
+import base64
 import json
 import os
 import re
@@ -187,16 +188,59 @@ def call_gemini(prompt: str, schema: dict, timeout: int) -> dict:
 
 
 
-def plan_json(system: str, prompt: str, schema: dict, timeout: int, usage: dict | None = None) -> dict:
-    """도구 없이 한 번 호출해서 schema 모양의 JSON(dict)만 받는다 (응답 스키마 강제). 실패하면 EngineError."""
+
+def _to_contents(contents: list[dict], types) -> list:
+    """actions.clean_contents()가 검사한 [{role, parts}] → genai Content 목록 (thoughtSignature는 base64 → bytes)."""
+    out = []
+    for turn in contents:
+        part = turn["parts"][0]
+        if "text" in part:
+            p = types.Part(text=part["text"])
+        elif "functionCall" in part:
+            fc = part["functionCall"]
+            sig = part.get("thoughtSignature")
+            p = types.Part(function_call=types.FunctionCall(name=fc["name"], args=fc["args"]),
+                           thought_signature=base64.b64decode(sig) if sig else None)
+        else:
+            fr = part["functionResponse"]
+            p = types.Part(function_response=types.FunctionResponse(name=fr["name"], response=fr["response"]))
+        out.append(types.Content(role=turn["role"], parts=[p]))
+    return out
+
+
+def step_call(system: str, contents: list[dict], tools: dict, timeout: int, usage: dict | None = None) -> dict:
+    """Function Calling 한 번 (함수는 실행하지 않음). tools = {이름: (설명, JSON 스키마 또는 None, ...)}.
+    → {"type": "call", "name", "args", "signature"(base64 또는 None)} 또는 {"type": "text", "text"}. 실패하면 EngineError."""
     client, types = _client(timeout)
-    config = types.GenerateContentConfig(system_instruction=system, temperature=0,
-                                         response_mime_type="application/json", response_json_schema=schema)
+    decls = [types.FunctionDeclaration(name=n, description=t[0], parameters_json_schema=t[1]) if t[1]
+             else types.FunctionDeclaration(name=n, description=t[0]) for n, t in tools.items()]
+    config = types.GenerateContentConfig(
+        system_instruction=system, temperature=0,
+        tools=[types.Tool(function_declarations=decls)],
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),   # 실행은 화면에서
+        tool_config=types.ToolConfig(function_calling_config=types.FunctionCallingConfig(mode="AUTO")),
+    )
     try:
-        resp = client.models.generate_content(model=model_name(), contents=prompt, config=config)
+        resp = client.models.generate_content(model=model_name(), contents=_to_contents(contents, types), config=config)
     except Exception as e:
         raise _friendly_error(e) from e
     if usage is not None:
         meta = getattr(resp, "usage_metadata", None)
         usage["tokens"] = getattr(meta, "total_token_count", None) if meta else None
-    return extract_json(resp.text or "")
+    cand = (getattr(resp, "candidates", None) or [None])[0]
+    parts = (getattr(getattr(cand, "content", None), "parts", None) or []) if cand else []
+    texts = []
+    for part in parts:
+        if getattr(part, "thought", False):
+            continue
+        fc = getattr(part, "function_call", None)
+        if fc:   # 여러 개를 골라도 첫 번째만 (한 단계씩)
+            sig = getattr(part, "thought_signature", None)
+            return {"type": "call", "name": fc.name, "args": dict(fc.args or {}),
+                    "signature": base64.b64encode(sig).decode() if sig else None}
+        if getattr(part, "text", None):
+            texts.append(part.text)
+    text = "".join(texts).strip()
+    if not text:
+        raise EngineError("Gemini가 빈 답변을 보냈어요. 다시 시도해 주세요.")
+    return {"type": "text", "text": text}

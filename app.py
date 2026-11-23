@@ -17,7 +17,8 @@
 - CORS는 GitHub Pages 주소(ALLOWED_ORIGIN)만 허용
 - /search/stream: 새 검색의 진행 단계를 실시간으로 보냄 (Server-Sent Events). 취소하면 claude를 멈추고 횟수에서 빼지 않음
 - /me: 로그인한 사람의 등급과 오늘 남은 횟수
-- /chat/action: 챗봇 "문장으로 실행". Gemini 한 번으로 최대 3단계 계획(search·pick·찜)만 줌 (실행은 화면, 상담 한도 1회)
+- /chat/action/step: 챗봇 ⚡. Gemini Function Calling 한 단계씩 (ReAct, 실행은 화면, 명령 하나에 상담 1회·최대 5번)
+- /chat/action/compare: ⚡ compare_favorites 실행 (진행 중인 명령으로만)
 - /admin/stats: 관리자 대시보드 (admin.html). 토큰 확인 + profiles.role=admin일 때만, 아니면 403
 - /admin/claude-check: admin 전용. claude --version + 짧은 claude -p로 토큰이 살아 있는지 (성공/실패·원인 종류만)
 - Render 배포(환경변수 RENDER=true): 모든 요청을 외부로 보고 하루 제한 적용, 처음 켜질 때 demo/ 결과를 캐시로 불러옴
@@ -48,6 +49,7 @@ import claude_errors
 import members
 import stats
 from gemini import EngineError, call_gemini
+from gemini import step_call as gemini_step
 from gemini import model_name as gemini_model
 import links
 from links import verify_links
@@ -946,98 +948,115 @@ def chat_api():
     return jsonify(**out, **info)
 
 
-@app.post("/chat/action")
-def chat_action():
-    """챗봇 "문장으로 실행": Gemini 한 번으로 최대 3단계 계획 {"steps": [{tool, args}]}을 돌려줌 (실행은 화면이 함).
-    - compare_favorites: 같은 요청 안에서 찜 목록 2개를 기존 1:1 비교로 추천 → {"compare": {answer, pick_id, keys}}
-    - 계획을 못 세우면 같은 문장을 상담 답변으로 → {"chat": {answer, pick_id}} (검색 결과가 없으면 message)
-    /chat과 같은 검사(출처·로그인·상담 하루 한도)를 거치고, 상담 횟수는 한 요청에 한 번만 셈."""
+def _member_post():
+    """⚡ API 공통 검사: 출처 → 로그인 → JSON. (사용자, 본문, None) 또는 (None, None, 오류 응답)."""
     origin = request.headers.get("Origin")
     if origin and origin not in LOCAL_ORIGINS:
-        return jsonify(error="허용되지 않은 출처예요."), 403
+        return None, None, (jsonify(error="허용되지 않은 출처예요."), 403)
     user, err = login_user()
     if err:
-        return err
+        return None, None, err
     if not request.is_json:
-        return jsonify(error="JSON으로 보내 주세요."), 415
+        return None, None, (jsonify(error="JSON으로 보내 주세요."), 415)
     body = request.get_json(silent=True)
     if not isinstance(body, dict):
-        return jsonify(error="요청 형식이 잘못됐어요."), 400
-    sentence = " ".join(str(body.get("sentence") or "").split())
-    if not sentence:
-        return jsonify(error="문장을 입력하세요."), 400
-    if len(sentence) > actions.MAX_SENTENCE:
-        return jsonify(error=f"문장이 너무 길어요 ({actions.MAX_SENTENCE}자 이하)."), 400
-    names = actions.clean_names(body.get("names"))
-    results = chat.clean_results(body.get("results"))   # 상담으로 넘길 때 쓸 지금 검색 결과 (없으면 None)
-    history = chat.clean_history(body.get("history"))
+        return None, None, (jsonify(error="요청 형식이 잘못됐어요."), 400)
+    return user, body, None
 
+
+@app.post("/chat/action/step")
+def chat_action_step():
+    """⚡ ReAct 한 단계: 대화 기록(사용자 문장 + functionCall/functionResponse)을 받아 Gemini Function Calling 1번
+    → {"type": "call", "call": {name, args, signature}} (화면이 실행) 또는 {"type": "text", "text"} (끝).
+    - 첫 단계(cmd 없음): 상담 하루 한도 1회 사용, cmd 발급. 이어지는 단계: cmd로 이어서 (한도 안 셈, 최대 actions.MAX_CALLS번)
+    - Gemini가 고른 함수가 등록 안 됐거나 입력값·권한이 틀리면 "rejected"에 사유 (화면은 실행하지 않고 사유를 돌려보냄)"""
+    user, body, err = _member_post()
+    if err:
+        return err
+    try:
+        contents = actions.clean_contents(body.get("contents"))
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    cmd = body.get("cmd")
+    first = not cmd
+    if first and len(contents) != 1:
+        return jsonify(error="대화 기록 형식이 잘못됐어요."), 400
+    topic = "[실행] " + contents[0]["parts"][0]["text"]
     t0 = time.time()
     record = lambda **kw: stats.record_request("chat", (time.time() - t0) * 1000, **kw)  # noqa: E731
-    topic = "[실행] " + sentence
-    try:
-        unlimited = is_unlimited(user)
-    except members.MemberError as e:
-        app.logger.warning("role check failed: %s", e)
-        return jsonify(error=MEMBER_DOWN), 503
-    ticket, err = reserve(user, "chat", unlimited)   # 계획 + (비교·상담 답변)까지 한 번으로 셈
-    if err:
-        if err[1] == 429:
-            record(limited=True)
-            finish(user, "chat", "limited", t0, query=topic, exempt=unlimited)
-        return err
-    info = quota_info(unlimited, "chat", ticket.remaining if ticket else None)
-    action, engine, tokens = "chat", "gemini", 0
-    try:
+    ticket, info, unlimited = None, {}, False
+    if first:
         try:
-            plan = actions.choose(sentence, names)
-            steps, tokens = plan["steps"], plan["tokens"] or 0
-        except EngineError as e:   # 계획을 못 세움 → 아래에서 상담으로 넘김
-            app.logger.warning("chat action plan failed: %s (%s)", e, e.__cause__)
-            steps = []
-        out = {"steps": steps}
-        if steps and steps[0]["tool"] == "compare_favorites":
-            out["compare"], used = compare_favorites(sentence, body.get("favorites"), steps[0]["args"]["condition"])
-            if used:
-                action, engine = "compare", used["engine"]
-                tokens += used["tokens"] or 0
-        elif not steps:   # "버튼으로 해 주세요" 대신 같은 문장을 상담(/chat과 같은 답변)으로
-            if results is None:
-                out["message"] = actions.NO_RESULTS
-            else:
-                ans = chat.answer(sentence, results, history)
-                out["chat"] = {"answer": ans["answer"], "pick_id": ans["pick_id"]}
-                if body.get("auto") is True:   # 자동 ⚡로 온 행동 명령인데 실행 못 함 → 답 위에 한 줄
-                    out["chat"]["note"] = actions.UNSUPPORTED_NOTE
-                engine = ans.get("engine") or chat.chat_engine()
-                tokens += ans.get("tokens") or 0
-    except EngineError as e:   # 비교·상담 답변 실패 (/chat과 같은 문구)
-        app.logger.warning("chat action answer failed: %s (%s)", e, e.__cause__)
-        record(ok=False, code=e.code)
-        finish(user, action, "error", t0, query=topic, engine=engine, ticket=ticket, exempt=unlimited)
-        return jsonify(error=str(e), **info), 503 if str(e) == chat.BUSY_MESSAGE else 502
-    except Exception:
-        app.logger.exception("chat action failed")
-        record(ok=False)
-        finish(user, action, "error", t0, query=topic, engine=engine, ticket=ticket, exempt=unlimited)
-        return jsonify(error=actions.FAIL_MESSAGE, **info), 502
-    record()
-    finish(user, action, "ok", t0, query=topic, engine=engine, ticket=ticket, exempt=unlimited, tokens=tokens or None)
-    return jsonify(**out, **info)
+            unlimited = is_unlimited(user)
+        except members.MemberError as e:
+            app.logger.warning("role check failed: %s", e)
+            return jsonify(error=MEMBER_DOWN), 503
+        ticket, err = reserve(user, "chat", unlimited)   # 명령 하나에 상담 1회
+        if err:
+            if err[1] == 429:
+                record(limited=True)
+                finish(user, "chat", "limited", t0, query=topic, exempt=unlimited)
+            return err
+        info = quota_info(unlimited, "chat", ticket.remaining if ticket else None)
+    else:
+        why = actions.commands.use(cmd, user["id"])
+        if why:
+            return jsonify(error=why, stop=True), 429 if why == actions.TOO_MANY else 403
+    usage = {}
+    try:
+        out = gemini_step(actions.SYSTEM, contents, actions.TOOLS, actions.TIMEOUT, usage)
+    except Exception as e:
+        app.logger.warning("chat action step failed: %s (%s)", e, getattr(e, "__cause__", None))
+        if first:
+            record(ok=False, code=getattr(e, "code", None))
+            finish(user, "chat", "error", t0, query=topic, engine="gemini", ticket=ticket, exempt=unlimited)
+        else:
+            actions.commands.drop(cmd)
+        return jsonify(error=actions.FAIL_MESSAGE, stop=True, **info), 502
+    if first:
+        record()
+        finish(user, "chat", "ok", t0, query=topic, engine="gemini", ticket=ticket, exempt=unlimited,
+               tokens=usage.get("tokens"))
+        cmd = actions.commands.start(user["id"])
+    if out["type"] == "text":
+        actions.commands.drop(cmd)
+        return jsonify(type="text", text=out["text"], cmd=cmd, **info)
+    args, why = actions.check_call(out["name"], out["args"], user)
+    call = {"name": out["name"], "args": args if why is None else out["args"], "signature": out["signature"]}
+    if out["name"] not in actions.TOOLS:   # 등록 안 된 함수는 대화 기록에 넣을 수 없어서 여기서 끝
+        actions.commands.drop(cmd)
+        return jsonify(type="text", text=f"{why} 버튼으로 해 주세요.", rejected=why, cmd=cmd, **info)
+    resp = {"type": "call", "call": call, "cmd": cmd, "calls_left": actions.commands.left(cmd), **info}
+    if why:
+        resp["rejected"] = why
+    return jsonify(resp)
 
 
-def compare_favorites(sentence: str, favorites, condition: str):
-    """찜 목록에서 조건에 맞는 2개를 골라 기존 1:1 비교(chat.answer 비교 모드: 숫자는 compare.py가 검증)로 추천.
-    (화면에 줄 결과, 답변 정보 또는 None). 2개 미만이면 Gemini를 부르지 않고 안내만."""
-    picked, total = actions.match_favorites(favorites, condition)
+@app.post("/chat/action/compare")
+def chat_action_compare():
+    """⚡ compare_favorites 실행 (화면이 부름): 찜 목록에서 조건에 맞는 2개를 기존 1:1 비교로 추천.
+    진행 중인 cmd로만 (상담 한도는 첫 단계에서 이미 셈, Gemini 1번이라 cmd 횟수도 1 씀). 2개 미만이면 안내만."""
+    user, body, err = _member_post()
+    if err:
+        return err
+    cmd = body.get("cmd")
+    condition = " ".join(str(body.get("condition") or "").split())[:100]
+    picked, total = actions.match_favorites(body.get("favorites"), condition)
     cmp = chat.clean_compare({"products": picked}) if len(picked) == 2 else None
     if cmp is None:
-        return {"error": actions.NEED_TWO, "matched": total}, None
-    ans = chat.answer(sentence, cmp, [], True)
+        return jsonify(error=actions.NEED_TWO, matched=total)
+    why = actions.commands.use(cmd, user["id"])
+    if why:
+        return jsonify(error=why, stop=True), 429 if why == actions.TOO_MANY else 403
+    try:
+        ans = chat.answer("두 상품을 비교해서 더 나은 하나를 추천해줘", cmp, [], True)   # 숫자는 compare.py가 검증
+    except EngineError as e:
+        app.logger.warning("chat action compare failed: %s (%s)", e, e.__cause__)
+        return jsonify(error=str(e)), 502
     if ans.get("reasons_fixed"):
         app.logger.info("chat action compare: 이유 %d줄을 일반 장점 문장으로 바꿈", ans["reasons_fixed"])
-    return {"answer": ans["answer"], "pick_id": ans["pick_id"], "matched": total,
-            "keys": [str(p.get("key") or "") for p in picked]}, ans
+    return jsonify(answer=ans["answer"], pick_id=ans["pick_id"], matched=total,
+                   keys=[str(p.get("key") or "") for p in picked], calls_left=actions.commands.left(cmd))
 
 
 @app.get("/me")
