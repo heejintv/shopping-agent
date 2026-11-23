@@ -28,6 +28,7 @@ GOOD = {"Authorization": "Bearer good-token"}
 ADMIN = {"Authorization": "Bearer admin-token"}
 USERS = {"good-token": {"id": "u-good", "email": "u@example.com"},
          "admin-token": {"id": "u-admin", "email": "a@example.com"}}
+PLAN = {"steps": [{"tool": "search", "query": "에어팟"}, {"tool": "pick", "by": "cheapest"}, {"tool": "add_favorite"}]}
 BODY = {"sentence": "저소음 키보드 찜해줘", "names": ["로지텍 저소음 키보드 K295", "앱코 K660"]}
 
 
@@ -37,16 +38,51 @@ def fake_fetch_user(token):
     raise auth.AuthError("로그인이 만료됐어요. 다시 로그인해 주세요.")
 
 
+def plan(*steps):
+    return {"steps": list(steps)}
+
+
 class ValidateTest(unittest.TestCase):
-    def test_validate(self):
-        self.assertEqual(actions.validate("add_favorite", {"name": "  K295  키보드 "}),
-                         {"tool": "add_favorite", "args": {"name": "K295 키보드"}})
-        self.assertEqual(actions.validate("show_favorites", {"x": 1}), {"tool": "show_favorites", "args": {}})
-        self.assertEqual(actions.validate("search", {"query": "무선 마우스"})["args"], {"query": "무선 마우스"})
-        self.assertEqual(actions.validate("delete_account", {}), {"tool": None, "args": {}})   # 모르는 도구
-        self.assertEqual(actions.validate("add_favorite", {"name": ""}), {"tool": None, "args": {}})
-        self.assertEqual(actions.validate(None, {}), {"tool": None, "args": {}})
-        self.assertEqual(len(actions.validate("search", {"query": "a" * 500})["args"]["query"]), actions.MAX_ARG)
+    def test_single_steps(self):
+        v = actions.validate
+        self.assertEqual(v(plan({"tool": "add_favorite", "name": "  K295  키보드 "})),
+                         [{"tool": "add_favorite", "args": {"name": "K295 키보드"}}])
+        self.assertEqual(v(plan({"tool": "show_favorites", "x": 1})), [{"tool": "show_favorites", "args": {}}])
+        self.assertEqual(v(plan({"tool": "search", "query": "a" * 500}))[0]["args"]["query"], "a" * actions.MAX_ARG)
+        self.assertEqual(v(plan({"tool": "delete_account"})), [])     # 모르는 도구
+        self.assertEqual(v(plan({"tool": "add_favorite"})), [])        # 앞에 pick 없이 이름도 없음
+        self.assertEqual(v(plan()), [])
+        self.assertEqual(v("not dict"), [])
+        self.assertEqual(v({"steps": "x"}), [])
+
+    def test_search_pick_add(self):
+        """예: "에어팟 검색해서 제일 싼 거 찜해줘" → 3단계."""
+        steps = actions.validate(plan({"tool": "search", "query": "에어팟"}, {"tool": "pick", "by": "cheapest"},
+                                      {"tool": "add_favorite"}))
+        self.assertEqual(steps, [{"tool": "search", "args": {"query": "에어팟"}},
+                                 {"tool": "pick", "args": {"by": "cheapest"}},
+                                 {"tool": "add_favorite", "args": {}}])
+
+    def test_pick_criteria(self):
+        one = lambda **kw: actions.validate(plan({"tool": "pick", **kw}))   # noqa: E731
+        for by in ("cheapest", "top_rated", "first"):
+            self.assertEqual(one(by=by), [{"tool": "pick", "args": {"by": by}}])
+        self.assertEqual(one(by="brand", value=" 애플 ")[0]["args"], {"by": "brand", "value": "애플"})
+        self.assertEqual(one(by="index", value="2")[0]["args"], {"by": "index", "value": 2})
+        self.assertEqual(one(by="brand"), [])          # 브랜드 이름 없음
+        self.assertEqual(one(by="index", value="둘"), [])
+        self.assertEqual(one(by="index", value="0"), [])
+        self.assertEqual(one(by="cheapest_ever"), [])
+
+    def test_limits(self):
+        s = {"tool": "show_favorites"}
+        self.assertEqual(len(actions.validate(plan(s, s, s))), 3)
+        self.assertEqual(actions.validate(plan(s, s, s, s)), [])   # 4단계 이상은 실행 안 함
+        # 중간에 잘못된 단계가 있으면 전체를 실행하지 않음
+        self.assertEqual(actions.validate(plan({"tool": "search", "query": "x"}, {"tool": "rm"})), [])
+        # 새 검색 뒤에는 다시 pick 해야 이름 없는 찜이 됨
+        self.assertEqual(actions.validate(plan({"tool": "pick", "by": "first"}, {"tool": "search", "query": "x"},
+                                               {"tool": "add_favorite"})), [])
 
     def test_clean_names(self):
         self.assertEqual(actions.clean_names(["a  b", 3, "", None] + ["x"] * 20), ["a b"] + ["x"] * 9)
@@ -58,33 +94,31 @@ class ValidateTest(unittest.TestCase):
         self.assertIn("찜해줘", p)
 
 
-class PickToolTest(unittest.TestCase):
-    """gemini.pick_tool: 함수 선언을 보내고, 응답의 function_calls에서 이름·입력값만 꺼냄."""
+class PlanJsonTest(unittest.TestCase):
+    """gemini.plan_json: 도구 없이 한 번, 응답 스키마를 강제하고 JSON만 꺼냄."""
 
-    def fake_client(self, resp):
+    def test_one_call_with_schema(self):
         from google.genai import types
         client = mock.MagicMock()
-        client.models.generate_content.return_value = resp
-        return mock.patch.object(gemini, "_client", return_value=(client, types)), client
-
-    def test_reads_function_call(self):
-        call = SimpleNamespace(name="add_favorite", args={"name": "앱코 K660"})
-        resp = SimpleNamespace(function_calls=[call], usage_metadata=SimpleNamespace(total_token_count=42))
-        patch, client = self.fake_client(resp)
+        client.models.generate_content.return_value = SimpleNamespace(
+            text='{"steps":[{"tool":"show_favorites"}]}', usage_metadata=SimpleNamespace(total_token_count=7))
         usage = {}
-        with patch:
-            out = gemini.pick_tool("sys", "prompt", actions.TOOLS, 5, usage)
-        self.assertEqual(out, ("add_favorite", {"name": "앱코 K660"}))
-        self.assertEqual(usage["tokens"], 42)
+        with mock.patch.object(gemini, "_client", return_value=(client, types)):
+            out = gemini.plan_json("sys", "p", actions.SCHEMA, 5, usage)
+        self.assertEqual(out, {"steps": [{"tool": "show_favorites"}]})
+        self.assertEqual(usage["tokens"], 7)
+        self.assertEqual(client.models.generate_content.call_count, 1)
         config = client.models.generate_content.call_args.kwargs["config"]
-        names = [d.name for d in config.tools[0].function_declarations]
-        self.assertEqual(names, list(actions.TOOLS))
-        self.assertTrue(config.automatic_function_calling.disable)   # 서버에서 실행하지 않음
+        self.assertEqual(config.response_mime_type, "application/json")
+        self.assertEqual(config.response_json_schema, actions.SCHEMA)
+        self.assertFalse(config.tools)   # 웹 검색 등 도구 없음 (실행은 화면에서)
 
-    def test_no_call(self):
-        patch, _ = self.fake_client(SimpleNamespace(function_calls=None, usage_metadata=None))
-        with patch:
-            self.assertEqual(gemini.pick_tool("s", "p", actions.TOOLS, 5), (None, {}))
+    def test_bad_json_is_engine_error(self):
+        from google.genai import types
+        client = mock.MagicMock()
+        client.models.generate_content.return_value = SimpleNamespace(text="nope", usage_metadata=None)
+        with mock.patch.object(gemini, "_client", return_value=(client, types)), self.assertRaises(EngineError):
+            gemini.plan_json("s", "p", actions.SCHEMA, 5)
 
 
 class ChatActionApiTest(unittest.TestCase):
@@ -104,7 +138,7 @@ class ChatActionApiTest(unittest.TestCase):
             mock.patch.object(server, "is_local_request", return_value=False),
             mock.patch.object(server.stats, "record_request"),
             mock.patch.dict(server.LIMITS, {"search": 5, "chat": 30}),
-            mock.patch.object(actions, "pick_tool", return_value=("add_favorite", {"name": "로지텍 저소음 키보드 K295"})),
+            mock.patch.object(actions, "plan_json", return_value=PLAN),
         ]
         started = [p.start() for p in patches]
         self.pick = started[-1]
@@ -124,8 +158,9 @@ class ChatActionApiTest(unittest.TestCase):
         res = self.post(GOOD)
         d = res.get_json()
         self.assertEqual(res.status_code, 200, d)
-        self.assertEqual(d["tool"], "add_favorite")
-        self.assertEqual(d["args"], {"name": "로지텍 저소음 키보드 K295"})
+        self.assertEqual([x["tool"] for x in d["steps"]], ["search", "pick", "add_favorite"])
+        self.assertEqual(d["steps"][1]["args"], {"by": "cheapest"})
+        self.assertEqual(self.pick.call_count, 1)                    # Gemini는 한 번만
         self.assertEqual(d["remaining"], 29)
         self.assertNotIn("tokens", d)
         prompt = self.pick.call_args.args[1]
@@ -156,10 +191,17 @@ class ChatActionApiTest(unittest.TestCase):
         self.assertEqual(self.logs[-1]["status"], "error")
         self.assertEqual(members.quota._pending, {})
 
-    def test_unknown_tool_null(self):
-        self.pick.return_value = ("rm_rf", {})
+    def test_no_results_still_works(self):
+        """검색 결과가 없어도(names 없음) 계획을 받음."""
+        res = self.post(GOOD, {"sentence": "에어팟 검색해서 제일 싼 거 찜해줘"})
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("(없음)", self.pick.call_args.args[1])
+        self.assertEqual(len(res.get_json()["steps"]), 3)
+
+    def test_unknown_tool_empty(self):
+        self.pick.return_value = {"steps": [{"tool": "rm_rf"}]}
         d = self.post(GOOD).get_json()
-        self.assertIsNone(d["tool"])
+        self.assertEqual(d["steps"], [])
         self.assertEqual(d["message"], actions.UNKNOWN_MESSAGE)
 
     def test_bad_input_400(self):

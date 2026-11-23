@@ -17,7 +17,7 @@
 - CORS는 GitHub Pages 주소(ALLOWED_ORIGIN)만 허용
 - /search/stream: 새 검색의 진행 단계를 실시간으로 보냄 (Server-Sent Events). 취소하면 claude를 멈추고 횟수에서 빼지 않음
 - /me: 로그인한 사람의 등급과 오늘 남은 횟수
-- /chat/action: 챗봇 "문장으로 실행". Gemini 함수 호출로 도구·입력값만 골라 줌 (실행은 화면, 상담 한도 1회)
+- /chat/action: 챗봇 "문장으로 실행". Gemini 한 번으로 최대 3단계 계획(search·pick·찜)만 줌 (실행은 화면, 상담 한도 1회)
 - /admin/stats: 관리자 대시보드 (admin.html). 토큰 확인 + profiles.role=admin일 때만, 아니면 403
 - /admin/claude-check: admin 전용. claude --version + 짧은 claude -p로 토큰이 살아 있는지 (성공/실패·원인 종류만)
 - Render 배포(환경변수 RENDER=true): 모든 요청을 외부로 보고 하루 제한 적용, 처음 켜질 때 demo/ 결과를 캐시로 불러옴
@@ -943,7 +943,7 @@ def chat_api():
 
 @app.post("/chat/action")
 def chat_action():
-    """챗봇 "문장으로 실행": Gemini 함수 호출로 도구와 입력값만 골라 JSON으로 돌려줌 (실행은 화면이 함).
+    """챗봇 "문장으로 실행": Gemini 한 번으로 최대 3단계 계획 {"steps": [{tool, args}]}만 돌려줌 (실행은 화면이 함).
     /chat과 같은 검사(출처·로그인·상담 하루 한도)를 거치고, 사용 기록은 상담(chat) 한 번으로 남김."""
     origin = request.headers.get("Origin")
     if origin and origin not in LOCAL_ORIGINS:
@@ -988,7 +988,7 @@ def chat_action():
     record()
     finish(user, "chat", "ok", t0, query=topic, engine="gemini", ticket=ticket, exempt=unlimited,
            tokens=out.pop("tokens", None))
-    if out["tool"] is None:
+    if not out["steps"]:
         out["message"] = actions.UNKNOWN_MESSAGE
     return jsonify(**out, **info)
 

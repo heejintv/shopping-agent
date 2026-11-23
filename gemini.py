@@ -186,18 +186,12 @@ def call_gemini(prompt: str, schema: dict, timeout: int) -> dict:
     return data
 
 
-def pick_tool(system: str, prompt: str, tools: dict, timeout: int, usage: dict | None = None):
-    """함수 호출로 도구 하나만 고르게 한다 (실행은 안 함). tools = {이름: (설명, JSON 스키마 또는 None)}.
-    (고른 이름, 입력값 dict) 또는 고르지 않았으면 (None, {}). 실패하면 EngineError."""
+
+def plan_json(system: str, prompt: str, schema: dict, timeout: int, usage: dict | None = None) -> dict:
+    """도구 없이 한 번 호출해서 schema 모양의 JSON(dict)만 받는다 (응답 스키마 강제). 실패하면 EngineError."""
     client, types = _client(timeout)
-    decls = [types.FunctionDeclaration(name=n, description=d, parameters_json_schema=s) if s
-             else types.FunctionDeclaration(name=n, description=d) for n, (d, s) in tools.items()]
-    config = types.GenerateContentConfig(
-        system_instruction=system, temperature=0,
-        tools=[types.Tool(function_declarations=decls)],
-        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-        tool_config=types.ToolConfig(function_calling_config=types.FunctionCallingConfig(mode="AUTO")),
-    )
+    config = types.GenerateContentConfig(system_instruction=system, temperature=0,
+                                         response_mime_type="application/json", response_json_schema=schema)
     try:
         resp = client.models.generate_content(model=model_name(), contents=prompt, config=config)
     except Exception as e:
@@ -205,7 +199,4 @@ def pick_tool(system: str, prompt: str, tools: dict, timeout: int, usage: dict |
     if usage is not None:
         meta = getattr(resp, "usage_metadata", None)
         usage["tokens"] = getattr(meta, "total_token_count", None) if meta else None
-    calls = getattr(resp, "function_calls", None) or []
-    if not calls:
-        return None, {}
-    return calls[0].name, dict(calls[0].args or {})
+    return extract_json(resp.text or "")
