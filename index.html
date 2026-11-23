@@ -1905,6 +1905,26 @@ function pickProduct(products, { by, value }) {
   return { error: "모르는 선택 기준이에요." };
 }
 
+// compare_favorites: 비교에 필요한 값만 보냄 (서버가 조건으로 거르고 기존 1:1 비교로 추천)
+const favForCompare = w => ({ key: w.key, brand: w.brand, model: w.model, query: w.query, price: w.price, currency: w.currency,
+  rating: w.rating, review_count: w.review_count, pros: w.pros, cons: w.cons, store: w.store });
+
+function showFavCompare(condition, r) {
+  const what = condition ? `“${condition}” ` : "";
+  if (r.error) {
+    chatAdd("info", r.error + (r.matched ? ` (${what}찜 ${r.matched}개)` : ""));
+    return actLogLine(`compare_favorites · ${condition || "전체"} · 맞는 찜 ${r.matched || 0}개 · 멈춤`);
+  }
+  const cmp = (r.keys || []).map(k => wishList.find(w => w.key === k));
+  const names = cmp.map(w => w ? `${w.brand || ""} ${w.model}`.trim() : "?");
+  chatAdd("info", `⚖️ 1:1 비교: ${names.join("  vs  ")}` + (r.matched > 2 ? `\n(${what}찜 ${r.matched}개 중 최근 2개)` : ""));
+  const ok = cmp.every(Boolean);
+  const i = Number.isInteger(r.pick_id) && cmp[r.pick_id] ? r.pick_id : null;
+  if (ok) chatAddAnswer(r.answer, i, k => openCompare(cmp, k), "👉 비교 화면에서 보기");
+  else chatAdd("bot", r.answer);   // 기다리는 동안 찜이 바뀜: 답만 보여 줌
+  actLogLine(`compare_favorites · ${condition || "전체"} · ${names.join(" vs ")}${i != null ? ` → 추천 ${names[i]}` : ""}`);
+}
+
 // 검색을 시작하고 "pickit:searchdone" 이벤트를 기다림 → {ok, result} | {ok: false, error}
 function searchAndWait(q) {
   return new Promise(resolve => {
@@ -1958,6 +1978,7 @@ async function chatAct(sentence, opts = {}) {
   if (!token) return openAuth("login", "로그인이 만료됐어요. 다시 로그인해 주세요.");
   if (sentence.length > 200) return chatAdd("err", "문장은 200자까지 쓸 수 있어요.");
   const who = authUser.id;
+  const sentFor = chatResult;
   actAuto = !!opts.auto;   // 여기부터는 finally에서 항상 되돌림
   chatAdd("user", (actAuto ? "⚡(자동) " : "⚡ ") + sentence);
   $("chatIn").value = "";
@@ -1967,19 +1988,32 @@ async function chatAct(sentence, opts = {}) {
     const res = await fetch(API_BASE + "/chat/action", {
       method: "POST",
       headers: { ...API_HEADERS, "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ sentence, names: (shownResult?.products || []).slice(0, 10).map(productLabel) }),
+      body: JSON.stringify({
+        sentence, names: (shownResult?.products || []).slice(0, 10).map(productLabel),
+        results: chatResult, history: chatHistory.slice(-6),   // 계획을 못 세우면 서버가 같은 문장을 상담으로 답함
+        favorites: wishList.map(favForCompare),                 // compare_favorites용 (최신순)
+      }),
     });
     const data = await res.json().catch(() => ({}));
-    if (who !== authUser?.id) return;
+    if (who !== authUser?.id || sentFor !== chatResult) return;
     wait.remove();
     if (data.unlimited === false && data.remaining != null) $("chatCount").textContent = `오늘 남은 상담 ${data.remaining}회`;
     if (res.status === 401 && data.login_required) { loginExpired(res, data); throw new Error(data.error || "다시 로그인해 주세요."); }
     if (!res.ok) throw new Error(data.error || "문장으로 실행하지 못했어요. 버튼으로 해 주세요.");
     const steps = Array.isArray(data.steps) ? data.steps : [];
-    if (!steps.length) { chatAdd("info", data.message || "어떤 동작인지 알아듣지 못했어요. 버튼으로 해 주세요."); return actLogLine("선택 안 됨 · 버튼으로 해 주세요"); }
+    if (data.compare) return showFavCompare(steps[0]?.args?.condition || "", data.compare);
+    if (data.chat) {   // 계획을 못 세워서 상담으로 답함 (상담 횟수는 이 요청 한 번만)
+      const pick = validPick(data.chat.pick_id);
+      chatAddAnswer(data.chat.answer, pick, highlightProduct, "👉 결과에서 보기");
+      if (pick != null) highlightProduct(pick);
+      chatHistory.push({ role: "user", text: sentence }, { role: "assistant", text: data.chat.answer });
+      chatHistory = chatHistory.slice(-6);
+      return actLogLine("계획 없음 → 상담으로 답함");
+    }
+    if (!steps.length) { chatAdd("info", data.message || "어떤 동작인지 알아듣지 못했어요. 버튼으로 해 주세요."); return actLogLine("계획 없음 · " + (data.message || "")); }
     await runPlan(steps, who);
   } catch (err) {
-    if (who !== authUser?.id) return;
+    if (who !== authUser?.id || sentFor !== chatResult) return;
     wait.remove();
     chatAdd("err", err instanceof TypeError ? "서버에 연결할 수 없어요. 버튼으로 해 주세요." : err.message);
   } finally {

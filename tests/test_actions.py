@@ -29,6 +29,12 @@ ADMIN = {"Authorization": "Bearer admin-token"}
 USERS = {"good-token": {"id": "u-good", "email": "u@example.com"},
          "admin-token": {"id": "u-admin", "email": "a@example.com"}}
 PLAN = {"steps": [{"tool": "search", "query": "에어팟"}, {"tool": "pick", "by": "cheapest"}, {"tool": "add_favorite"}]}
+RESULTS = {"query": "무선 마우스", "products": [{"brand": "A", "model": "M1", "price": 10000}]}
+FAVS = [   # 화면이 보내는 찜 목록 (최신순)
+    {"key": "k-pro2", "brand": "애플", "model": "에어팟 프로 2", "query": "에어팟", "price": 299000, "rating": 4.8},
+    {"key": "k-kbd", "brand": "로지텍", "model": "K295", "query": "저소음 키보드", "price": 39000},
+    {"key": "k-4", "brand": "애플", "model": "에어팟 4", "query": "무선 이어폰", "price": 199000, "rating": 4.6},
+]
 BODY = {"sentence": "저소음 키보드 찜해줘", "names": ["로지텍 저소음 키보드 K295", "앱코 K660"]}
 
 
@@ -83,6 +89,25 @@ class ValidateTest(unittest.TestCase):
         # 새 검색 뒤에는 다시 pick 해야 이름 없는 찜이 됨
         self.assertEqual(actions.validate(plan({"tool": "pick", "by": "first"}, {"tool": "search", "query": "x"},
                                                {"tool": "add_favorite"})), [])
+
+    def test_compare_favorites_step(self):
+        self.assertEqual(actions.validate(plan({"tool": "compare_favorites", "condition": " 에어팟 "})),
+                         [{"tool": "compare_favorites", "args": {"condition": "에어팟"}}])
+        self.assertEqual(actions.validate(plan({"tool": "compare_favorites"}))[0]["args"], {"condition": ""})
+        # 비교는 혼자만
+        self.assertEqual(actions.validate(plan({"tool": "search", "query": "에어팟"}, {"tool": "compare_favorites"})), [])
+
+    def test_match_favorites(self):
+        picked, total = actions.match_favorites(FAVS, "에어팟")
+        self.assertEqual(([p["key"] for p in picked], total), (["k-pro2", "k-4"], 2))
+        self.assertEqual(actions.match_favorites(FAVS, "애플 에어팟")[1], 2)    # 단어가 모두 들어 있어야
+        self.assertEqual(actions.match_favorites(FAVS, "에어 팟")[1], 2)        # 띄어쓰기 달라도
+        self.assertEqual(actions.match_favorites(FAVS, "로지텍")[1], 1)
+        self.assertEqual(actions.match_favorites(FAVS, "삼성")[1], 0)
+        picked, total = actions.match_favorites(FAVS, "")                      # 조건 없으면 전체 중 최근 2개
+        self.assertEqual(([p["key"] for p in picked], total), (["k-pro2", "k-kbd"], 3))
+        self.assertEqual(actions.match_favorites("x", "a"), ([], 0))
+        self.assertEqual(actions.match_favorites([{"brand": "x"}, 3], ""), ([], 0))
 
     def test_clean_names(self):
         self.assertEqual(actions.clean_names(["a  b", 3, "", None] + ["x"] * 20), ["a b"] + ["x"] * 9)
@@ -139,9 +164,12 @@ class ChatActionApiTest(unittest.TestCase):
             mock.patch.object(server.stats, "record_request"),
             mock.patch.dict(server.LIMITS, {"search": 5, "chat": 30}),
             mock.patch.object(actions, "plan_json", return_value=PLAN),
+            mock.patch.object(server.chat, "answer",
+                              return_value={"answer": "추천: A M1", "pick_id": 0, "fallback": False, "engine": "gemini",
+                                            "tokens": 3}),
         ]
         started = [p.start() for p in patches]
-        self.pick = started[-1]
+        self.pick, self.answer = started[-2], started[-1]
         for p in patches:
             self.addCleanup(p.stop)
 
@@ -183,13 +211,69 @@ class ChatActionApiTest(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertTrue(res.get_json()["unlimited"])
 
-    def test_gemini_fail_says_use_buttons(self):
+    def test_plan_fail_no_results_message(self):
+        """계획 실패 + 검색 결과 없음 → 상담할 결과도 없으니 안내만 (한 번 기록)."""
         self.pick.side_effect = EngineError("Gemini API 사용 한도를 초과했어요.", 429)
         res = self.post(GOOD)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.get_json()["message"], actions.NO_RESULTS)
+        self.answer.assert_not_called()
+        self.assertEqual(len(self.logs), 1)
+        self.assertEqual(members.quota._pending, {})
+
+    # ---------- 계획을 못 세우면 상담으로 ----------
+
+    def test_no_plan_goes_to_chat_once(self):
+        self.pick.return_value = {"steps": []}
+        res = self.post(GOOD, {**BODY, "results": RESULTS, "history": [{"role": "user", "text": "안녕"}]})
+        d = res.get_json()
+        self.assertEqual(res.status_code, 200, d)
+        self.assertEqual(d["chat"], {"answer": "추천: A M1", "pick_id": 0})
+        self.assertEqual(d["remaining"], 29)                       # 계획 + 상담 답변인데 한 번만 셈
+        args = self.answer.call_args.args
+        self.assertEqual(args[0], BODY["sentence"])                 # 같은 문장을 그대로 상담으로
+        self.assertEqual(args[2], [{"role": "user", "text": "안녕"}])
+        self.assertEqual([(x["action"], x["status"]) for x in self.logs], [("chat", "ok")])
+
+    def test_plan_error_goes_to_chat(self):
+        self.pick.side_effect = EngineError("Gemini 서버에 일시적인 문제가 있어요.", 503)
+        d = self.post(GOOD, {**BODY, "results": RESULTS}).get_json()
+        self.assertEqual(d["chat"]["answer"], "추천: A M1")
+
+    def test_chat_answer_fails_502(self):
+        self.pick.return_value = {"steps": []}
+        self.answer.side_effect = EngineError("답변 중 오류가 났어요.", 500)
+        res = self.post(GOOD, {**BODY, "results": RESULTS})
         self.assertEqual(res.status_code, 502)
-        self.assertEqual(res.get_json()["error"], actions.FAIL_MESSAGE)
+        self.assertEqual(res.get_json()["error"], "답변 중 오류가 났어요.")
         self.assertEqual(self.logs[-1]["status"], "error")
         self.assertEqual(members.quota._pending, {})
+
+    # ---------- compare_favorites ----------
+
+    def test_compare_favorites(self):
+        self.pick.return_value = {"steps": [{"tool": "compare_favorites", "condition": "에어팟"}]}
+        self.answer.return_value = {"answer": "추천: 에어팟 4", "pick_id": 1, "fallback": False, "engine": "gemini",
+                                    "tokens": 5, "reasons_fixed": 0}
+        res = self.post(GOOD, {"sentence": "에어팟 찜한 거 두 개 비교해서 나은 상품 추천해", "favorites": FAVS})
+        d = res.get_json()
+        self.assertEqual(res.status_code, 200, d)
+        self.assertEqual(d["compare"]["keys"], ["k-pro2", "k-4"])   # 키보드는 빠지고 에어팟 2개
+        self.assertEqual(d["compare"]["pick_id"], 1)
+        self.assertEqual(d["compare"]["matched"], 2)
+        a = self.answer.call_args
+        self.assertTrue(a.args[3])                                   # 기존 1:1 비교 모드 (compare.py 검증)
+        self.assertEqual([p["model"] for p in a.args[1]["products"]], ["에어팟 프로 2", "에어팟 4"])
+        self.assertEqual([(x["action"], x["status"]) for x in self.logs], [("compare", "ok")])
+        self.assertEqual(d["remaining"], 29)
+
+    def test_compare_needs_two(self):
+        self.pick.return_value = {"steps": [{"tool": "compare_favorites", "condition": "키보드"}]}
+        d = self.post(GOOD, {**BODY, "favorites": FAVS}).get_json()
+        self.assertEqual(d["compare"], {"error": actions.NEED_TWO, "matched": 1})
+        self.answer.assert_not_called()                              # 2개 미만이면 답변 엔진을 부르지 않음
+        d = self.post(GOOD, {**BODY}).get_json()                     # 찜 목록을 안 보냄
+        self.assertEqual(d["compare"]["matched"], 0)
 
     def test_no_results_still_works(self):
         """검색 결과가 없어도(names 없음) 계획을 받음."""
@@ -202,7 +286,7 @@ class ChatActionApiTest(unittest.TestCase):
         self.pick.return_value = {"steps": [{"tool": "rm_rf"}]}
         d = self.post(GOOD).get_json()
         self.assertEqual(d["steps"], [])
-        self.assertEqual(d["message"], actions.UNKNOWN_MESSAGE)
+        self.assertEqual(d["message"], actions.NO_RESULTS)   # 결과가 없어 상담으로도 못 넘김
 
     def test_bad_input_400(self):
         self.assertEqual(self.post(GOOD, {"sentence": " "}).status_code, 400)

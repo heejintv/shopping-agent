@@ -948,8 +948,10 @@ def chat_api():
 
 @app.post("/chat/action")
 def chat_action():
-    """챗봇 "문장으로 실행": Gemini 한 번으로 최대 3단계 계획 {"steps": [{tool, args}]}만 돌려줌 (실행은 화면이 함).
-    /chat과 같은 검사(출처·로그인·상담 하루 한도)를 거치고, 사용 기록은 상담(chat) 한 번으로 남김."""
+    """챗봇 "문장으로 실행": Gemini 한 번으로 최대 3단계 계획 {"steps": [{tool, args}]}을 돌려줌 (실행은 화면이 함).
+    - compare_favorites: 같은 요청 안에서 찜 목록 2개를 기존 1:1 비교로 추천 → {"compare": {answer, pick_id, keys}}
+    - 계획을 못 세우면 같은 문장을 상담 답변으로 → {"chat": {answer, pick_id}} (검색 결과가 없으면 message)
+    /chat과 같은 검사(출처·로그인·상담 하루 한도)를 거치고, 상담 횟수는 한 요청에 한 번만 셈."""
     origin = request.headers.get("Origin")
     if origin and origin not in LOCAL_ORIGINS:
         return jsonify(error="허용되지 않은 출처예요."), 403
@@ -967,6 +969,8 @@ def chat_action():
     if len(sentence) > actions.MAX_SENTENCE:
         return jsonify(error=f"문장이 너무 길어요 ({actions.MAX_SENTENCE}자 이하)."), 400
     names = actions.clean_names(body.get("names"))
+    results = chat.clean_results(body.get("results"))   # 상담으로 넘길 때 쓸 지금 검색 결과 (없으면 None)
+    history = chat.clean_history(body.get("history"))
 
     t0 = time.time()
     record = lambda **kw: stats.record_request("chat", (time.time() - t0) * 1000, **kw)  # noqa: E731
@@ -976,26 +980,62 @@ def chat_action():
     except members.MemberError as e:
         app.logger.warning("role check failed: %s", e)
         return jsonify(error=MEMBER_DOWN), 503
-    ticket, err = reserve(user, "chat", unlimited)
+    ticket, err = reserve(user, "chat", unlimited)   # 계획 + (비교·상담 답변)까지 한 번으로 셈
     if err:
         if err[1] == 429:
             record(limited=True)
             finish(user, "chat", "limited", t0, query=topic, exempt=unlimited)
         return err
     info = quota_info(unlimited, "chat", ticket.remaining if ticket else None)
+    action, engine, tokens = "chat", "gemini", 0
     try:
-        out = actions.choose(sentence, names)
-    except Exception as e:   # Gemini 실패(한도·키·시간 초과 등)는 모두 "버튼으로 해 주세요"
-        app.logger.warning("chat action failed: %s (%s)", e, e.__cause__)
-        record(ok=False, code=getattr(e, "code", None))
-        finish(user, "chat", "error", t0, query=topic, engine="gemini", ticket=ticket, exempt=unlimited)
+        try:
+            plan = actions.choose(sentence, names)
+            steps, tokens = plan["steps"], plan["tokens"] or 0
+        except EngineError as e:   # 계획을 못 세움 → 아래에서 상담으로 넘김
+            app.logger.warning("chat action plan failed: %s (%s)", e, e.__cause__)
+            steps = []
+        out = {"steps": steps}
+        if steps and steps[0]["tool"] == "compare_favorites":
+            out["compare"], used = compare_favorites(sentence, body.get("favorites"), steps[0]["args"]["condition"])
+            if used:
+                action, engine = "compare", used["engine"]
+                tokens += used["tokens"] or 0
+        elif not steps:   # "버튼으로 해 주세요" 대신 같은 문장을 상담(/chat과 같은 답변)으로
+            if results is None:
+                out["message"] = actions.NO_RESULTS
+            else:
+                ans = chat.answer(sentence, results, history)
+                out["chat"] = {"answer": ans["answer"], "pick_id": ans["pick_id"]}
+                engine = ans.get("engine") or chat.chat_engine()
+                tokens += ans.get("tokens") or 0
+    except EngineError as e:   # 비교·상담 답변 실패 (/chat과 같은 문구)
+        app.logger.warning("chat action answer failed: %s (%s)", e, e.__cause__)
+        record(ok=False, code=e.code)
+        finish(user, action, "error", t0, query=topic, engine=engine, ticket=ticket, exempt=unlimited)
+        return jsonify(error=str(e), **info), 503 if str(e) == chat.BUSY_MESSAGE else 502
+    except Exception:
+        app.logger.exception("chat action failed")
+        record(ok=False)
+        finish(user, action, "error", t0, query=topic, engine=engine, ticket=ticket, exempt=unlimited)
         return jsonify(error=actions.FAIL_MESSAGE, **info), 502
     record()
-    finish(user, "chat", "ok", t0, query=topic, engine="gemini", ticket=ticket, exempt=unlimited,
-           tokens=out.pop("tokens", None))
-    if not out["steps"]:
-        out["message"] = actions.UNKNOWN_MESSAGE
+    finish(user, action, "ok", t0, query=topic, engine=engine, ticket=ticket, exempt=unlimited, tokens=tokens or None)
     return jsonify(**out, **info)
+
+
+def compare_favorites(sentence: str, favorites, condition: str):
+    """찜 목록에서 조건에 맞는 2개를 골라 기존 1:1 비교(chat.answer 비교 모드: 숫자는 compare.py가 검증)로 추천.
+    (화면에 줄 결과, 답변 정보 또는 None). 2개 미만이면 Gemini를 부르지 않고 안내만."""
+    picked, total = actions.match_favorites(favorites, condition)
+    cmp = chat.clean_compare({"products": picked}) if len(picked) == 2 else None
+    if cmp is None:
+        return {"error": actions.NEED_TWO, "matched": total}, None
+    ans = chat.answer(sentence, cmp, [], True)
+    if ans.get("reasons_fixed"):
+        app.logger.info("chat action compare: 이유 %d줄을 일반 장점 문장으로 바꿈", ans["reasons_fixed"])
+    return {"answer": ans["answer"], "pick_id": ans["pick_id"], "matched": total,
+            "keys": [str(p.get("key") or "") for p in picked]}, ans
 
 
 @app.get("/me")

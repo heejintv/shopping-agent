@@ -13,9 +13,11 @@ MAX_ARG = 100       # 상품명·검색어 글자 수
 MAX_STEPS = 3
 TIMEOUT = 30        # 초
 FAIL_MESSAGE = "문장으로 실행하지 못했어요. 버튼으로 해 주세요."
-UNKNOWN_MESSAGE = "어떤 동작인지 알아듣지 못했어요. 버튼으로 해 주세요."
 
-TOOLS = ("search", "pick", "add_favorite", "remove_favorite", "show_favorites")
+TOOLS = ("search", "pick", "add_favorite", "remove_favorite", "show_favorites", "compare_favorites")
+NEED_TWO = "비교하려면 찜한 상품이 2개 이상 필요해요."
+NO_RESULTS = "먼저 상품을 검색해주세요."
+MAX_FAVORITES = 100
 PICK_BY = ("cheapest", "top_rated", "first", "brand", "index")
 
 SCHEMA = {
@@ -28,6 +30,7 @@ SCHEMA = {
             "by": {"type": "string", "enum": list(PICK_BY), "description": "pick 기준"},
             "value": {"type": "string", "description": "pick 기준이 brand면 브랜드 이름, index면 번호(1부터)"},
             "name": {"type": "string", "description": "add_favorite·remove_favorite의 상품명. 바로 앞 pick으로 고른 상품이면 비움"},
+            "condition": {"type": "string", "description": "compare_favorites의 조건 (검색어나 브랜드, 없으면 비움)"},
         },
         "required": ["tool"],
     }}},
@@ -42,12 +45,15 @@ SYSTEM = f"""너는 쇼핑 사이트의 명령 계획기야. 사용자 문장을
 - add_favorite(name): 찜하기. 바로 앞 단계 pick으로 고른 상품이면 name을 비워
 - remove_favorite(name): 찜 빼기. pick 뒤면 name을 비워
 - show_favorites(): 찜 목록 보기
+- compare_favorites(condition): 찜 목록에서 condition(검색어·브랜드, 예: 에어팟)에 맞는 상품끼리 비교해서 하나 추천.
+  이 도구는 혼자만 써 (다른 단계와 섞지 마)
 규칙:
 - [현재 검색 결과]에 있는 상품을 이름으로 말하면 그 이름을 name에 그대로 써 (pick 필요 없음)
 - "제일 싼/최저가/가장 저렴" = cheapest, "평점 높은/제일 좋은" = top_rated, "첫 번째" = first, "N번째" = index
 - 다른 상품을 검색해야 하면 search를 먼저 넣어
-- 해당하는 동작이 없으면 steps를 빈 배열로
-예: "에어팟 검색해서 제일 싼 거 찜해줘" → {{"steps":[{{"tool":"search","query":"에어팟"}},{{"tool":"pick","by":"cheapest"}},{{"tool":"add_favorite"}}]}}"""
+- 해당하는 동작이 없거나 상담 질문(추천해줘, 뭐가 좋아 등)이면 steps를 빈 배열로
+예: "에어팟 검색해서 제일 싼 거 찜해줘" → {{"steps":[{{"tool":"search","query":"에어팟"}},{{"tool":"pick","by":"cheapest"}},{{"tool":"add_favorite"}}]}}
+예: "에어팟 찜한 거 두 개 비교해서 나은 상품 추천해" → {{"steps":[{{"tool":"compare_favorites","condition":"에어팟"}}]}}"""
 
 
 def clean_names(names) -> list[str]:
@@ -93,6 +99,8 @@ def _step(raw, picked: bool) -> dict | None:
         return {"tool": tool, "args": {}} if picked else None   # 이름이 없으면 앞에서 고른 상품
     if tool == "show_favorites":
         return {"tool": tool, "args": {}}
+    if tool == "compare_favorites":
+        return {"tool": tool, "args": {"condition": _text(raw.get("condition"))}}
     return None
 
 
@@ -111,7 +119,30 @@ def validate(plan) -> list[dict]:
         elif s["tool"] == "search":
             picked = False   # 새 검색 뒤에는 다시 골라야 함
         steps.append(s)
+    if len(steps) > 1 and any(s["tool"] == "compare_favorites" for s in steps):
+        return []   # 비교는 혼자만 (서버가 같은 요청 안에서 바로 답함)
     return steps
+
+
+def _norm(s) -> str:
+    return " ".join(str(s or "").split()).lower()
+
+
+def match_favorites(favorites, condition: str) -> tuple[list[dict], int]:
+    """찜 목록(화면이 보낸 최신순)에서 조건 단어가 모두 브랜드·모델·검색어에 들어 있는 상품.
+    (앞의 2개, 맞는 개수). 조건이 비면 전체. 1:1 비교라서 많으면 최근에 찜한 2개만."""
+    if not isinstance(favorites, list):
+        return [], 0
+    words = _norm(condition).split()
+    found = []
+    for f in favorites[:MAX_FAVORITES]:
+        if not isinstance(f, dict) or not isinstance(f.get("model"), str):
+            continue
+        hay = _norm(f"{f.get('brand') or ''} {f.get('model')} {f.get('query') or ''}")
+        hay_tight = hay.replace(" ", "")
+        if all(w in hay or w in hay_tight for w in words):
+            found.append(f)
+    return found[:2], len(found)
 
 
 def choose(sentence: str, names: list[str]) -> dict:
