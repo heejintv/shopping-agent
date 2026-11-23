@@ -74,7 +74,9 @@ class CheckCallTest(unittest.TestCase):
         self.assertEqual(actions.check_call("find_in_results", {"description": "  휴대용   마우스 "}, USER),
                          ({"description": "휴대용 마우스"}, None))
         self.assertEqual(actions.check_call("add_favorite", {"number": 2.0}, USER), ({"number": 2}, None))
-        self.assertEqual(actions.check_call("show_favorites", {}, USER), ({}, None))
+        self.assertEqual(actions.check_call("get_favorites", {}, USER), ({}, None))
+        self.assertEqual(actions.check_call("open_favorites", {}, USER), ({}, None))
+        self.assertEqual(actions.check_call("remove_favorite", {"favorite_number": 1}, USER), ({"favorite_number": 1}, None))
         self.assertEqual(actions.check_call("compare_favorites", {}, USER), ({}, None))
         args, why = actions.check_call("ask_user", {"question": "어느 거요?", "options": ["1. A", " ", "2. B"] + ["x"] * 9}, USER)
         self.assertIsNone(why)
@@ -86,14 +88,17 @@ class CheckCallTest(unittest.TestCase):
         cases = [
             ("delete_account", {}, USER, "등록되지 않은 함수"),
             ("add_favorite", {"number": 1}, None, "로그인이 필요"),           # 찜은 로그인 필요
-            ("show_favorites", {}, None, "로그인이 필요"),
+            ("get_favorites", {}, None, "로그인이 필요"),
+            ("open_favorites", {}, None, "로그인이 필요"),
+            ("show_favorites", {}, USER, "등록되지 않은 함수"),                 # 예전 이름은 없음
+            ("remove_favorite", {"favorite_number": 0}, USER, "1~50"),
             ("add_favorite", {}, USER, "number 값이 빠졌어요"),
             ("add_favorite", {"number": "2"}, USER, "형식이 잘못"),
             ("add_favorite", {"number": True}, USER, "형식이 잘못"),
             ("add_favorite", {"number": 0}, USER, "1~50"),
             ("add_favorite", {"number": 1, "price": 3}, USER, "모르는 입력값"),
             ("search", {"query": "  "}, USER, "query 값이 빠졌어요"),
-            ("remove_favorite", {}, USER, "number나 name"),
+            ("remove_favorite", {}, USER, "favorite_number·number·name 중 하나"),
             ("ask_user", {"options": ["a"]}, USER, "question 값이 빠졌어요"),
             ("ask_user", {"question": "q", "options": "a"}, USER, "형식이 잘못"),
         ]
@@ -405,7 +410,7 @@ class PromptTest(unittest.TestCase):
             self.assertIn(phrase, actions.SYSTEM)
         self.assertIn("find_in_results로 찾을 수 없을 때", actions.TOOLS["search"][0])   # 결과에 없을 때만 검색
         self.assertEqual(set(actions.TOOLS), {"find_in_results", "search", "add_favorite", "remove_favorite",
-                                              "show_favorites", "compare_favorites", "ask_user"})
+                                              "get_favorites", "open_favorites", "compare_favorites", "ask_user"})
 
     def test_chat_prompt_knows_action(self):
         import chat
@@ -415,3 +420,84 @@ class PromptTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------- 버그 1: 찜 목록 창은 열어 달라고 할 때만 ----------
+
+class FavoritesToolsTest(ApiBase):
+    def test_get_and_open_are_separate(self):
+        get_desc, get_schema, get_login = actions.TOOLS["get_favorites"]
+        open_desc, _, open_login = actions.TOOLS["open_favorites"]
+        self.assertIn("화면은 바뀌지 않음", get_desc)
+        for w in ("최근", "saved_at", "방금 찜한", "번호", "가격"):
+            self.assertIn(w, get_desc)
+        self.assertIn("열어줘/보여줘", open_desc)
+        self.assertIn("때만", open_desc)
+        self.assertTrue(get_login and open_login)
+        self.assertNotIn("show_favorites", actions.TOOLS)
+        self.assertIn("favorite_number", actions.TOOLS["remove_favorite"][1]["properties"])
+        for phrase in ("열어/보여 달라고 할 때만", "get_favorites로 데이터만", "saved_at이 가장 최근인 상품"):
+            self.assertIn(phrase, actions.SYSTEM)
+
+    def test_recent_favorite_flow(self):
+        """"방금 찜한 거 빼줘" → get_favorites → remove_favorite(favorite_number=1). 찜 목록 창은 안 엶."""
+        self.step.return_value = {"type": "call", "name": "get_favorites", "args": {}, "signature": None}
+        d = self.post([user_turn("방금 찜한 거 빼줘")]).get_json()
+        self.assertEqual(d["call"]["name"], "get_favorites")
+        self.assertNotIn("rejected", d)
+        favs = {"count": 2, "favorites": [{"favorite_number": 1, "name": "로지텍 Pebble", "saved_at": "2026-11-23T10:00:00Z"},
+                                          {"favorite_number": 2, "name": "로지텍 M196", "saved_at": "2026-11-22T09:00:00Z"}]}
+        c = [user_turn("방금 찜한 거 빼줘"), call_turn("get_favorites", sig=None), resp_turn("get_favorites", favs)]
+        self.step.return_value = {"type": "call", "name": "remove_favorite", "args": {"favorite_number": 1}, "signature": None}
+        d = self.post(c, d["cmd"]).get_json()
+        self.assertEqual(d["call"], {"name": "remove_favorite", "args": {"favorite_number": 1}, "signature": None})
+        self.assertNotIn("rejected", d)
+
+    def test_page_tools(self):
+        html = (ROOT / "index.html").read_text(encoding="utf-8")
+        body = html[html.index('if (name === "get_favorites")'):html.index('if (name === "open_favorites")')]
+        self.assertNotIn("openSheet", body)            # get_favorites는 화면을 안 바꿈
+        self.assertNotIn("renderWishSheet", body)
+        self.assertIn("favoritesByRecent", body)       # 최근순
+        self.assertNotIn('name === "show_favorites"', html)
+
+
+# ---------- 버그 3: compare_favorites는 기존 비교 버튼과 같은 함수로 ----------
+
+class CompareSameAsButtonTest(unittest.TestCase):
+    def setUp(self):
+        self.html = (ROOT / "index.html").read_text(encoding="utf-8")
+
+    def block(self, start, end):
+        i = self.html.index(start)
+        return self.html[i:self.html.index(end, i + len(start))]
+
+    def test_both_use_compare_with_ai(self):
+        button = self.block('$("cmpAsk").addEventListener("click"', "\n});")
+        tool = self.block("async function compareFavorites(", "\n}\n")
+        self.assertIn("compareWithAI(cmpItems", button)
+        self.assertIn("compareWithAI(cmp,", tool)
+        shared = self.block("async function compareWithAI(", "\n}\n")
+        self.assertIn("openCompare(items)", shared)    # 원래 AI 비교 창이 열림
+        self.assertIn("setCmpAnswer", shared)
+
+    def test_no_chat_wipe_or_wish_sheet(self):
+        for name in ("async function compareFavorites(", "async function compareWithAI("):
+            body = self.block(name, "\n}\n")
+            for bad in ("chatReset", 'chatLog").innerHTML', 'openSheet("wishSheet")', "renderWishSheet"):
+                self.assertNotIn(bad, body, (name, bad))
+        reset = self.block("function chatReset(", "\n}\n")
+        self.assertLess(reset.index("if (actRunning)"), reset.index('$("chatLog").innerHTML = ""'))   # ⚡ 중엔 안 지움
+        self.assertIn("search를 하지 마", actions.SYSTEM)
+
+
+# ---------- 버그 2: ask_user 대기 중 새 문장 ----------
+
+class AskUserPendingPageTest(unittest.TestCase):
+    def test_submit_cancels_unless_option(self):
+        html = (ROOT / "index.html").read_text(encoding="utf-8")
+        i = html.index('$("chatForm").addEventListener("submit"')
+        body = html[i:html.index("\n});", i)]
+        self.assertIn("matchOption", body)                       # 선택지와 맞을 때만 답
+        self.assertIn("이전 질문은 취소했어요", body)
+        self.assertLess(body.index("cancelAsk()"), body.index("await actRun"))   # 취소 → 끝나길 기다림 → 새 명령

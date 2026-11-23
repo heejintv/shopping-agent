@@ -73,6 +73,28 @@ class JosaTest(unittest.TestCase):
             self.assertNotIn(bad, html)
 
 
+OPTS = ["1. 로지텍 M196", "2. 로지텍 Pebble", "3. 앱코 A660"]
+MATCH = [   # (입력, 선택지, 기대: 고른 선택지 또는 None = 새 명령으로)
+    ("2", OPTS, OPTS[1]), ("2번", OPTS, OPTS[1]), ("두 번째", OPTS, OPTS[1]), ("둘째", OPTS, OPTS[1]),
+    ("2번으로 할게", OPTS, OPTS[1]), ("Pebble", OPTS, OPTS[1]), ("로지텍 pebble", OPTS, OPTS[1]),
+    ("1. 로지텍 M196", OPTS, OPTS[0]), ("M196", OPTS, OPTS[0]), ("앱코", OPTS, OPTS[2]),
+    ("로지텍", OPTS, None),                     # 두 개에 걸리면 애매 → 답 아님
+    ("9", OPTS, None), ("에어팟 검색해줘", OPTS, None), ("무선 키보드 찜해줘", OPTS, None), ("", OPTS, None),
+    ("네", ["네", "아니요"], "네"), ("응", ["네", "아니요"], None), ("2", [], None),
+]
+
+
+@unittest.skipUnless(NODE, "node가 없어요")
+class MatchOptionTest(unittest.TestCase):
+    def test_match_option(self):
+        script = ("const {matchOption} = require(process.argv[1]);"
+                  "console.log(JSON.stringify(JSON.parse(process.argv[2]).map(([t, o]) => matchOption(t, o))));")
+        out = subprocess.run([NODE, "-e", script, str(ROOT / "intent.js"), json.dumps([[t, o] for t, o, _ in MATCH])],
+                             capture_output=True, text=True, timeout=30, check=True).stdout
+        for (t, o, want), got in zip(MATCH, json.loads(out)):
+            self.assertEqual(got, want, (t, o))
+
+
 class IntentFileTest(unittest.TestCase):
     def test_served_and_loaded(self):
         import os, tempfile, sys  # noqa: E401

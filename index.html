@@ -1585,6 +1585,7 @@ let chatResult = null;   // 챗봇에 보낼 지금 화면의 검색 결과
 let chatHistory = [];    // [{role: "user"|"assistant", text}] 최근 대화
 let chatBusy = false;
 let actMode = false;      // ⚡ 버튼을 켰는지
+let actRunning = false;   // ⚡ 명령 실행 중 (그동안 새 검색 결과가 떠도 채팅 내역을 지우지 않음)
 let pendingAsk = null;    // ⚡ ask_user가 답을 기다리는 중이면 답을 받을 함수 (chatSetEnabled·chatReset이 먼저 쓰므로 여기서 선언)
 
 function chatAdd(cls, text) {
@@ -1612,6 +1613,12 @@ function chatSetEnabled() {
 function chatReset(result) {
   clearAiBadge();
   cancelAsk();   // ⚡가 되묻는 중에 새 결과가 뜨면 그 명령은 멈춤
+  if (actRunning) {   // ⚡ 명령이 검색을 했을 때: 채팅 내역은 그대로 두고 상담 대상 결과만 바꿈
+    chatResult = result;
+    chatHistory = [];
+    chatSetEnabled();
+    return;
+  }
   chatResult = result;
   chatHistory = [];
   $("chatLog").innerHTML = "";
@@ -1785,10 +1792,20 @@ $("chatFab").addEventListener("click", () => {
 $("chatClose").addEventListener("click", () => $("chatBox").classList.remove("open", "peek"));
 // ⚡가 꺼져 있어도 행동 명령(찜·검색 등, intent.js 키워드 판단)이거나 검색 결과가 없으면 ⚡로 처리 → 실행 기록에 "(자동 ⚡)"
 // ⚡가 ask_user로 되묻는 중이면 입력은 그 답
-$("chatForm").addEventListener("submit", e => {
+$("chatForm").addEventListener("submit", async e => {
   e.preventDefault();
   const text = $("chatIn").value;
-  if (pendingAsk) return answerAsk(text);
+  if (pendingAsk) {
+    // 선택지 버튼과 맞는 입력이면 답 (선택지 없는 질문이면 입력 자체가 답). 아니면 기다리던 명령을 취소하고 새 명령으로
+    const opts = pendingAsk.options || [];
+    const pick = opts.length ? window.matchOption?.(text, opts) : text.trim();
+    if (pick) return answerAsk(pick, text);
+    $("chatIn").value = "";
+    cancelAsk();
+    chatAdd("info", "이전 질문은 취소했어요.");
+    await actRun;   // 취소된 명령이 끝나길 기다렸다가
+    $("chatIn").value = text;
+  }
   if (actMode) return chatAct(text);
   if (!chatResult || window.isActionCommand?.(text)) return chatAct(text, { auto: true });
   chatAsk(text);
@@ -1865,14 +1882,16 @@ function askUser({ question, options = [] }) {
       resolve(v);
       chatSetEnabled();
     };
+    pendingAsk.options = options;   // 입력이 선택지와 맞는지 볼 때 씀
     chatSetEnabled();
     if (!$("chatIn").disabled) $("chatIn").focus();
   });
 }
-function answerAsk(text) {
+// answer: 고른 선택지(또는 입력), typed: 사용자가 실제로 쓴 글 (말풍선에 보임)
+function answerAsk(text, typed = text) {
   text = String(text || "").trim().split(/\s+/).join(" ").slice(0, 200);
   if (!text || !pendingAsk) return;
-  chatAdd("user", text);
+  chatAdd("user", String(typed || text).trim().slice(0, 200));
   $("chatIn").value = "";
   pendingAsk({ answer: text });
 }
@@ -1923,6 +1942,8 @@ async function compareFavorites(condition, cmd) {
   const names = cmp.map(w => w ? productLabel(w) : "?");
   const i = Number.isInteger(r.pick_id) && cmp[r.pick_id] ? r.pick_id : null;
   const more = r.matched > 2 ? ` (찜 ${r.matched}개 중 최근 2개)` : "";
+  // 비교 버튼(🤖 AI에게 물어보기)과 똑같은 함수로 AI 비교 창을 열고 답을 보여 줌
+  if (cmp.every(Boolean)) compareWithAI(cmp, async () => ({ text: r.answer, pick: i })).catch(() => {});
   return {
     response: { ok: true, compared: names, recommended: i != null ? names[i] : null, analysis: r.answer,
       note: "analysis는 서버가 숫자를 확인한 비교 결과예요. 추천 상품과 이유를 2~3문장으로 전해 주세요." },
@@ -1931,6 +1952,11 @@ async function compareFavorites(condition, cmd) {
     see: cmp.every(Boolean) ? { pid: i ?? 0, onPick: k => openCompare(cmp, k), label: "👉 비교 화면에서 보기" } : null,
   };
 }
+
+// 찜 목록 (찜한 시각 최근순) → get_favorites의 번호 기준
+const favoritesByRecent = () => [...wishList].sort((a, b) => wishTime(b) - wishTime(a));
+const favoriteInfo = (w, i) => ({ favorite_number: i + 1, name: productLabel(w), price: typeof w.price === "number" ? w.price : null,
+  currency: w.currency || null, saved_at: w.saved_at || null, query: w.query || null });
 
 // 조사: 받침에 맞게 (intent.js의 josa, 없으면 받침 없는 쪽)
 const jo = (w, pair) => window.josa ? window.josa(w, pair) : w + pair.split("/")[1];
@@ -1967,16 +1993,26 @@ async function execTool(name, args, cmd, progress) {
       message: `♥ ${jo(q(productLabel(p)), "을/를")} 찜했어요.`, see };
   }
   if (name === "remove_favorite") {
-    const p = args.number ? products[args.number - 1] : (findProduct(args.name, products) || findProduct(args.name, wishList));
+    const favs = favoritesByRecent();
+    if (args.favorite_number && !favs[args.favorite_number - 1]) {
+      return { response: { error: `찜 ${args.favorite_number}번이 없어요 (찜 ${favs.length}개).` }, summary: `찜 ${args.favorite_number}번 없음` };
+    }
+    const p = args.favorite_number ? favs[args.favorite_number - 1]
+      : args.number ? products[args.number - 1] : (findProduct(args.name, products) || findProduct(args.name, wishList));
     if (!p) return args.number ? noItem(args.number) : { response: { error: `${jo(q(args.name), "을/를")} 찾지 못했어요.` }, summary: "못 찾음" };
     if (!isWished(wishKey(p))) return { response: { error: `${jo(q(productLabel(p)), "은/는")} 찜 목록에 없어요.` }, summary: "찜에 없음" };
     toggleWish(p, shownResult);
     return { response: { ok: true, name: productLabel(p), before, after: wishList.length }, summary: `찜 ${before}→${wishList.length}`,
       message: `♡ ${jo(q(productLabel(p)), "을/를")} 찜에서 뺐어요.` };
   }
-  if (name === "show_favorites") {
+  if (name === "get_favorites") {   // 데이터만 (화면 그대로)
+    const favs = favoritesByRecent();
+    return { response: { count: favs.length, favorites: favs.slice(0, 30).map(favoriteInfo),
+      note: "최근에 찜한 순서예요. 1번이 방금(가장 최근에) 찜한 상품이에요." }, summary: `찜 ${favs.length}개 확인` };
+  }
+  if (name === "open_favorites") {   // 사용자가 찜 목록을 열어/보여 달라고 할 때만
     renderWishSheet(); openSheet("wishSheet");
-    return { response: { count: wishList.length, items: wishList.slice(0, 20).map(productLabel) }, summary: `찜 ${wishList.length}개`,
+    return { response: { ok: true, count: wishList.length }, summary: `찜 목록 열기 (${wishList.length}개)`,
       message: `찜 목록을 열었어요 (${wishList.length}개).` };
   }
   if (name === "compare_favorites") return compareFavorites(args.condition || "", cmd);
@@ -1988,20 +2024,26 @@ async function execTool(name, args, cmd, progress) {
   return { response: { error: `모르는 함수예요: ${name}` }, summary: "모르는 함수" };
 }
 
-// 실행 기록용 함수 표시: find_in_results("휴대용 마우스"), add_favorite(2), show_favorites
+// 실행 기록용 함수 표시: find_in_results("휴대용 마우스"), add_favorite(2), get_favorites
 function callLabel(name, args) {
-  const v = args.description ?? args.query ?? args.condition ?? args.number ?? args.name;
+  const v = args.description ?? args.query ?? args.condition ?? args.favorite_number ?? args.number ?? args.name;
   if (name === "ask_user" || v == null || v === "") return name;
   return `${name}(${typeof v === "number" ? v : JSON.stringify(v)})`;
 }
 
-async function chatAct(sentence, opts = {}) {
+let actRun = Promise.resolve();   // 진행 중인 ⚡ 명령 (취소 후 새 명령을 시작하기 전에 기다림)
+function chatAct(sentence, opts = {}) {
+  actRun = runAct(sentence, opts);
+  return actRun;
+}
+async function runAct(sentence, opts = {}) {
   sentence = sentence.trim().split(/\s+/).join(" ");
   if (!sentence || chatBusy || demoMode) return;
   if (!authUser) return openAuth("login", "로그인하면 문장으로 실행할 수 있어요.");
   if (sentence.length > 200) return chatAdd("err", "문장은 200자까지 쓸 수 있어요.");
   const who = authUser.id;
   actAuto = !!opts.auto;   // 여기부터는 finally에서 항상 되돌림
+  actRunning = true;
   chatAdd("user", (actAuto ? "⚡(자동) " : "⚡ ") + sentence);
   $("chatIn").value = "";
   chatBusy = true; chatSetEnabled();
@@ -2061,7 +2103,7 @@ async function chatAct(sentence, opts = {}) {
     if (log.length) { log.push("멈춤"); show(); }
   } finally {
     cancelAsk();
-    chatBusy = false; actAuto = false; chatSetEnabled();
+    chatBusy = false; actAuto = false; actRunning = false; chatSetEnabled();
   }
 }
 $("chatEx").addEventListener("click", e => { if (e.target.tagName === "BUTTON") chatAsk(e.target.textContent); });
@@ -2568,23 +2610,35 @@ function markComparePick(i) {
 }
 
 $("cmpBack").addEventListener("click", () => { renderWishSheet(); openSheet("wishSheet"); });
-$("cmpAsk").addEventListener("click", () => {
-  if (!cmpItems || chatBusy || demoMode) return;
-  const items = cmpItems;
+// AI 비교 창: 두 상품 비교 화면을 열고 위쪽 상자에 AI 답변 (비교 버튼과 ⚡ compare_favorites가 같이 씀)
+// getAnswer() → {text, pick}. 채팅 내역은 건드리지 않음
+async function compareWithAI(items, getAnswer) {
+  if ($("cmpSheet").classList.contains("open") === false || cmpItems !== items) openCompare(items);
   const stillHere = () => $("cmpSheet").classList.contains("open") && cmpItems === items;
   cmpAnswered = items;
   setCmpAnswer("wait", "", "🤖 AI가 두 상품을 비교하는 중...");
   $("cmpAnswer").scrollIntoView({ behavior: "smooth", block: "nearest" });
-  // 비교 화면은 그대로 두고 답변을 위쪽 상자에 보여줌 (채팅창 대화 기록에도 같이 남음)
-  chatAsk("이 두 개 중에 뭐가 나아?", {
-    compare: items,
-    onAnswer: (text, i) => {
-      if (!stillHere()) return;
+  try {
+    const { text, pick } = await getAnswer();
+    if (stillHere()) {
       setCmpAnswer("", "🤖 AI 답변", text);
-      if (i != null) markComparePick(i);   // 답변이 오면 고른 상품을 바로 강조
-    },
-    onError: msg => { if (stillHere()) setCmpAnswer("err", "", msg); },
-  });
+      if (pick != null) markComparePick(pick);   // 답변이 오면 고른 상품을 바로 강조
+    }
+    return { text, pick };
+  } catch (err) {
+    if (stillHere()) setCmpAnswer("err", "", err.message);
+    throw err;
+  }
+}
+
+$("cmpAsk").addEventListener("click", () => {
+  if (!cmpItems || chatBusy || demoMode) return;
+  // 비교 화면은 그대로 두고 답변을 위쪽 상자에 보여줌 (채팅창 대화 기록에도 같이 남음)
+  compareWithAI(cmpItems, () => new Promise((resolve, reject) => chatAsk("이 두 개 중에 뭐가 나아?", {
+    compare: cmpItems,
+    onAnswer: (text, i) => resolve({ text, pick: i }),
+    onError: msg => reject(new Error(msg)),
+  }))).catch(() => {});
 });
 
 refreshWish();
