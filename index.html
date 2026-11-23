@@ -1806,8 +1806,18 @@ $("chatForm").addEventListener("submit", async e => {
   if (pendingAsk) {
     // 선택지 버튼과 맞는 입력이면 답 (선택지 없는 질문이면 입력 자체가 답). 아니면 기다리던 명령을 취소하고 새 명령으로
     const opts = pendingAsk.options || [];
-    const pick = pendingAsk.noTyping ? null : opts.length ? window.matchOption?.(text, opts) : text.trim();
-    if (pick) return answerAsk(pick, text);
+    if (pendingAsk.multi) {   // 여러 개 선택: "1, 3", "1번이랑 3번", "테팔이랑 리빙센스" (개수 검사는 서버가, 모자라면 다시 물음)
+      const labels = window.matchOptions?.(text, opts) || [];
+      if (labels.length) {
+        const ids = labels.map(l => pendingAsk.multi.find(c => c.label === l)?.id).filter(Boolean);
+        chatAdd("user", text.trim().slice(0, 200));
+        $("chatIn").value = "";
+        return pendingAsk({ selected: ids });
+      }
+    } else {
+      const pick = opts.length ? window.matchOption?.(text, opts) : text.trim();
+      if (pick) return answerAsk(pick, text);
+    }
     $("chatIn").value = "";
     cancelAsk();
     chatAdd("info", "이전 질문은 취소했어요.");
@@ -1948,43 +1958,55 @@ function applyEffect(e) {
   return { pid: i ?? 0, onPick: k => openCompare(cmp, k), label: "👉 비교 화면에서 보기" };
 }
 
-// 비교할 2개 고르기 (compare_favorites 후보가 3개 이상일 때) → {chosen: [key, key]} | {cancelled}
-function chooseTwo(p) {
+// 여러 개 선택 (ask_user min/max_select, compare_favorites 후보 2개) → {selected: [id…]} | {cancelled}
+// 버튼은 누르면 바로 보내지 않고 선택/해제 토글, 개수가 맞을 때만 [비교하기]/[선택 완료]가 켜짐.
+// 서버가 개수가 안 맞는다고 다시 물으면 같은 버튼을 다시 띄우고, 고른 것(p.selected)은 선택된 채로
+function askMulti(p) {
   return new Promise(resolve => {
-    const div = chatAdd("bot", p.question || "비교할 2개를 골라 주세요.");
+    const choices = p.choices || [];
+    const mn = p.min_select || 1, mx = p.max_select || mn;
+    const extra = {};   // 비교 후보는 가격·찜 표시
+    for (const o of p.options || []) if (o && o.key) extra[o.key] = (o.price != null ? ` · ${fmtPrice(o.price, o.currency)}` : "") + (o.source === "favorite" ? " ♥" : "");
+    const div = chatAdd("bot", (p.error ? `⚠️ ${p.error}\n` : "") + (p.question || "골라 주세요."));
     const box = document.createElement("div");
     box.className = "act-opts";
-    const picked = new Set();
+    const picked = new Set((p.selected || []).filter(id => choices.some(c => c.id === id)));
     const go = document.createElement("button");
-    go.type = "button"; go.className = "act-ask"; go.textContent = "⚖️ 비교하기"; go.disabled = true;
-    const cancel = document.createElement("button");
-    cancel.type = "button"; cancel.className = "act-ask"; cancel.textContent = "취소";
-    for (const o of p.options || []) {
+    go.type = "button"; go.className = "act-ask act-go";
+    const label = p.submit_label || "선택 완료";
+    const refresh = () => {
+      go.disabled = picked.size < mn || picked.size > mx;
+      go.textContent = `${p.kind === "choose" ? "⚖️ " : ""}${label} (${picked.size}/${mx})`;
+    };
+    for (const c of choices) {
       const b = document.createElement("button");
       b.type = "button"; b.className = "act-ask";
-      b.setAttribute("aria-pressed", "false");
-      b.textContent = o.name + (o.price != null ? ` · ${fmtPrice(o.price, o.currency)}` : "") + (o.source === "favorite" ? " ♥" : "");
+      b.textContent = c.label + (extra[c.id] || "");
+      b.setAttribute("aria-pressed", String(picked.has(c.id)));
       b.addEventListener("click", () => {
-        if (picked.has(o.key)) picked.delete(o.key);
-        else if (picked.size < 2) picked.add(o.key);
-        b.setAttribute("aria-pressed", String(picked.has(o.key)));
-        go.disabled = picked.size !== 2;
+        if (picked.has(c.id)) picked.delete(c.id);
+        else if (picked.size < mx) picked.add(c.id);
+        b.setAttribute("aria-pressed", String(picked.has(c.id)));
+        refresh();
       });
       box.appendChild(b);
     }
+    const cancel = document.createElement("button");
+    cancel.type = "button"; cancel.className = "act-ask"; cancel.textContent = "취소";
     box.append(go, cancel);
     div.appendChild(box);
+    refresh();
     const finish = v => {
       pendingAsk = null;
-      for (const b of box.querySelectorAll("button")) b.disabled = true;
+      for (const b of box.querySelectorAll("button")) b.disabled = true;   // 답한 질문의 버튼은 비활성화
       resolve(v);
       chatSetEnabled();
     };
-    go.addEventListener("click", () => finish({ chosen: [...picked] }));
+    go.addEventListener("click", () => finish({ selected: [...picked] }));
     cancel.addEventListener("click", () => finish({ cancelled: true, byButton: true }));
-    pendingAsk = v => finish(v);   // 새 문장이 오면 취소 (cancelAsk)
-    pendingAsk.options = [];
-    pendingAsk.noTyping = true;    // 2개 고르기는 버튼으로만
+    pendingAsk = v => finish(v);
+    pendingAsk.options = choices.map(c => c.label);
+    pendingAsk.multi = choices;   // 입력 "1, 3"·"테팔이랑 리빙센스"도 받음 (submit에서 matchOptions)
     chatSetEnabled();
   });
 }
@@ -2136,11 +2158,11 @@ async function runAct(sentence, opts = {}) {
       if (p.kind === "approve") {
         const a = await approveCard(p.product || {});
         r = { resume: a, summary: a.cancelled ? "취소됨" : a.approved ? "저장 승인" : "저장 취소" };
-      } else if (p.kind === "choose") {   // 비교할 2개 고르기
-        const c = await chooseTwo(p);
-        if (c.byButton) chatAdd("info", "비교를 취소했어요.");
+      } else if (p.multi) {   // 여러 개 선택 (비교 후보 2개, ask_user min/max_select)
+        const c = await askMulti(p);
+        if (c.byButton) chatAdd("info", p.kind === "choose" ? "비교를 취소했어요." : "선택을 취소했어요.");
         r = c.cancelled ? { resume: { cancelled: true }, summary: "취소됨" }
-          : { resume: { response: { chosen: c.chosen } }, summary: `2개 선택` };
+          : { resume: { response: { selected: c.selected } }, summary: `${c.selected.length}개 선택` };
       } else {
         r = await runClientTool(p, text => show(`${callLabel(p.call?.name, p.call?.args)} → ${text}`));
       }

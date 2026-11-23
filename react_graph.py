@@ -279,12 +279,49 @@ def compare_favorites(state, condition: str) -> tuple[dict | None, list, dict | 
         resp, effects = run_compare(items)
         return {**resp, "matched": 2}, effects, None, items
     shown = items[:MAX_CHOICES]
-    pending = {"kind": "choose", "pick": 2, "matched": len(items),
+    pending = {"kind": "choose", "pick": 2, "matched": len(items), "multi": True, "min_select": 2, "max_select": 2,
+               "submit_label": "비교하기",
                "call": {"name": "compare_favorites", "args": {"condition": condition}},
-               "question": f"“{condition or '찜한 상품'}”에 맞는 상품이 {len(items)}개예요. 비교할 2개를 골라 주세요.",
+               "question": f"“{condition or '찜한 상품'}”에 맞는 상품이 {len(items)}개예요. 비교할 상품을 골라 주세요."
+                           + select_hint(2, 2),
                "options": [{"key": i["key"], "name": i["name"], "price": i["price"], "currency": i["currency"],
-                            "source": i["source"]} for i in shown]}
+                            "source": i["source"]} for i in shown],
+               "choices": [{"id": i["key"], "label": i["name"]} for i in shown], "selected": []}
     return None, [], pending, shown
+
+
+# ---------- 여러 개 선택 (ask_user min/max_select, compare 후보 2개) ----------
+
+def select_hint(mn: int, mx: int) -> str:
+    return f" ({mn}개 선택)" if mn == mx else f" ({mn}~{mx}개 선택)"
+
+
+def ask_pending(call: dict) -> dict:
+    """ask_user → 화면이 기다릴 일. 여러 개 선택이면 질문 끝에 "(2개 선택)", 선택지는 choices[{id, label}]."""
+    args = call["args"]
+    mn, mx = args.get("min_select", 1), args.get("max_select", 1)
+    pending = {"kind": "ask", "call": call}
+    if mx > 1:
+        opts = args.get("options") or []
+        pending.update(multi=True, min_select=mn, max_select=mx, submit_label="선택 완료", selected=[],
+                       question=args["question"] + select_hint(mn, mx),
+                       choices=[{"id": o, "label": o} for o in opts])
+    return pending
+
+
+def check_selection(pending: dict, response) -> tuple[list, str | None]:
+    """화면이 보낸 selected(선택지 id 목록) 검사 → (고른 것, None) 또는 (맞는 것만 남긴 목록, 다시 물을 사유)."""
+    ids = [c["id"] for c in pending.get("choices") or []]
+    raw = response.get("selected") if isinstance(response, dict) else None
+    picked = []
+    for x in raw if isinstance(raw, list) else []:
+        if x in ids and x not in picked:
+            picked.append(x)
+    mn, mx = pending["min_select"], pending["max_select"]
+    if mn <= len(picked) <= mx:
+        return picked, None
+    want = f"{mn}개" if mn == mx else f"{mn}~{mx}개"
+    return picked[:mx], f"{want}를 골라 주세요 (지금 {len(picked)}개)."
 
 
 def resolve_add(state, args) -> tuple[dict | None, str | None]:
@@ -353,8 +390,10 @@ def validate(state: State) -> dict:
         return {"messages": _respond(state, call["name"], {"error": why}), "call": None, "trail": ["validate"]}
     call = {"name": call["name"], "args": args}
     pending = None
-    if call["name"] in CLIENT_TOOLS and call["name"] != "add_favorite":
-        pending = {"kind": "ask" if call["name"] == "ask_user" else "client", "call": call}
+    if call["name"] == "ask_user":
+        pending = ask_pending(call)
+    elif call["name"] in CLIENT_TOOLS and call["name"] != "add_favorite":
+        pending = {"kind": "client", "call": call}
     return {"call": call, "pending": pending, "trail": ["validate"]}
 
 
@@ -399,19 +438,27 @@ def approve(state: State) -> dict:
 
 def wait_client(state: State) -> dict:
     """화면에서 실행할 도구: 멈추고 결과를 기다림 → functionResponse로 붙여 agent로."""
-    value = interrupt(state["pending"])
+    pending = state["pending"]
+    value = interrupt(pending)
     v = value if isinstance(value, dict) else {}
+    picked = None
+    while pending.get("multi") and not v.get("cancelled"):
+        # 여러 개 선택: 개수가 안 맞으면 같은 선택 버튼을 다시 (고른 것은 선택된 채로). 재실행돼도 interrupt 순서대로 같은 값
+        picked, why = check_selection(pending, v.get("response"))
+        if why is None:
+            break
+        value = interrupt({**pending, "selected": picked, "error": why, "question": pending["question"]})
+        v = value if isinstance(value, dict) else {}
     if v.get("cancelled"):   # ask_user 대기 중 새 명령 등: 이 명령은 끝
         return {"final": "", "cancelled": True, "call": None, "pending": None, "trail": ["wait_client"]}
-    if state["pending"].get("kind") == "choose":   # 비교할 2개를 고름 → 여기서 바로 비교
-        items = state["call"].get("items") or []
-        chosen = (v.get("response") or {}).get("chosen")
-        picked = [next(i for i in items if i["key"] == k) for k in chosen
-                  if isinstance(k, str) and any(i["key"] == k for i in items)] if isinstance(chosen, list) else []
-        picked = list({i["key"]: i for i in picked}.values())
-        resp, effects = run_compare(picked) if len(picked) == 2 else ({"error": "비교할 2개를 골라 주세요."}, [])
+    if pending.get("kind") == "choose":   # 비교할 2개를 고름 → 여기서 바로 비교
+        items = {i["key"]: i for i in state["call"].get("items") or []}
+        resp, effects = run_compare([items[k] for k in picked])
         return {"messages": _respond(state, "compare_favorites", resp), "effects": effects, "call": None,
                 "pending": None, "trail": ["wait_client"]}
+    if pending.get("multi"):   # ask_user 여러 개 선택 → answers
+        return {"messages": _respond(state, "ask_user", {"answers": picked}), "call": None, "pending": None,
+                "trail": ["wait_client"]}
     upd = {"messages": _respond(state, state["call"]["name"], v.get("response") or {}), "call": None, "pending": None,
            "trail": ["wait_client"]}
     if "candidates" in v:

@@ -777,21 +777,28 @@ class ShortCompareTest(GraphBase):
         p = out["pending"]
         self.assertEqual((p["kind"], p["pick"], p["matched"]), ("choose", 2, 3))
         self.assertEqual([o["key"] for o in p["options"]], ["f-buds2", "r-pro", "r-fe"])
-        self.assertIn("2개를 골라", p["question"])
+        self.assertTrue(p["question"].endswith("(2개 선택)"))
+        self.assertEqual((p["multi"], p["min_select"], p["max_select"], p["submit_label"]), (True, 2, 2, "비교하기"))
+        self.assertEqual([c["id"] for c in p["choices"]], ["f-buds2", "r-pro", "r-fe"])
         self.answer.assert_not_called()                                         # 고르기 전엔 비교 안 함
-        out = self.resume({"response": {"chosen": ["r-fe", "f-buds2"]}})
+        out = self.resume({"response": {"selected": ["r-fe", "f-buds2"]}})
         self.assertEqual(out["type"], "text")
         self.assertEqual(out["effects"][0]["keys"], ["r-fe", "f-buds2"])
         self.assertEqual(out["trail"], ["agent", "validate", "server_tool", "wait_client", "agent", "END"])
         self.assertEqual(self.llm.last_response()["name"], "compare_favorites")
 
-    def test_bad_choice(self):
-        self.start(FakeLLM(call("compare_favorites", {"condition": "버즈"}), text("다시 골라 주세요")),
+    def test_bad_choice_asks_again(self):
+        """후보에 없는 ID는 버리고 1개만 남음 → 같은 선택 버튼을 다시 (남은 1개는 선택된 채), Gemini는 안 부름."""
+        self.start(FakeLLM(call("compare_favorites", {"condition": "버즈"}), text("버즈 FE가 나아요")),
                    results=BUDS_RESULTS, favorites=BUDS_FAV)
-        out = self.resume({"response": {"chosen": ["r-fe", "nope"]}})             # 후보에 없는 ID
-        self.assertEqual(self.llm.last_response()["response"], {"error": "비교할 2개를 골라 주세요."})
-        self.assertEqual(out["effects"], [])
+        out = self.resume({"response": {"selected": ["r-fe", "nope"]}})
+        self.assertEqual(out["type"], "interrupt")
+        self.assertEqual(out["pending"]["selected"], ["r-fe"])
+        self.assertIn("2개를 골라 주세요 (지금 1개)", out["pending"]["error"])
+        self.assertEqual(len(self.llm.seen), 1)
         self.answer.assert_not_called()
+        out = self.resume({"response": {"selected": ["r-fe", "r-pro"]}})
+        self.assertEqual(out["effects"][0]["keys"], ["r-fe", "r-pro"])
 
     def test_one_or_less_not_enough(self):
         out = self.start(FakeLLM(call("compare_favorites", {"condition": "에어팟"}), text("부족해요")),
@@ -811,8 +818,77 @@ class ShortCompareTest(GraphBase):
 
     def test_page_choose_ui(self):
         html = (ROOT / "index.html").read_text(encoding="utf-8")
-        self.assertIn('p.kind === "choose"', html)
-        body = html[html.index("function chooseTwo("):]
-        self.assertIn("pendingAsk.noTyping = true", body[:3000])                # 새 문장이 오면 취소하고 새 명령
+        self.assertIn("} else if (p.multi) {", html)
+        body = html[html.index("function askMulti("):]
+        self.assertIn("pendingAsk.multi = choices", body[:4000])                # 입력으로도 고름
         eff = html[html.index("function applyEffect("):html.index("function applyEffect(") + 1200]
         self.assertIn("fromResult", eff)                                        # 결과에만 있는 상품도 비교 창에
+
+
+# ---------- ask_user 여러 개 선택 ----------
+
+OPTS3 = ["1. 테팔 무선 청소기", "2. 리빙센스 청소기", "3. 필립스 청소기"]
+
+
+class MultiSelectTest(GraphBase):
+    def ask(self, **kw):
+        return call("ask_user", {"question": "어느 두 개를 비교할까요?", "options": OPTS3, **kw})
+
+    def test_check_call(self):
+        self.assertEqual(actions.check_call("ask_user", {"question": "q", "options": OPTS3, "min_select": 2, "max_select": 2}, USER)[0],
+                         {"question": "q", "options": OPTS3, "min_select": 2, "max_select": 2})
+        self.assertEqual(actions.check_call("ask_user", {"question": "q", "options": OPTS3, "min_select": 2}, USER)[0]["max_select"], 2)
+        self.assertNotIn("min_select", actions.check_call("ask_user", {"question": "q", "options": OPTS3}, USER)[0])   # 기본 1개
+        self.assertIn("클 수 없어요", actions.check_call("ask_user", {"question": "q", "options": OPTS3, "min_select": 3, "max_select": 2}, USER)[1])
+        self.assertIn("options가 4개 이상", actions.check_call("ask_user", {"question": "q", "options": OPTS3, "max_select": 4}, USER)[1])
+        self.assertIn("min_select", actions.TOOLS["ask_user"][1]["properties"])
+        self.assertIn("answers", actions.TOOLS["ask_user"][0])
+
+    def test_multi_pending_and_answers(self):
+        out = self.start(FakeLLM(self.ask(min_select=2, max_select=2), text("테팔과 필립스를 비교할게요.")))
+        p = out["pending"]
+        self.assertEqual((p["kind"], p["multi"], p["min_select"], p["max_select"]), ("ask", True, 2, 2))
+        self.assertEqual(p["question"], "어느 두 개를 비교할까요? (2개 선택)")
+        self.assertEqual([c["id"] for c in p["choices"]], OPTS3)
+        out = self.resume({"response": {"selected": [OPTS3[0], OPTS3[2]]}})
+        self.assertEqual(out["type"], "text")
+        self.assertEqual(self.llm.last_response()["response"], {"answers": [OPTS3[0], OPTS3[2]]})
+
+    def test_one_only_asks_again_keeping_selection(self):
+        out = self.start(FakeLLM(self.ask(min_select=2, max_select=2), text("끝")))
+        out = self.resume({"response": {"selected": [OPTS3[1]]}})
+        self.assertEqual(out["type"], "interrupt")                              # 같은 질문 다시
+        self.assertEqual(out["pending"]["selected"], [OPTS3[1]])                # 고른 것은 선택된 채
+        self.assertEqual(out["pending"]["question"], "어느 두 개를 비교할까요? (2개 선택)")
+        self.assertEqual(len(self.llm.seen), 1)                                 # 다시 물을 땐 Gemini 안 부름
+        out = self.resume({"response": {"selected": [OPTS3[1], OPTS3[1], "없는 것"]}})   # 중복·없는 것 → 여전히 1개
+        self.assertEqual(out["pending"]["selected"], [OPTS3[1]])
+        out = self.resume({"response": {"selected": [OPTS3[1], OPTS3[0]]}})
+        self.assertEqual(self.llm.last_response()["response"], {"answers": [OPTS3[1], OPTS3[0]]})
+
+    def test_too_many_trimmed(self):
+        self.start(FakeLLM(self.ask(min_select=1, max_select=2), text("끝")))
+        out = self.resume({"response": {"selected": OPTS3}})
+        self.assertEqual(out["pending"]["selected"], OPTS3[:2])
+        self.assertEqual(out["pending"]["question"], "어느 두 개를 비교할까요? (1~2개 선택)")
+
+    def test_single_select_unchanged(self):
+        out = self.start(FakeLLM(self.ask(), text("끝")))
+        self.assertNotIn("multi", out["pending"])
+        self.resume({"response": {"answer": OPTS3[0]}})
+        self.assertEqual(self.llm.last_response()["response"], {"answer": OPTS3[0]})
+
+    def test_cancel_while_multi(self):
+        self.start(FakeLLM(self.ask(min_select=2, max_select=2), text("끝")))
+        out = self.resume({"cancelled": True})
+        self.assertTrue(out["cancelled"])
+
+    def test_page(self):
+        html = (ROOT / "index.html").read_text(encoding="utf-8")
+        body = html[html.index("function askMulti("):]
+        body = body[:body.index("\n}\n")]
+        self.assertIn("picked.size < mn || picked.size > mx", body)            # 개수 맞을 때만 보내기 버튼
+        self.assertIn("p.selected", body)                                       # 다시 물을 때 선택 유지
+        self.assertIn("b.disabled = true", body)                                # 답한 질문의 버튼은 비활성화
+        sub = html[html.index('$("chatForm").addEventListener("submit"'):]
+        self.assertIn("matchOptions", sub[:2000])

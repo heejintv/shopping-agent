@@ -96,6 +96,28 @@ class MatchOptionTest(unittest.TestCase):
             self.assertEqual(got, want, (t, o))
 
 
+OPTS3 = ["1. 테팔 무선 청소기", "2. 리빙센스 청소기", "3. 필립스 청소기"]
+NAMES = ["삼성 갤럭시 버즈 FE", "삼성 갤럭시 버즈2", "애플 에어팟 4"]
+MULTI = [   # (입력, 선택지, 기대)
+    ("1, 3", OPTS3, [OPTS3[0], OPTS3[2]]), ("1번이랑 3번", OPTS3, [OPTS3[0], OPTS3[2]]),
+    ("테팔이랑 리빙센스", OPTS3, [OPTS3[0], OPTS3[1]]), ("1 3", OPTS3, [OPTS3[0], OPTS3[2]]),
+    ("2번하고 3번", OPTS3, [OPTS3[1], OPTS3[2]]), ("테팔, 필립스", OPTS3, [OPTS3[0], OPTS3[2]]),
+    ("테팔", OPTS3, [OPTS3[0]]), ("1,1", OPTS3, [OPTS3[0]]), ("에어팟 검색해줘", OPTS3, []), ("", OPTS3, []),
+    ("1, 2", NAMES, NAMES[:2]), ("버즈 FE와 버즈2", NAMES, NAMES[:2]),
+]
+
+
+@unittest.skipUnless(NODE, "node가 없어요")
+class MatchOptionsTest(unittest.TestCase):
+    def test_match_options(self):
+        script = ("const {matchOptions} = require(process.argv[1]);"
+                  "console.log(JSON.stringify(JSON.parse(process.argv[2]).map(([t, o]) => matchOptions(t, o))));")
+        out = subprocess.run([NODE, "-e", script, str(ROOT / "intent.js"), json.dumps([[t, o] for t, o, _ in MULTI])],
+                             capture_output=True, text=True, timeout=30, check=True).stdout
+        for (t, o, want), got in zip(MULTI, json.loads(out)):
+            self.assertEqual(got, want, (t, o))
+
+
 class IntentFileTest(unittest.TestCase):
     def test_served_and_loaded(self):
         import os, tempfile, sys  # noqa: E401

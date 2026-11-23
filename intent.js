@@ -2,6 +2,7 @@
 // - isActionCommand: 입력이 "행동 명령"(⚡)인지 "상담 질문"(/chat)인지 키워드로만 판단 (Gemini 호출 없음)
 // - josa: 받침에 맞게 조사 붙이기 ("로지텍 K295" + 을/를 → "로지텍 K295를")
 // - matchOption: ⚡ ask_user 선택지 중 입력과 맞는 것 (없으면 null → 새 명령으로 처리)
+// - matchOptions: 여러 개 선택 입력 ("1, 3", "1번이랑 3번", "테팔이랑 리빙센스") → 맞는 선택지들
 (function (root) {
   // 질문이면 상담: 물음표 또는 '어때/할까/만해' 같은 의견을 묻는 말
   const QUESTION = /[?？]|어때|어떄|할까|만해|만한가|괜찮|나을까|좋을까|될까|뭐가|어느|어떤/;
@@ -74,8 +75,27 @@
     return hits.length === 1 ? hits[0] : null;   // 여러 개에 걸리면 애매하니 답으로 안 봄
   }
 
+  // 여러 개: 쉼표·"이랑/랑/하고/와/과/및/그리고/and/&"로 나눠 각각 matchOption. "1 3"처럼 숫자만 띄어 써도 됨
+  const SPLIT = /\s*(?:[,，、/&+]|\s(?:그리고|및|and)\s|(?:이랑|랑|하고|와|과)(?=\s|$)|\s(?=\d))\s*/i;
+  function matchOptions(text, options) {
+    const t = String(text || "").trim();
+    if (!t) return [];
+    const parts = t.split(SPLIT).map(x => x.trim()).filter(Boolean);
+    const found = [];
+    for (const part of parts.length > 1 ? parts : [t]) {
+      const m = matchOption(part, options);
+      if (m && !found.includes(m)) found.push(m);
+    }
+    if (!found.length && parts.length > 1) {   // 나눠서 안 맞으면 통째로 한 번 (이름에 "과"가 들어간 경우 등)
+      const m = matchOption(t, options);
+      if (m) found.push(m);
+    }
+    return found;
+  }
+
+  root.matchOptions = matchOptions;
   root.isActionCommand = isActionCommand;
   root.josa = josa;
   root.matchOption = matchOption;
-  if (typeof module !== "undefined" && module.exports) module.exports = { isActionCommand, josa, matchOption };
+  if (typeof module !== "undefined" && module.exports) module.exports = { isActionCommand, josa, matchOption, matchOptions };
 })(typeof window !== "undefined" ? window : globalThis);
