@@ -127,6 +127,12 @@ class CheckCallTest(unittest.TestCase):
             self.assertIn(want, why, (name, args))
 
 
+class CheckCallLoginTest(unittest.TestCase):
+    def test_find_and_ask_need_no_login(self):
+        self.assertIsNone(actions.check_call("find_in_results", {"description": "x"}, None)[1])
+        self.assertIsNone(actions.check_call("ask_user", {"question": "q"}, None)[1])
+
+
 class CommandsTest(unittest.TestCase):
     def test_owner_expire_drop(self):
         dropped = []
@@ -352,6 +358,19 @@ RECENT = [{"input": "로지텍 K295 찜 취소해줘", "calls": ["remove_favorit
 
 
 class RecentCommandsTest(GraphBase):
+    def test_clean_recent_bad_input(self):
+        self.assertEqual(actions.clean_recent("x"), [])
+        self.assertEqual(actions.clean_recent([{"input": " "}, 3]), [])
+        out = actions.clean_recent([{"input": "a", "calls": ["x"] * 9, "targets": [1, "t"]}])
+        self.assertEqual(len(out[0]["calls"]), 5)
+        self.assertEqual(out[0]["targets"], ["t"])                              # 숫자는 버림
+
+    def test_page_keeps_five_and_sends_on_start(self):
+        html = (ROOT / "index.html").read_text(encoding="utf-8")
+        self.assertIn("recent: actHistory", html[html.index("async function runAct("):])
+        self.assertIn("actHistory = [{ input: sentence, calls, targets: [...new Set(targets)] }, ...actHistory].slice(0, 5)", html)
+        self.assertIn("actHistory = []; recentlyRemoved = [];", html)           # 계정이 바뀌면 지움
+
     def test_clean_recent_and_prompt(self):
         raw = RECENT + [{"input": f"명령 {i}", "calls": ["x"] * 9, "targets": [1, "가" * 200]} for i in range(9)]
         out = actions.clean_recent(raw)
@@ -406,7 +425,24 @@ class SearchConfirmTest(GraphBase):
     def test_unit(self):
         self.assertEqual(actions.eul_reul("에어팟"), "에어팟을")
         self.assertEqual(actions.eul_reul("무선 마우스"), "무선 마우스를")
+        self.assertEqual(actions.eul_reul("K295"), "K295를")
         self.assertIn("ask_user로 확인을 받아야", actions.TOOLS["search"][0])
+        self.assertIn('새로 검색할까요? (하루 검색 N회 중 1회 사용)", options=["검색", "취소"]', actions.SYSTEM)
+
+    def test_search_confirmed_rules(self):
+        u = lambda t: {"role": "user", "parts": [{"text": t}]}   # noqa: E731
+        ask = lambda q: {"role": "model", "parts": [{"functionCall": {"name": "ask_user", "args": {"question": q}}}]}  # noqa: E731
+        ans = lambda a: {"role": "user", "parts": [{"functionResponse": {"name": "ask_user", "response": {"answer": a}}}]}  # noqa: E731
+        self.assertTrue(actions.search_confirmed([u("무선 마우스 검색")]))
+        self.assertTrue(actions.search_confirmed([u("무선 마우스 찾아줘")]))
+        self.assertFalse(actions.search_confirmed([u("무선 마우스 찜해줘")]))
+        self.assertTrue(actions.search_confirmed([u("x 찜"), ask("마우스를 새로 검색할까요?"), ans("검색")]))
+        self.assertFalse(actions.search_confirmed([u("x 찜"), ask("어느 거요?"), ans("검색")]))     # 검색 확인 질문이 아님
+        self.assertFalse(actions.search_confirmed([u("x 찜"), ask("새로 검색할까요?"), ans("취소")]))
+
+    def test_allowed_with_find_word(self):
+        out = self.start(FakeLLM(call("search", {"query": "에어팟"})), sentence="에어팟 찾아줘")
+        self.assertEqual(out["pending"]["call"]["name"], "search")
 
 
 # ---------- ask_user 대기 중 취소 ----------
@@ -428,11 +464,40 @@ class AskCancelTest(GraphBase):
         body = html[i:html.index("\n});", i)]
         self.assertIn("matchOption", body)
         self.assertIn("이전 질문은 취소했어요", body)
+        self.assertLess(body.index("cancelAsk()"), body.index("await actRun"))   # 취소 → 끝나길 기다림 → 새 명령
+
+    def test_page_ends_server_graph_and_keeps_chat(self):
+        html = (ROOT / "index.html").read_text(encoding="utf-8")
+        run = html[html.index("async function runAct("):]
+        self.assertIn("if (r.resume.cancelled)", run)                              # 서버 그래프도 cancelled로 END
+        i = html.index("function chatReset(")
+        reset = html[i:html.index("\n}\n", i)]
+        self.assertLess(reset.index("if (actRunning)"), reset.index('$("chatLog").innerHTML = ""'))   # ⚡ 중엔 안 지움
+
+    def test_approve_card_cancel_by_new_input(self):
+        """승인 카드 대기 중 새 명령 → cancelled → 저장 없이 END (최종 답 없음)."""
+        out = self.start(FakeLLM(call("add_favorite", {"number": 1}), text("안 쓰임")))
+        self.assertEqual(out["pending"]["kind"], "approve")
+        out = self.resume({"cancelled": True})
+        self.assertEqual((out["type"], out["text"], out["cancelled"]), ("text", "", True))
+        self.assertNotIn("wait_client", out["trail"])
 
 
 # ---------- 범위 기본값 ----------
 
 class ScopeDefaultTest(unittest.TestCase):
+    def test_scope_phrases(self):
+        self.assertIn("최저가/제일 싼/가장 비싼/평점 높은", actions.TOOLS["find_in_results"][0])
+        fav = actions.TOOLS["get_favorites"][0]
+        self.assertIn('"찜한 것 중"', fav)
+        self.assertIn("평점", fav)
+        self.assertIn("범위 기본값", actions.SYSTEM)
+
+    def test_page_sends_favorite_rating(self):
+        html = (ROOT / "index.html").read_text(encoding="utf-8")
+        i = html.index("const favForServer")
+        self.assertIn("rating: w.rating", html[i:i + 300])
+
     def test_scope(self):
         self.assertIn("기본적으로 이 현재 검색 결과 안에서", actions.TOOLS["find_in_results"][0])
         self.assertIn("때만 이 목록을 기준으로", actions.TOOLS["get_favorites"][0])
