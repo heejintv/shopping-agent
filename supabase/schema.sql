@@ -185,3 +185,11 @@ alter table public.usage_logs add column if not exists outcome text;
 alter table public.usage_logs add column if not exists error_kind text;
 alter table public.usage_logs add column if not exists log_id text;
 create unique index if not exists usage_logs_log_id on public.usage_logs (log_id) where log_id is not null;
+
+
+-- =====================================================================
+-- 추가분 5: ⚡ 도구별 횟수 (파일 전체를 다시 실행해도 됨)
+-- =====================================================================
+
+-- 12) usage_logs.tools: ⚡ 명령 하나가 실제로 실행한 도구 이름 (예: {find_in_results,add_favorite}). 예전 기록은 비어 있음
+alter table public.usage_logs add column if not exists tools text[];

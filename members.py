@@ -135,17 +135,11 @@ def usage_between(start: datetime, end: datetime) -> tuple[list[dict], bool]:
     """start 이상 end 미만의 사용 기록 (최신순, 일일 보고서용)."""
     columns = "created_at,user_id,action,status,query,engine,duration_ms,tokens"   # 이메일은 읽지 않음
     params = {
-        "select": columns + ",outcome,error_kind",
         "and": f'(created_at.gte."{start.isoformat()}",created_at.lt."{end.isoformat()}")',
         "order": "created_at.desc",
     }
-    try:
-        return select_rows("usage_logs", params)
-    except MemberError as e:
-        if e.code != 400:
-            raise
-        log.warning("usage_logs에 outcome·error_kind 열이 없어요. supabase/schema.sql을 실행하세요.")
-        return select_rows("usage_logs", {**params, "select": columns})
+    return _first_ok([columns + ",outcome,error_kind,tools", columns + ",outcome,error_kind", columns],
+                     lambda c: select_rows("usage_logs", {**params, "select": c}))
 
 
 # ---------- 오늘 사용 횟수 ----------
@@ -179,13 +173,24 @@ def count_today(user_id: str | None, kind: str) -> int:
 
 # ---------- 기록 ----------
 
+def _first_ok(options: list, call):
+    """아직 없는 열(400) 때문에 실패하면 다음 것으로. 다른 오류는 그대로."""
+    for i, option in enumerate(options):
+        try:
+            return call(option)
+        except MemberError as e:
+            if e.code != 400 or i == len(options) - 1:
+                raise
+            log.warning("usage_logs에 새 열이 없어요. supabase/schema.sql을 실행하세요.")
+
+
 def log_usage(user_id: str, email: str | None, action: str, status: str, query: str | None = None,
               engine: str | None = None, duration_ms: float | None = None, exempt: bool = False,
               tokens: int | None = None, outcome: str | None = None, error_kind: str | None = None,
-              log_id: str | None = None) -> None:
+              log_id: str | None = None, tools: list[str] | None = None) -> None:
     """usage_logs에 한 줄 쓴다. 실패해도 응답은 그대로 (경고 로그만, 내용·키는 남기지 않음).
     exempt=True: 한도 예외(admin·내 PC) 사용이라 서버 전체 상한에 안 셈.
-    outcome(⚡ 결과 종류)·error_kind(검색 실패 종류)·log_id 열이 아직 없는 DB면 그 값만 빼고 다시 씀 (하루 횟수는 꼭 세야 함)."""
+    outcome(⚡ 결과 종류)·error_kind(검색 실패 종류)·log_id·tools(⚡ 실행한 도구) 열이 아직 없는 DB면 그 값만 빼고 다시 씀 (하루 횟수는 꼭 세야 함)."""
     row = {
         "user_id": user_id, "email": email, "action": action, "status": status,
         "query": (query or "")[:QUERY_MAX] or None, "engine": engine,
@@ -194,23 +199,21 @@ def log_usage(user_id: str, email: str | None, action: str, status: str, query: 
     if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens >= 0:
         row["tokens"] = tokens   # Gemini가 알려 준 사용 토큰 수 (모르면 열을 비워 둠)
     new = {k: v for k, v in (("outcome", outcome), ("error_kind", error_kind), ("log_id", log_id)) if v}
+    bodies = [{**row, **new}] + ([row] if new else [])
+    if tools is not None:   # tools 열(추가분 5)만 아직 없을 수 있음
+        bodies.insert(0, {**row, **new, "tools": tools})
     try:
-        try:
-            _request("POST", "usage_logs", body={**row, **new}, extra={"Prefer": "return=minimal"})
-        except MemberError as e:
-            if not new or e.code != 400:
-                raise
-            log.warning("usage_logs에 새 열이 없어요. supabase/schema.sql을 실행하세요.")
-            _request("POST", "usage_logs", body=row, extra={"Prefer": "return=minimal"})
+        _first_ok(bodies, lambda b: _request("POST", "usage_logs", body=b, extra={"Prefer": "return=minimal"}))
     except MemberError as e:
         log.warning("usage log failed: %s", e)
 
 
-def update_outcome(log_id: str, outcome: str) -> None:
-    """⚡ 명령이 끝났을 때 처음 남긴 줄의 outcome을 고침. 실패해도 응답은 그대로."""
+def update_outcome(log_id: str, outcome: str, tools: list[str] | None = None) -> None:
+    """⚡ 명령이 끝났을 때 처음 남긴 줄의 outcome(·tools)을 고침. 실패해도 응답은 그대로."""
+    bodies = ([{"outcome": outcome, "tools": tools}] if tools is not None else []) + [{"outcome": outcome}]
     try:
-        _request("PATCH", "usage_logs", {"log_id": f"eq.{log_id}"}, body={"outcome": outcome},
-                 extra={"Prefer": "return=minimal"})
+        _first_ok(bodies, lambda b: _request("PATCH", "usage_logs", {"log_id": f"eq.{log_id}"}, body=b,
+                                             extra={"Prefer": "return=minimal"}))
     except MemberError as e:
         log.warning("outcome update failed: %s", e)
 

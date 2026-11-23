@@ -62,6 +62,7 @@ class State(TypedDict, total=False):
     outcome: str | None       # 명령이 어떻게 끝났는지 (usage_logs.outcome)
     tokens: int
     trail: Annotated[list, operator.add]     # 지난 노드 순서
+    tools: Annotated[list, operator.add]     # 실제로 실행한 도구 이름 (usage_logs.tools)
     effects: Annotated[list, operator.add]   # 화면이 할 일 (AI 비교 창 열기 등)
 
 
@@ -146,7 +147,7 @@ def initial_state(sentence, user_id, recent, candidates, query, favorites, remov
             "candidates": clean_candidates(candidates), "query": _s(query), "favorites": clean_favorites(favorites),
             "removed": clean_favorites(removed, 10), "recent_actions": actions.clean_recent(recent),
             "step_count": 0, "pending": None, "call": None, "user_id": user_id, "search_limit": search_limit,
-            "final": None, "cancelled": False, "issue": None, "outcome": None, "tokens": 0, "trail": [], "effects": []}
+            "final": None, "cancelled": False, "issue": None, "outcome": None, "tokens": 0, "trail": [], "tools": [], "effects": []}
 
 
 # ---------- 서버 도구 ----------
@@ -382,6 +383,12 @@ def _respond(state, name, response) -> list:
     return state["messages"] + [{"role": "user", "parts": [{"functionResponse": {"name": name, "response": response}}]}]
 
 
+def _ran(name: str, response) -> list[str]:
+    """실행한 도구 기록: 오류거나 이미 찜한 상품(실행 0회)이면 남기지 않음."""
+    r = response if isinstance(response, dict) else {}
+    return [] if r.get("error") or r.get("already") else [name]
+
+
 # ---------- 명령 결과 종류 (일일 보고서의 "잘 안 된 명령") ----------
 
 _CANNOT = re.compile(r"수\s*(?:가|는)?\s*없(?!이)|못\s?(?:했|해|하|찾)|지원하지 않|부족해요")
@@ -470,7 +477,7 @@ def server_tool(state: State) -> dict:
             return {"call": {**call, "product": product}, "trail": ["server_tool"],
                     "pending": {"kind": "approve", "call": {"name": name, "args": args}, "product": product}}
     return {"messages": _respond(state, name, resp), "call": None, "pending": None, "effects": effects,
-            "trail": ["server_tool"]}
+            "tools": _ran(name, resp), "trail": ["server_tool"]}
 
 
 def approve(state: State) -> dict:
@@ -496,7 +503,7 @@ def logout_answer(answer) -> dict:
     if a.get("logged_out") is True:   # 화면에서 이미 로그아웃된 상태
         return {**end, "final": ALREADY_LOGGED_OUT, "outcome": "ok"}
     if a.get("approved") is True:
-        return {**end, "final": LOGOUT_DONE, "effects": ["logout"], "outcome": "ok"}
+        return {**end, "final": LOGOUT_DONE, "effects": ["logout"], "tools": ["logout"], "outcome": "ok"}
     return {**end, "final": LOGOUT_KEPT, "outcome": "approve_cancelled"}
 
 
@@ -535,12 +542,14 @@ def wait_client(state: State) -> dict:
                     "trail": ["wait_client"]}
         resp = {**(state["call"].get("result") or {}), "opened": True, "note": COMPARE_OPENED_NOTE}
         return {"messages": _respond(state, "compare_favorites", resp), "call": None, "pending": None,
-                "trail": ["wait_client"]}
+                "tools": ["compare_favorites"], "trail": ["wait_client"]}
     if pending.get("multi"):   # ask_user 여러 개 선택 → answers
         return {"messages": _respond(state, "ask_user", {"answers": picked}), "call": None, "pending": None,
+                "tools": ["ask_user"],
                 "trail": ["wait_client"]}
     upd = {"messages": _respond(state, state["call"]["name"], v.get("response") or {}), "call": None, "pending": None,
-           "issue": ask_issue(state["call"], v.get("response")), "trail": ["wait_client"]}
+           "issue": ask_issue(state["call"], v.get("response")),
+           "tools": _ran(state["call"]["name"], v.get("response")), "trail": ["wait_client"]}
     if "candidates" in v:
         upd["candidates"], upd["query"] = v["candidates"], v.get("query") or ""
     if "favorites" in v:
@@ -611,7 +620,8 @@ def run(inp, thread_id: str) -> dict:
     snap = graph.get_state(config)
     v = snap.values
     waits = [i for t in snap.tasks for i in t.interrupts]
-    base = {"trail": list(v.get("trail") or []), "effects": list(v.get("effects") or []), "tokens": v.get("tokens") or 0}
+    base = {"trail": list(v.get("trail") or []), "effects": list(v.get("effects") or []),
+            "tools": list(v.get("tools") or []), "tokens": v.get("tokens") or 0}
     if waits:
         return {"type": "interrupt", "pending": waits[0].value, "done": False, **base}
     base["trail"].append("END")
@@ -621,6 +631,14 @@ def run(inp, thread_id: str) -> dict:
 
 def resume(value) -> Command:
     return Command(resume=value)
+
+
+def tools_of(thread_id: str) -> list[str]:
+    """지금까지 실행한 도구 (중간에 오류가 났을 때 기록용)."""
+    try:
+        return list(graph.get_state({"configurable": {"thread_id": thread_id}}).values.get("tools") or [])
+    except Exception:
+        return []
 
 
 def forget(thread_id: str) -> None:

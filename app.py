@@ -376,7 +376,7 @@ _action_logs: dict[str, tuple] = {}   # 진행 중인 ⚡ 명령(cmd) → (usage
 MAX_ACTION_LOGS = 500                 # 끝내지 않고 떠난 명령이 쌓이지 않게
 
 
-def finish_action(cmd: str, outcome: str) -> None:
+def finish_action(cmd: str, outcome: str, tools: list[str]) -> None:
     """⚡ 명령이 끝남: 처음 남긴 줄의 outcome을 고침 (처음 기록이 끝난 뒤에)."""
     log_id, first = _action_logs.pop(cmd, (None, None))
     if not log_id:
@@ -385,7 +385,7 @@ def finish_action(cmd: str, outcome: str) -> None:
     def run():
         if first:
             first.join(timeout=15)
-        members.update_outcome(log_id, outcome)
+        members.update_outcome(log_id, outcome, tools=tools)
     if ASYNC_LOG:
         threading.Thread(target=run, daemon=True).start()
     else:
@@ -1151,26 +1151,28 @@ def chat_action_step():
         out = react_graph.run(inp, cmd)
     except Exception as e:
         app.logger.warning("chat action step failed: %s (%s)", e, getattr(e, "__cause__", None))
+        tools = react_graph.tools_of(cmd)
         actions.commands.drop(cmd)
         if first:
             record(ok=False, code=getattr(e, "code", None))
             finish(user, "chat", "error", t0, query=topic, engine="gemini", ticket=ticket, exempt=unlimited,
-                   outcome="error")
+                   outcome="error", tools=tools)
         else:
-            finish_action(cmd, "error")
+            finish_action(cmd, "error", tools)
         return jsonify(error=actions.FAIL_MESSAGE, stop=True, **info), 502
+    tools = out.pop("tools", [])
     outcome = out.pop("outcome", None)   # 끝났을 때만 있음
     if first:
         record()
         log_id = secrets.token_hex(8)
         thread = finish(user, "chat", "ok", t0, query=topic, engine="gemini", ticket=ticket, exempt=unlimited,
-                        tokens=out["tokens"] or None, outcome=outcome or "waiting", log_id=log_id)
+                        tokens=out["tokens"] or None, outcome=outcome or "waiting", log_id=log_id, tools=tools)
         if not outcome:   # 화면을 기다림: 끝날 때 outcome을 고침
             _action_logs[cmd] = (log_id, thread)
             while len(_action_logs) > MAX_ACTION_LOGS:
                 _action_logs.pop(next(iter(_action_logs)), None)
     elif outcome:
-        finish_action(cmd, outcome)
+        finish_action(cmd, outcome, tools)
     if out.pop("done"):
         actions.commands.drop(cmd)   # 체크포인트도 지움
     out.pop("tokens", None)

@@ -8,6 +8,7 @@
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%232563eb'/%3E%3Cstop offset='1' stop-color='%237c3aed'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M11 11V9a5 5 0 0 1 10 0v2' fill='none' stroke='url(%23g)' stroke-width='2.6' stroke-linecap='round'/%3E%3Cpath d='M6 11h20l-1.4 15.3A3 3 0 0 1 21.6 29H10.4a3 3 0 0 1-3-2.7z' fill='url(%23g)'/%3E%3Cpath d='M11.4 19.6l3.3 3.3 6-6.5' fill='none' stroke='%23fff' stroke-width='2.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
 <script src="config.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.js" integrity="sha384-G436+Z2nlA8+PNoeRvWdxKbvOf8E/y+lYxqht2iBwNHTQDV5CJr3+AGVj8fGZi5t" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <style>
   /* 관리자 대시보드: 데이터는 서버(/admin/stats)가 admin에게만 줌. 이 파일에는 숫자가 하나도 없음 */
@@ -82,6 +83,16 @@
   #reportBody li { margin: 3px 0; overflow-wrap: anywhere; }
   #reportBody details { margin-top: 14px; }
   #reportBody summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+  /* 보고서 그래프 색: 색각 이상에서도 구별되는 조합으로 확인함 (밝은·어두운 화면) */
+  #reportBody { --s1: #2563eb; --s2: #d97706; --s3: #0d9488; }
+  @media (prefers-color-scheme: dark) { #reportBody { --s1: #3b82f6; } }
+  .report-charts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 12px; }
+  .report-chart { border: 1px solid var(--line); border-radius: 12px; padding: 14px; min-width: 0; }
+  .report-chart.wide { grid-column: 1 / -1; }
+  #reportBody .report-chart h3 { margin: 0 0 8px; }
+  .report-chart .plot { position: relative; height: 200px; }
+  .report-chart.wide .plot { height: 240px; }
+  @media (max-width: 760px) { .report-charts { grid-template-columns: 1fr; } }
   .report-actions { display: flex; gap: 8px; margin-top: 16px; }
 
   /* 숫자 카드 */
@@ -523,25 +534,88 @@ function showReport(d) {
   const val = (v, u) => v == null ? "기록 없음" : `${num(v)}${esc(u || "")}`;
   const where = { summary: "요약", anomalies: "이상 징후", suggestions: "⚡ 개선 제안" };
   const unit = Object.fromEntries(d.aggregates.metrics.map(m => [m.id, m.unit]));
-  $("reportBody").innerHTML = (d.problems.length ? list("검토 지적", d.problems) : "")
-    + list("요약", d.draft.summary) + list("이상 징후", d.draft.anomalies) + list("⚡ 개선 제안", d.draft.suggestions)
-    + `<details open><summary>이상 징후 판정 (${d.aggregates.anomalies.filter(a => a.triggered).length}개)</summary><div class="table-wrap"><table>
-      <thead><tr><th>규칙</th><th class="num">실제값</th><th class="num">기준</th><th>판정</th></tr></thead><tbody>`
-    + d.aggregates.anomalies.map(a => `<tr class="${a.triggered ? "row-warn" : ""}"><td class="text">${esc(a.label)}</td>
+  const agg = d.aggregates, charts = agg.charts;
+  const metric = Object.fromEntries(agg.metrics.map(m => [m.id, m]));
+  const table = (head, rows) => `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
+  const chartTable = c => c.series
+    ? table(`<th>시간</th>${c.series.map(x => `<th class="num">${esc(x.name)}</th>`).join("")}`,
+        c.labels.map((l, i) => `<tr><td>${esc(l)}</td>${c.series.map(x => `<td class="num">${num(x.values[i])}</td>`).join("")}</tr>`).join(""))
+    : table(`<th>항목</th><th class="num">값</th>`, c.bars.map(b => `<tr><td class="text">${esc(b.label)}</td><td class="num">${val(b.value, c.unit)}</td></tr>`).join(""));
+  $("reportBody").innerHTML =
+    // 1) 숫자 카드
+    `<div class="tiles">${agg.cards.map(id => `<div class="tile"><div class="k">${esc(metric[id].label)}</div>
+      <div class="v">${val(metric[id].value, metric[id].unit)}</div></div>`).join("")}</div>`
+    // 2) 그래프 (집계값 그대로)
+    + `<div class="report-charts">${Object.entries(charts).map(([id, c]) => `<div class="report-chart ${c.series ? "wide" : ""}">
+      <h3>${esc(c.title)}</h3><div class="plot" data-chart="${id}"></div>
+      ${c.missing ? `<div class="meter-note">도구 기록이 없는 명령 ${num(c.missing)}개는 빠졌어요.</div>` : ""}</div>`).join("")}</div>`
+    // 3) 요약 4) 이상 징후·개선 제안
+    + list("AI 요약", d.draft.summary) + list("이상 징후", d.draft.anomalies)
+    + table(`<th>규칙</th><th class="num">실제값</th><th class="num">기준</th><th>판정</th>`,
+      agg.anomalies.map(a => `<tr class="${a.triggered ? "row-warn" : ""}"><td class="text">${esc(a.label)}</td>
       <td class="num">${val(a.value, a.unit)}</td><td class="num">${esc(a.op)} ${val(a.threshold, a.unit)}</td>
-      <td>${a.triggered == null ? "판정 안 함" : a.triggered ? "⚠️ 이상" : "정상"}</td></tr>`).join("")
-    + `</tbody></table></div></details><details open><summary>숫자별 근거 (${d.checks.length}개)</summary><div class="table-wrap"><table>
-      <thead><tr><th>위치</th><th class="num">초안</th><th class="num">집계값</th><th>항목</th><th>출처</th><th>결과</th></tr></thead><tbody>`
-    + d.checks.map(c => `<tr class="${c.ok ? "" : "row-bad"}"><td>${where[c.section]} ${c.line}번째 줄</td><td class="num">${esc(c.number)}</td>
+      <td>${a.triggered == null ? "판정 안 함" : a.triggered ? "⚠️ 이상" : "정상"}</td></tr>`).join(""))
+    + list("⚡ 개선 제안", d.draft.suggestions) + (d.problems.length ? list("검토 지적", d.problems) : "")
+    // 5) 근거·전체 집계 (접어 둠)
+    + `<details><summary>숫자별 근거 (${d.checks.length}개)</summary>`
+    + table(`<th>위치</th><th class="num">초안</th><th class="num">집계값</th><th>항목</th><th>출처</th><th>결과</th>`,
+      d.checks.map(c => `<tr class="${c.ok ? "" : "row-bad"}"><td>${where[c.section]} ${c.line}번째 줄</td><td class="num">${esc(c.number)}</td>
       <td class="num">${c.id in unit ? val(c.expected, unit[c.id]) : "-"}</td><td class="text">${esc(c.label || c.id || "-")}</td>
-      <td class="text">${esc(c.source || "-")}</td><td>${c.ok ? "✅" : "❌ " + esc(c.reason)}</td></tr>`).join("")
-    + `</tbody></table></div></details>
-      <details><summary>전체 집계 (${d.aggregates.metrics.length}개)</summary><div class="table-wrap"><table>
-      <thead><tr><th>항목</th><th class="num">값</th><th>출처</th></tr></thead><tbody>`
-    + d.aggregates.metrics.map(m => `<tr><td class="text">${esc(m.label)}${m.text ? `: “${esc(m.text)}”` : ""}</td>
-      <td class="num">${val(m.value, m.unit)}</td><td class="text">${esc(m.source)}</td></tr>`).join("")
-    + `</tbody></table></div>${list("참고", d.aggregates.notes)}</details>`;
+      <td class="text">${esc(c.source || "-")}</td><td>${c.ok ? "✅" : "❌ " + esc(c.reason)}</td></tr>`).join(""))
+    + `</details><details><summary>전체 집계 (${agg.metrics.length}개)</summary>`
+    + table(`<th>항목</th><th class="num">값</th><th>출처</th>`,
+      agg.metrics.map(m => `<tr><td class="text">${esc(m.label)}${m.text ? `: “${esc(m.text)}”` : ""}</td>
+      <td class="num">${val(m.value, m.unit)}</td><td class="text">${esc(m.source)}</td></tr>`).join(""))
+    + Object.values(charts).map(c => `<h3>${esc(c.title)} <span class="na">${esc(c.source)}</span></h3>${chartTable(c)}`).join("")
+    + `${list("참고", agg.notes)}</details>`;
+  drawCharts(charts);
 }
+
+// 그래프: 서버가 준 집계값을 그대로 그림 (Chart.js). 표는 맨 아래 "전체 집계"에도 있음
+let reportCharts = [];
+function drawCharts(charts) {
+  reportCharts.forEach(c => c.destroy());
+  reportCharts = [];
+  const css = getComputedStyle($("reportBody")), color = n => css.getPropertyValue(n).trim();
+  const ink = color("--text"), muted = color("--muted"), line = color("--line"), surface = color("--card");
+  const cut = t => t.length > 12 ? t.slice(0, 12) + "…" : t;
+  const barValues = { id: "barValues", afterDatasetsDraw(ch) {   // 가로 막대 끝에 값 표시
+    const g = ch.ctx;
+    g.save(); g.fillStyle = ink; g.font = "600 12px sans-serif"; g.textBaseline = "middle";
+    ch.getDatasetMeta(0).data.forEach((b, i) => g.fillText(num(ch.data.datasets[0].data[i]), b.x + 5, b.y));
+    g.restore();
+  } };
+  for (const box of $("reportBody").querySelectorAll("[data-chart]")) {
+    const c = charts[box.dataset.chart];
+    const values = c.series ? c.series.flatMap(s => s.values) : c.bars.map(b => b.value);
+    if (!values.some(v => v > 0)) { box.innerHTML = '<div class="empty">기록이 없어요.</div>'; continue; }
+    if (!window.Chart) { box.innerHTML = '<div class="empty">그래프를 불러오지 못했어요. 값은 아래 전체 집계에 있어요.</div>'; continue; }
+    const cv = document.createElement("canvas");
+    cv.setAttribute("role", "img");
+    cv.setAttribute("aria-label", `${c.title} 그래프. 값은 아래 전체 집계 표에 있어요.`);
+    box.replaceChildren(cv);
+    const axis = { border: { display: false }, ticks: { color: muted, precision: 0, font: { size: 11 } } };
+    const tip = { callbacks: { label: t => `${c.series ? t.dataset.label + " " : ""}${num(t.raw)}${c.unit}` } };
+    reportCharts.push(new Chart(cv, c.series ? {
+      type: "bar",
+      data: { labels: c.labels, datasets: c.series.map((s, i) => ({ label: s.name, data: s.values, backgroundColor: color(`--s${i + 1}`),
+        borderColor: surface, borderWidth: { top: 2 }, borderRadius: 4, maxBarThickness: 24 })) },
+      options: { maintainAspectRatio: false, animation: false, interaction: { mode: "index", intersect: false },
+        scales: { x: { ...axis, stacked: true, grid: { display: false } }, y: { ...axis, stacked: true, beginAtZero: true, grid: { color: line } } },
+        plugins: { legend: { align: "start", labels: { color: ink, boxWidth: 10, boxHeight: 10 } }, tooltip: tip } },
+    } : {
+      type: "bar",
+      data: { labels: c.bars.map(b => b.label), datasets: [{ data: c.bars.map(b => b.value), backgroundColor: color("--s1"), borderRadius: 4, maxBarThickness: 20 }] },
+      options: { indexAxis: "y", maintainAspectRatio: false, animation: false, layout: { padding: { right: 32 } },
+        scales: { x: { display: false, beginAtZero: true },
+          y: { border: { display: false }, grid: { display: false }, ticks: { color: ink, font: { size: 12 }, callback(v) { return cut(this.getLabelForValue(v)); } } } },
+        plugins: { legend: { display: false }, tooltip: tip } },
+      plugins: [barValues],
+    }));
+  }
+}
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (report?.aggregates) drawCharts(report.aggregates.charts); });
+
 // 날짜: 어제(기본)·오늘은 누르는 순간의 한국 날짜, 직접 고르면 그 날짜. 다시 만들기는 지금 초안의 날짜
 let reportAgo = 1;   // 1 어제, 0 오늘, null 직접 선택
 const kstDay = ago => new Date(Date.now() + 9 * 3600e3 - ago * 86400e3).toISOString().slice(0, 10);

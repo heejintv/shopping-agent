@@ -25,6 +25,13 @@ FAIL_KINDS = {"token": "로그인·토큰", "limit": "AI 사용량 한도", "tim
 BAD_OUTCOMES = {"error": "오류", "rejected": "검사(validate) 거부", "ask_cancelled": "되물음 후 취소",
                 "approve_cancelled": "승인 카드 취소", "cannot": "할 수 없다는 답변",
                 "search_cancelled": "검색 확인에서 취소", "too_many": "반복 한도 초과"}
+# ⚡ 기능 그래프에 보일 도구 (결과 찾기·찜 확인·되묻기는 중간 단계라 뺌)
+TOOL_NAMES = {"add_favorite": "찜", "remove_favorite": "찜 빼기", "compare_favorites": "비교", "search": "검색",
+              "open_favorites": "목록 열기", "logout": "로그아웃"}
+CARDS = ("search.total", "action.total", "search.avg_sec", "search.fail_rate")   # 화면 맨 위 숫자 카드
+# 요약 1줄(사용량)·2줄(성능)에 있어야 하는 근거
+USAGE_KEYS = ("search.total", "search.ok", "search.cached", "chat.total", "action.total", "gemini.calls", "users.limited")
+PERF_KEYS = ("search.avg_sec", "search.fail_rate", "search.failed")
 # 이상 징후 규칙: (id, 이름, 보는 값, 비교, 기준값, 단위)
 RULES = (
     ("rule.fail_rate", "검색 실패율", "search.fail_rate", ">", 10, "%"),
@@ -135,6 +142,32 @@ def judge(metrics: list[dict]) -> list[dict]:
     return out
 
 
+def build_charts(rows: list[dict], searches, chats, cmds, metrics: list[dict], last_hour: int) -> dict:
+    """화면 그래프 값 (AI에는 보내지 않음)."""
+    def hourly(rs):
+        n = Counter(_when(r).hour for r in rs)
+        return [n[h] for h in range(last_hour + 1)]
+
+    ms = [r["duration_ms"] for r in searches if r.get("status") == "ok" and isinstance(r.get("duration_ms"), (int, float))]
+    tools = Counter(t for r in cmds if isinstance(r.get("tools"), list) for t in r["tools"] if t in TOOL_NAMES)
+    bars = lambda pairs: [{"label": k, "value": n} for k, n in pairs]   # noqa: E731
+    return {
+        "hourly": {"title": "시간대별 사용량", "unit": "회", "source": "usage_logs created_at(KST), action",
+                   "labels": [f"{h}시" for h in range(last_hour + 1)],
+                   "series": [{"name": "검색", "values": hourly(searches)}, {"name": "상담", "values": hourly(chats)},
+                              {"name": "⚡", "values": hourly(cmds)}]},
+        "queries": {"title": "인기 검색어 TOP 5", "unit": "회", "source": "query.top1~5",
+                    "bars": bars((m["text"], m["value"]) for m in metrics if m["id"].startswith("query.top"))},
+        "tools": {"title": "많이 쓴 ⚡ 기능", "unit": "회", "source": "usage_logs tools",
+                  "bars": bars((TOOL_NAMES[t], n) for t, n in tools.most_common()),
+                  "missing": sum(1 for r in cmds if r.get("status") == "ok" and not isinstance(r.get("tools"), list))},
+        "latency": {"title": "새 검색 응답 시간 분포", "unit": "회", "source": "usage_logs action=search, status=ok, duration_ms",
+                    "bars": bars((("30초 미만", sum(v < 30000 for v in ms)),
+                                  ("30~60초", sum(30000 <= v < 60000 for v in ms)),
+                                  ("60초 이상", sum(v >= 60000 for v in ms))))},
+    }
+
+
 def build(rows: list[dict], events: list[dict], now: datetime, truncated: bool = False, gemini_limit: int = 0,
           day: date | None = None) -> dict:
     start, end = period(now, day)
@@ -225,7 +258,8 @@ def build(rows: list[dict], events: list[dict], now: datetime, truncated: bool =
     if not gemini_limit:
         notes.append("GEMINI_DAILY_LIMIT이 없어 Gemini 사용률은 판정하지 않음")
     return {"date": start.date().isoformat(), "label": label, "generated_at": now.astimezone(KST).isoformat(timespec="seconds"),
-            "metrics": metrics, "anomalies": anomalies, "notes": notes}
+            "metrics": metrics, "anomalies": anomalies, "notes": notes, "cards": list(CARDS),
+            "charts": build_charts(rows, searches, chats, cmds, metrics, end.hour if label else 23)}
 
 
 # ---------- 초안 정리·숫자 대조 ----------
@@ -259,6 +293,20 @@ def missing_anomalies(draft: dict, agg: dict) -> list[str]:
     """판정된 이상 징후 중 초안의 anomalies에 (실제값·기준값 근거를 한 줄에 같이) 안 쓴 것."""
     return [f"이상 징후 빠짐: {a['text']}" for a in agg.get("anomalies") or [] if a["triggered"]
             and not any(f"[{a['metric']}]" in line and f"[{a['id']}]" in line for line in draft["anomalies"])]
+
+
+def bad_summary(draft: dict, agg: dict) -> list[str]:
+    """요약 순서(사용량 → 성능 → 할 일)와 잘 안 된 명령을 요약에 쓰지 않았는지."""
+    lines, known = draft["summary"], {m["id"]: m["value"] for m in agg["metrics"]}
+    cited = [set(re.findall(r"\[([a-z]+\.[a-z0-9_]+)\]", line)) for line in lines]
+    out = []
+    if not cited[0] & set(USAGE_KEYS):
+        out.append("summary 1번째 줄: 사용량(검색·상담·⚡ 명령 수)이 근거와 함께 있어야 함")
+    if any(known.get(k) is not None for k in PERF_KEYS[:2]) and not cited[1] & set(PERF_KEYS):
+        out.append("summary 2번째 줄: 성능(평균 응답 시간·실패율)이 근거와 함께 있어야 함")
+    out += [f"summary {i}번째 줄: 잘 안 된 명령은 이상 징후·개선 제안에만 쓰기" for i, c in enumerate(cited, 1)
+            if any(k.startswith(("action.bad", "action.failed")) for k in c)]
+    return out
 
 
 NO_SUGGESTION = "제안 없음"

@@ -480,7 +480,7 @@ python make_demo.py   # cache/ → demo/ 복사 (검색 비용 등 내부 정보
 |---|---|---|---|
 | `profiles` | `id`(auth 사용자 id), `email`, `role`(`user` 기본 / `admin`), `created_at` | 자기 행만 읽기·수정. **`role`·`id`는 못 바꿈** (열 단위 권한으로 `email`만 수정 허용) | 가입하면 트리거(`handle_new_user`)가 자동으로 한 줄 생성. admin 지정은 SQL Editor에서만 |
 | `favorites` | `user_id`, `item_key`(브랜드+모델), `item`(상품 정보 JSON, 8KB 이하), `query`(검색어), `created_at` | 자기 행만 읽기·추가·삭제. 넣을 수 있는 열도 제한 (`created_at`은 서버 시각만) | 화면이 `supabase-js`로 직접 |
-| `usage_logs` | `user_id`, `email`, `action`(search/chat/compare), `query`(검색어 또는 질문 원문, 300자), `engine`, `status`(ok·cached·limited·cancelled·timeout·error), `duration_ms`, `tokens`(Gemini 사용 토큰), `outcome`(⚡ 결과 종류), `error_kind`(검색 실패 종류), `log_id`, `exempt`, `created_at` | 자기 기록만 읽기, admin은 전체 읽기. **쓰기·수정·삭제 불가** | 서버만 (SERVICE 키) |
+| `usage_logs` | `user_id`, `email`, `action`(search/chat/compare), `query`(검색어 또는 질문 원문, 300자), `engine`, `status`(ok·cached·limited·cancelled·timeout·error), `duration_ms`, `tokens`(Gemini 사용 토큰), `outcome`(⚡ 결과 종류), `error_kind`(검색 실패 종류), `tools`(⚡ 실행한 도구), `log_id`, `exempt`, `created_at` | 자기 기록만 읽기, admin은 전체 읽기. **쓰기·수정·삭제 불가** | 서버만 (SERVICE 키) |
 
 - admin 확인은 `public.is_admin()` 함수(security definer)로 해서 RLS 안에서 `profiles`를 다시 읽다가 꼬이지 않게 했어요.
 - 탈퇴(auth 사용자 삭제)하면 세 표의 행이 함께 지워집니다 (`on delete cascade`).
@@ -539,7 +539,7 @@ admin 계정으로 로그인하면 헤더에 **🛠 관리자** 버튼이 보입
 python -m unittest discover -s tests -v
 ```
 
-Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니다. 현재 **277개** 통과 (crewai가 없는 Python 3.14에서는 Crew 테스트 20개를 건너뜀).
+Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니다. 현재 **296개** 통과 (crewai가 없는 Python 3.14에서는 Crew 테스트 22개를 건너뜀).
 
 | 파일 | 확인하는 것 |
 |---|---|

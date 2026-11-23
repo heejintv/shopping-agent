@@ -266,10 +266,35 @@ class NewColumnTest(unittest.TestCase):
         self.assertEqual(req.call_count, 1)
 
     def test_read_falls_back(self):
-        with mock.patch.object(members, "select_rows", side_effect=[members.MemberError("x", 400), ([], False)]) as sel, \
+        with mock.patch.object(members, "select_rows", side_effect=[members.MemberError("x", 400)] * 2 + [([], False)]) as sel, \
                 self.assertLogs(members.log, "WARNING"):
             members.usage_between(*dr.yesterday(NOW))
         self.assertNotIn("outcome", sel.call_args[0][1]["select"])
+
+    def test_only_tools_column_missing_keeps_outcome(self):
+        sent = []
+
+        def req(method, path, params=None, body=None, extra=None):
+            sent.append(body)
+            if "tools" in body:
+                raise members.MemberError("x", 400)
+
+        with mock.patch.object(members, "_request", side_effect=req), self.assertLogs(members.log, "WARNING"):
+            members.log_usage("u", "e", "chat", "ok", outcome="waiting", log_id="L", tools=["search"])
+            members.update_outcome("L", "ok", tools=["search"])
+        self.assertEqual((sent[1]["outcome"], sent[1]["log_id"]), ("waiting", "L"))
+        self.assertEqual(sent[3], {"outcome": "ok"})
+        with mock.patch.object(members, "select_rows", side_effect=[members.MemberError("x", 400), ([], False)]) as sel, \
+                self.assertLogs(members.log, "WARNING"):
+            members.usage_between(*dr.yesterday(NOW))
+        self.assertTrue(sel.call_args[0][1]["select"].endswith("outcome,error_kind"))
+
+    def test_empty_tools_saved(self):
+        with mock.patch.object(members, "_request") as req:
+            members.log_usage("u", "e", "chat", "ok", tools=[])
+            members.log_usage("u", "e", "search", "ok")
+        self.assertEqual(req.call_args_list[0][1]["body"]["tools"], [])
+        self.assertNotIn("tools", req.call_args_list[1][1]["body"])
 
     def test_update(self):
         with mock.patch.object(members, "_request") as req:
@@ -333,6 +358,84 @@ def triggered(agg):
 
 
 HITS = triggered(dr.build(ROWS, EVENTS, NOW))   # 이 날의 이상 징후: 초안에 꼭 있어야 함
+class ChartTest(unittest.TestCase):
+    def charts(self, rows=ROWS, **kw):
+        return dr.build(rows, [], NOW, **kw)["charts"]
+
+    def values(self, chart):
+        return {b["label"]: b["value"] for b in chart["bars"]}
+
+    def test_hourly_matches_totals(self):
+        agg = dr.build(ROWS, EVENTS, NOW)
+        h, v = agg["charts"]["hourly"], values(agg)
+        self.assertEqual((len(h["labels"]), h["labels"][0], h["labels"][-1]), (24, "0시", "23시"))
+        sums = {s["name"]: sum(s["values"]) for s in h["series"]}
+        self.assertEqual(sums, {"검색": v["search.total"], "상담": v["chat.total"], "⚡": v["action.total"]})
+        search = h["series"][0]["values"]
+        self.assertEqual((search[0], search[10], search[23]), (1, 7, 1))
+        self.assertEqual(h["series"][2]["values"][12], 2)
+
+    def test_hour_is_kst(self):
+        r = row("11-19 10:00", created_at="2026-11-19T01:30:00+00:00")   # KST 10:30
+        self.assertEqual(self.charts([r])["hourly"]["series"][0]["values"][10], 1)
+
+    def test_today_stops_at_now(self):
+        h = self.charts([row("11-20 08:00")], day=date(2026, 11, 20))["hourly"]
+        self.assertEqual((h["labels"][-1], len(h["series"][0]["values"])), ("9시", 10))
+
+    def test_queries_same_as_metrics(self):
+        agg = dr.build(ROWS, EVENTS, NOW)
+        got = [(b["label"], b["value"]) for b in agg["charts"]["queries"]["bars"]]
+        self.assertEqual(got, [("마우스", 2), ("아이폰 16", 1)])
+        self.assertEqual(len(self.charts([row("11-19 10:00", query=f"q{i}") for i in range(7)])["queries"]["bars"]), 5)
+
+    def test_latency_edges(self):
+        rows = [row("11-19 10:00", duration_ms=m) for m in (29999, 30000, 59999, 60000, 90000)]
+        rows += [row("11-19 10:00", status="cached", duration_ms=5), row("11-19 10:00", status="error", duration_ms=99999)]
+        self.assertEqual(self.values(self.charts(rows)["latency"]), {"30초 미만": 1, "30~60초": 2, "60초 이상": 2})
+
+    def test_tools(self):
+        cmd = lambda tools, **kw: row("11-19 10:00", "chat", query="[실행] x", tools=tools, **kw)   # noqa: E731
+        rows = [cmd(["find_in_results", "add_favorite"]), cmd(["add_favorite"]), cmd(["compare_favorites", "ask_user"]),
+                cmd([]), cmd(None), cmd(["unknown"]), row("11-19 10:00", "chat", tools=["search"])]
+        t = self.charts(rows)["tools"]
+        self.assertEqual(self.values(t), {"찜": 2, "비교": 1})   # 중간 단계·모르는 도구·⚡ 아닌 기록은 뺌
+        self.assertEqual(t["bars"][0]["label"], "찜")            # 많은 순
+        self.assertEqual(t["missing"], 1)
+
+    def test_empty(self):
+        c = self.charts([])
+        self.assertEqual((c["queries"]["bars"], c["tools"]["bars"]), ([], []))
+        self.assertEqual(sum(self.values(c["latency"]).values()), 0)
+
+    def test_cards_and_mask(self):
+        agg = dr.build([row("11-19 10:00", query="kim@a.com")], [], NOW)
+        self.assertEqual(agg["cards"], ["search.total", "action.total", "search.avg_sec", "search.fail_rate"])
+        self.assertTrue(set(agg["cards"]) <= set(values(agg)))
+        self.assertEqual(agg["charts"]["queries"]["bars"][0]["label"], "[이메일]")
+
+    def test_page_order(self):
+        html = (ROOT / "admin.html").read_text(encoding="utf-8")
+        at = [html.index(s) for s in ("agg.cards.map", 'class="report-charts"', 'list("AI 요약"', 'list("이상 징후"',
+                                      'list("⚡ 개선 제안"', "<details><summary>숫자별 근거", "<details><summary>전체 집계")]
+        self.assertEqual(at, sorted(at))
+
+
+class SummaryTest(unittest.TestCase):
+    def bad(self, *lines):
+        return dr.bad_summary({"summary": list(lines)}, dr.build(ROWS, EVENTS, NOW))
+
+    def test_order(self):
+        use, perf = "검색 9회[search.total]", "평균 3초[search.avg_sec]"
+        self.assertEqual(self.bad(use, perf, "할 일"), [])
+        self.assertEqual(len(self.bad(perf, use, "할 일")), 2)
+        self.assertEqual(len(self.bad(use, perf, "1회[action.bad] 확인")), 1)
+
+    def test_no_performance_data(self):
+        agg = dr.build([], [], NOW)
+        self.assertEqual(dr.bad_summary({"summary": ["검색 0회[search.total]", "기록 없음", "할 일 없음"]}, agg), [])
+
+
 class RankTest(unittest.TestCase):
     """"N위"는 같은 줄의 근거 키 순위와 맞으면 통과. SUGGESTIONS는 실제로 받은 초안의 개선 제안 3줄."""
 
@@ -429,7 +532,7 @@ class CrewTest(unittest.TestCase):
     def test_today_label_sent_to_ai(self):
         agg = dr.build(ROWS, EVENTS, NOW, day=date(2026, 11, 20))
         line = f'{agg["label"]} 검색 1회[search.total]'
-        text = json.dumps({"summary": [line, "a", "b"], "anomalies": [], "suggestions": []}, ensure_ascii=False)
+        text = json.dumps({"summary": [line, "평균 2초[search.avg_sec]", "b"], "anomalies": [], "suggestions": []}, ensure_ascii=False)
         with mock.patch.object(gemini, "chat_gemini", side_effect=[text, PASS]) as chat, mock.patch.object(stats, "record_engine"):
             out = report_crew.run(agg)
         self.assertEqual(out["verdict"], "검토 통과")
@@ -462,12 +565,25 @@ class CrewTest(unittest.TestCase):
         agg_rows = [row("11-19 10:00", "chat", query="[실행] " + t, outcome=o)
                     for t, o, n in RankTest.COMMANDS for _ in range(n)]
         agg = dr.build(agg_rows, [], NOW)
-        d = {"summary": ["잘 안 된 명령 3회[action.bad]", "가", "나"], "anomalies": ["특이 사항 없음"],
+        d = {"summary": ["⚡ 명령 3회[action.total]", "가", "나"], "anomalies": ["특이 사항 없음"],
              "suggestions": RankTest.SUGGESTIONS}
         with mock.patch.object(gemini, "chat_gemini", side_effect=[json.dumps(d, ensure_ascii=False), PASS]), \
                 mock.patch.object(stats, "record_engine"):
             out = report_crew.run(agg)
         self.assertEqual((out["verdict"], out["calls"]), ("검토 통과", 2), out["problems"])
+
+    def test_charts_not_sent_to_ai(self):
+        self.run_crew([OK, PASS])
+        for s in ('"charts"', "30초 미만", "usage_logs tools"):
+            self.assertNotIn(s, "".join(self.prompts))
+        self.assertIn("사용량 → 성능 → 할 일", self.prompts[0])
+
+    def test_wrong_summary_order_sent_back(self):
+        d = draft(extra=HITS)
+        d["summary"] = d["summary"][::-1]
+        out = self.run_crew([json.dumps(d, ensure_ascii=False), OK, PASS])
+        self.assertEqual((out["verdict"], out["fixes"]), ("검토 통과", 1))
+        self.assertIn("summary 1번째 줄: 사용량", self.prompts[1])
 
     def test_prompt_examples(self):
         self.run_crew([OK, PASS])

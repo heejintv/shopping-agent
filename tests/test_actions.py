@@ -637,7 +637,7 @@ class OutcomeTest(StepBase):
     def setUp(self):
         super().setUp()
         self.updates = []
-        mock.patch.object(members, "update_outcome", side_effect=lambda i, o: self.updates.append((i, o))).start()
+        mock.patch.object(members, "update_outcome", side_effect=lambda i, o, tools=None: self.updates.append((i, o, tools))).start()
 
     def play(self, outs, *resumes, **kw):
         self.llm.outs = list(outs)
@@ -689,6 +689,38 @@ class OutcomeTest(StepBase):
     def test_error_first_and_later(self):
         self.assertEqual(self.play([EngineError("x", 503)]), "error")
         self.assertEqual(self.play([self.ASK, EngineError("x", 503)], {"response": {"answer": "1. A"}}), "error")
+
+    def tools(self):
+        return self.updates[0][2] if self.updates else self.logs[0]["tools"]
+
+    def test_tools_recorded(self):
+        ok = {"response": {"ok": True}}
+        self.play([call("find_in_results", {"description": "키보드"}), self.ADD, text("찜했어요.")], {"approved": True}, ok)
+        self.assertEqual(self.logs[0]["tools"], ["find_in_results"])   # 멈췄을 때까지
+        self.assertEqual(self.tools(), ["find_in_results", "add_favorite"])
+        self.play([call("open_favorites"), text("열었어요.")], ok)
+        self.assertEqual(self.tools(), ["open_favorites"])
+        self.play([call("logout")], {"approved": True}, sentence="로그아웃해줘")
+        self.assertEqual(self.tools(), ["logout"])
+
+    def test_tools_not_recorded_when_not_executed(self):
+        self.play([self.ADD], {"approved": False})
+        self.assertEqual(self.tools(), [])
+        self.play([call("add_favorite", {"number": 0}), text("x")])                    # 거부
+        self.assertEqual(self.tools(), [])
+        self.play([call("open_favorites"), text("x")], {"response": {"error": "실패"}})   # 화면 실행 실패
+        self.assertEqual(self.tools(), [])
+        self.play([self.ADD, text("x")], {"approved": True}, {"response": {"ok": True, "already": True}})
+        self.assertEqual(self.tools(), [])
+
+    def test_tools_kept_on_later_error(self):
+        self.play([call("open_favorites"), EngineError("x", 503)], {"response": {"ok": True}})
+        self.assertEqual(self.tools(), ["open_favorites"])
+        self.play([call("get_favorites"), EngineError("x", 503)])
+        self.assertEqual(self.tools(), ["get_favorites"])
+
+    def test_response_has_no_tools(self):
+        self.assertNotIn("tools", self.start().get_json())
 
     def test_left_alone_stays_waiting(self):
         self.assertEqual(self.play([self.ASK]), "waiting")

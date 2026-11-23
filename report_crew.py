@@ -104,7 +104,7 @@ def _ask_json(budget: dict, *args) -> dict:
     return gemini.extract_json(_ask(*args))
 
 
-WRITER = {"role": "운영 보고서 작성자", "goal": "집계값만 근거로 짧고 정확한 일일 운영 보고서를 쓴다",
+WRITER = {"role": "운영 보고서 작성자", "goal": "집계값만 근거로 사용량·성능 중심의 짧고 정확한 일일 운영 보고서를 쓴다",
           "backstory": "쇼핑 가격비교 서비스 Pickit의 운영 담당자. 모든 숫자에 근거를 남긴다. 한국어로 쓴다."}
 REVIEWER = {"role": "숫자 검토자", "goal": "보고서의 모든 숫자를 aggregates와 대조해 틀린 곳을 찾는다",
             "backstory": "꼼꼼한 감사 담당자. 숫자가 맞아도 다른 항목의 값을 끌어다 썼으면 틀린 것으로 본다."}
@@ -112,7 +112,10 @@ REVIEWER = {"role": "숫자 검토자", "goal": "보고서의 모든 숫자를 a
 
 def _write(crewai, llm, budget, agg_json: str, draft=None, problems=None) -> dict:
     text = f"""aggregates의 date 하루치 운영 보고서를 써라. label이 있으면 아직 진행 중인 날이니 기준 시각을 label 그대로만 쓰고 하루 전체로 단정하지 마라.
-- summary: 요약 정확히 3줄
+- summary: 요약 정확히 3줄. 순서는 사용량 → 성능 → 할 일
+  첫째 줄: 사용량 (search.total·chat.total·action.total 등)
+  둘째 줄: 성능 (search.avg_sec·search.fail_rate)
+  셋째 줄: 위 사용량·성능에서 바로 이어지는 할 일. 잘 안 된 명령(action.bad·action.failed)은 요약에 쓰지 않는다
 - anomalies: aggregates의 anomalies 중 triggered가 true인 것을 하나도 빠짐없이 한 줄에 하나씩. 그 항목의 text에 있는 실제값과 기준값을 근거 id까지 그대로 쓴다.
   규칙 판정은 이미 끝났으니 다른 이상 징후를 만들지 않는다. 하나도 없으면 "특이 사항 없음" 한 줄
 - suggestions: ⚡ 명령 개선 제안. action.bad_top으로 시작하는 문장과 그 이유(label 괄호)를 근거로 쓴다 (없으면 "제안 없음" 한 줄).
@@ -180,7 +183,7 @@ def run(agg: dict) -> dict:
                 raise format_error
             draft = daily_report.clean_draft(data)
             checks = daily_report.check_numbers(draft, agg)
-            problems = [f"{c['section']} {c['line']}번째 줄 {c['number'] or c['id']}: {c['reason']}"
+            problems = daily_report.bad_summary(draft, agg) + [f"{c['section']} {c['line']}번째 줄 {c['number'] or c['id']}: {c['reason']}"
                         for c in checks if not c["ok"]] + daily_report.missing_anomalies(draft, agg) + daily_report.bad_suggestions(draft)
         except (EngineError, ValueError) as e:
             problems = [f"초안 형식이 잘못됨: {e}"]   # 앞선 초안이 있으면 그대로 둠
