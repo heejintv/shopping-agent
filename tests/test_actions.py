@@ -320,25 +320,48 @@ class FavoritesToolsTest(GraphBase):
 # ---------- compare_favorites: 서버가 비교, 화면은 기존 AI 비교 창 ----------
 
 class CompareTest(GraphBase):
-    def test_compare_effect(self):
+    def test_compare_opens_window_via_wait_client(self):
+        """2개면 서버가 비교 → 화면(wait_client)에 비교 창 열기 → opened: true를 받은 뒤에야 Gemini가 답함."""
         out = self.start(FakeLLM(call("compare_favorites", {"condition": "에어팟"}), text("에어팟 4가 더 나아요.")),
                          sentence="에어팟 찜한 거 비교해줘", favorites=FAVS)
-        self.assertEqual(out["type"], "text")
-        eff = out["effects"]
-        self.assertEqual(len(eff), 1)
-        self.assertEqual((eff[0]["type"], eff[0]["keys"], eff[0]["answer"], eff[0]["pick_id"]),
-                         ("compare", ["k-pro2", "k-4"], self.answer.return_value["answer"], 1))
-        self.assertEqual([i["source"] for i in eff[0]["items"]], ["favorite", "favorite"])
+        self.assertEqual(out["type"], "interrupt")
+        p = out["pending"]
+        self.assertEqual((p["kind"], p["call"]["name"]), ("client", "compare_favorites"))
+        c = p["compare"]
+        self.assertEqual([i["key"] for i in c["items"]], ["k-pro2", "k-4"])
+        self.assertEqual(c["items"][0]["model"], "에어팟 프로 2")                     # 상품 데이터를 직접 (찜에만 있어도)
+        self.assertEqual(c["items"][0]["price"], 299000)
+        self.assertEqual((c["answer"], c["pick_id"]), (self.answer.return_value["answer"], 1))
+        self.assertEqual(len(self.llm.seen), 1)                                       # 열기 전엔 Gemini 답 없음
         a = self.answer.call_args
-        self.assertTrue(a.args[3])                                               # 기존 1:1 비교 모드
-        self.assertEqual([p["model"] for p in a.args[1]["products"]], ["에어팟 프로 2", "에어팟 4"])
-        self.assertEqual(self.llm.last_response()["response"]["recommended"], "애플 에어팟 4")
+        self.assertTrue(a.args[3])                                                    # 기존 1:1 비교 모드
+        out = self.resume({"response": {"opened": True}})
+        self.assertEqual(out["type"], "text")
+        resp = self.llm.last_response()["response"]
+        self.assertTrue(resp["opened"])
+        self.assertEqual(resp["recommended"], "애플 에어팟 4")
+        self.assertIn("실제로 열었어요", resp["note"])
+        self.assertEqual(out["trail"], ["agent", "validate", "server_tool", "wait_client", "agent", "END"])
+
+    def test_open_failed_says_reason_without_gemini(self):
+        self.start(FakeLLM(call("compare_favorites", {"condition": "에어팟"}), text("AI 비교 창을 열었어요.")), favorites=FAVS)
+        out = self.resume({"response": {"opened": False, "reason": "상품 이름이 없어요"}})
+        self.assertEqual(out["type"], "text")
+        self.assertEqual(out["text"], "비교 창을 열지 못했어요: 상품 이름이 없어요")   # "열었어요"라고 말하지 않음
+        self.assertEqual(len(self.llm.seen), 1)
+        self.start(FakeLLM(call("compare_favorites", {"condition": "에어팟"}), text("x")), favorites=FAVS)
+        out = self.resume({"response": {}})                                           # opened가 없으면 실패
+        self.assertEqual(out["text"], "비교 창을 열지 못했어요: 화면에서 결과를 받지 못했어요")
+
+    def test_prompt_says_only_when_opened(self):
+        self.assertIn("opened: true가 있을 때만", actions.SYSTEM)
+        self.assertIn("opened(true/false)", actions.TOOLS["compare_favorites"][0])
 
     def test_needs_two(self):
         out = self.start(FakeLLM(call("compare_favorites", {"condition": "키보드"}), text("2개 이상 필요해요")),
                          favorites=FAVS)
         self.assertEqual(self.llm.last_response()["response"], {"error": actions.NEED_TWO, "matched": 1})
-        self.assertEqual(out["effects"], [])
+        self.assertEqual(out["type"], "text")
         self.answer.assert_not_called()
 
     def test_page_uses_same_compare_function(self):
@@ -347,9 +370,15 @@ class CompareTest(GraphBase):
             i = html.index(start)
             return html[i:html.index("\n}\n", i)]
         self.assertIn("compareWithAI(cmpItems", html[html.index('$("cmpAsk").addEventListener("click"'):])
-        effect = block("function applyEffect(")
-        self.assertIn("compareWithAI(cmp,", effect)
-        for name in ("function applyEffect(", "async function compareWithAI("):
+        tool = block("async function openCompareTool(")
+        self.assertIn("compareWithAI(cmp,", tool)                                    # 비교 버튼과 같은 함수
+        self.assertIn("opened: true", tool)
+        self.assertIn("opened: false, reason", tool)
+        self.assertIn("console.warn", tool)                                           # 실패 사유를 콘솔에
+        self.assertIn('$("cmpSheet").classList.contains("open")', tool)              # 실제로 열렸는지 확인
+        self.assertIn("wishList.find(w => w.key === it.key)", tool)
+        self.assertIn('p.call?.name === "compare_favorites" && p.compare', html)
+        for name in ("async function openCompareTool(", "async function compareWithAI("):
             for bad in ("chatReset", 'chatLog").innerHTML', 'openSheet("wishSheet")', "renderWishSheet"):
                 self.assertNotIn(bad, block(name), (name, bad))
 
@@ -763,10 +792,10 @@ class ShortCompareTest(GraphBase):
         out = self.start(FakeLLM(call("compare_favorites", {"condition": "버즈 프로"}), text("버즈3 프로가 나아요.")),
                          sentence="버즈 프로 vs 버즈2", results=BUDS_RESULTS,
                          favorites=[{**BUDS_FAV[0], "model": "갤럭시 버즈2 프로"}])
-        self.assertEqual(out["type"], "text")
-        eff = out["effects"][0]
-        self.assertEqual(eff["keys"], ["f-buds2", "r-pro"])                    # 찜 먼저, 그다음 결과
-        self.assertEqual([i["source"] for i in eff["items"]], ["favorite", "results"])
+        self.assertEqual(out["pending"]["kind"], "client")                     # 선택 버튼 없이 바로 비교 창 열기
+        items = out["pending"]["compare"]["items"]
+        self.assertEqual([i["key"] for i in items], ["f-buds2", "r-pro"])       # 찜 먼저, 그다음 결과
+        self.assertEqual([i["source"] for i in items], ["favorite", "results"])
         self.assertEqual([p["model"] for p in self.answer.call_args.args[1]["products"]], ["갤럭시 버즈2 프로", "삼성 갤럭시 버즈3 프로"])
 
     def test_three_or_more_choose_two(self):
@@ -782,10 +811,13 @@ class ShortCompareTest(GraphBase):
         self.assertEqual([c["id"] for c in p["choices"]], ["f-buds2", "r-pro", "r-fe"])
         self.answer.assert_not_called()                                         # 고르기 전엔 비교 안 함
         out = self.resume({"response": {"selected": ["r-fe", "f-buds2"]}})
+        self.assertEqual(out["pending"]["kind"], "client")                     # 고른 뒤 비교 → 비교 창 열기도 화면에서
+        self.assertEqual([i["key"] for i in out["pending"]["compare"]["items"]], ["r-fe", "f-buds2"])
+        out = self.resume({"response": {"opened": True}})
         self.assertEqual(out["type"], "text")
-        self.assertEqual(out["effects"][0]["keys"], ["r-fe", "f-buds2"])
-        self.assertEqual(out["trail"], ["agent", "validate", "server_tool", "wait_client", "agent", "END"])
+        self.assertEqual(out["trail"], ["agent", "validate", "server_tool", "wait_client", "wait_client", "agent", "END"])
         self.assertEqual(self.llm.last_response()["name"], "compare_favorites")
+        self.assertTrue(self.llm.last_response()["response"]["opened"])
 
     def test_bad_choice_asks_again(self):
         """후보에 없는 ID는 버리고 1개만 남음 → 같은 선택 버튼을 다시 (남은 1개는 선택된 채), Gemini는 안 부름."""
@@ -798,14 +830,14 @@ class ShortCompareTest(GraphBase):
         self.assertEqual(len(self.llm.seen), 1)
         self.answer.assert_not_called()
         out = self.resume({"response": {"selected": ["r-fe", "r-pro"]}})
-        self.assertEqual(out["effects"][0]["keys"], ["r-fe", "r-pro"])
+        self.assertEqual([i["key"] for i in out["pending"]["compare"]["items"]], ["r-fe", "r-pro"])
 
     def test_one_or_less_not_enough(self):
         out = self.start(FakeLLM(call("compare_favorites", {"condition": "에어팟"}), text("부족해요")),
                          results=BUDS_RESULTS, favorites=BUDS_FAV)
         self.assertEqual(self.llm.last_response()["response"], {"error": actions.NEED_TWO, "matched": 1})
         self.assertIn("비교할 상품이 부족해요", actions.NEED_TWO)
-        self.assertEqual(out["effects"], [])
+        self.assertEqual(out["type"], "text")
 
     def test_prompts(self):
         import chat
@@ -821,8 +853,8 @@ class ShortCompareTest(GraphBase):
         self.assertIn("} else if (p.multi) {", html)
         body = html[html.index("function askMulti("):]
         self.assertIn("pendingAsk.multi = choices", body[:4000])                # 입력으로도 고름
-        eff = html[html.index("function applyEffect("):html.index("function applyEffect(") + 1200]
-        self.assertIn("fromResult", eff)                                        # 결과에만 있는 상품도 비교 창에
+        tool = html[html.index("async function openCompareTool("):html.index("async function openCompareTool(") + 1500]
+        self.assertIn("shownResult?.products", tool)                            # 결과에만 있는 상품도 비교 창에
 
 
 # ---------- ask_user 여러 개 선택 ----------

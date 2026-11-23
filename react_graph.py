@@ -252,32 +252,44 @@ def compare_items(state, condition: str) -> list[dict]:
     return out
 
 
-def run_compare(items: list[dict]) -> tuple[dict, list]:
-    """두 상품을 기존 1:1 비교(chat.answer 비교 모드, 숫자는 compare.py 검증)로 추천 → (Gemini에 줄 결과, 화면 effects)."""
+COMPARE_OPENED_NOTE = ("화면이 AI 비교 창을 실제로 열었어요 (opened: true). analysis(숫자 확인된 비교)를 보고 "
+                       "추천 상품과 이유를 2~3문장으로 전해 주세요.")
+COMPARE_OPEN_FAILED = "비교 창을 열지 못했어요: {reason}"
+
+
+def run_compare(items: list[dict]) -> tuple[dict, dict | None]:
+    """두 상품을 기존 1:1 비교(chat.answer 비교 모드, 숫자는 compare.py 검증)로 추천
+    → (Gemini에 줄 결과, 화면이 비교 창에 넣을 값 {items(상품 데이터 그대로), answer, pick_id}) 또는 (오류, None).
+    비교 창은 아직 안 열림: wait_client에서 화면이 열고 opened로 알려 줌."""
     cmp = chat.clean_compare({"products": items})
     if cmp is None:
-        return {"error": actions.NEED_TWO, "matched": len(items)}, []
+        return {"error": actions.NEED_TWO, "matched": len(items)}, None
     ans = compare_answer("두 상품을 비교해서 더 나은 하나를 추천해줘", cmp, [], True)
     names = [i["name"] for i in items]
     pick = ans.get("pick_id")
-    resp = {"ok": True, "compared": names, "recommended": names[pick] if isinstance(pick, int) and 0 <= pick < 2 else None,
-            "analysis": ans["answer"],
-            "note": "화면에 AI 비교 창이 열렸어요. analysis(숫자 확인된 비교)를 보고 추천 상품과 이유를 2~3문장으로 전해 주세요."}
-    shown = [{k: i[k] for k in ("key", "brand", "model", "price", "currency", "store", "rating", "review_count", "pros",
-                                "cons", "query", "source")} for i in items]
-    effect = {"type": "compare", "keys": [i["key"] for i in items], "items": shown, "answer": ans["answer"], "pick_id": pick}
-    return resp, [effect]
+    pick = pick if isinstance(pick, int) and 0 <= pick < 2 else None
+    resp = {"compared": names, "recommended": names[pick] if pick is not None else None, "analysis": ans["answer"]}
+    shown = [{k: i[k] for k in ("key", "brand", "model", "name", "price", "currency", "store", "rating", "review_count",
+                                "pros", "cons", "query", "source")} for i in items]
+    return resp, {"items": shown, "answer": ans["answer"], "pick_id": pick}
 
 
-def compare_favorites(state, condition: str) -> tuple[dict | None, list, dict | None, list]:
-    """→ (결과, effects, 기다릴 일, 후보). 맞는 상품이 정확히 2개면 바로 비교, 3개 이상이면 2개 고르는 선택 버튼(choose),
-    1개 이하면 "비교할 상품이 부족해요"."""
+def open_compare_pending(args: dict, payload: dict) -> dict:
+    """비교 창 열기는 화면에서 (wait_client): 찜 목록에만 있는 상품도 열 수 있게 상품 데이터를 직접 넘김."""
+    return {"kind": "client", "call": {"name": "compare_favorites", "args": args}, "compare": payload}
+
+
+def compare_favorites(state, condition: str) -> tuple[dict | None, dict | None, list, dict | None]:
+    """→ (결과, 기다릴 일, 후보, 비교 결과). 맞는 상품이 정확히 2개면 바로 비교하고 화면에 비교 창 열기(wait_client),
+    3개 이상이면 2개 고르는 선택 버튼(choose), 1개 이하면 "비교할 상품이 부족해요"."""
     items = compare_items(state, condition)
     if len(items) < 2:
-        return {"error": actions.NEED_TWO, "matched": len(items)}, [], None, items
+        return {"error": actions.NEED_TWO, "matched": len(items)}, None, items, None
     if len(items) == 2:
-        resp, effects = run_compare(items)
-        return {**resp, "matched": 2}, effects, None, items
+        resp, payload = run_compare(items)
+        if payload is None:
+            return resp, None, items, None
+        return None, open_compare_pending({"condition": condition}, payload), items, {**resp, "matched": 2}
     shown = items[:MAX_CHOICES]
     pending = {"kind": "choose", "pick": 2, "matched": len(items), "multi": True, "min_select": 2, "max_select": 2,
                "submit_label": "비교하기",
@@ -287,7 +299,7 @@ def compare_favorites(state, condition: str) -> tuple[dict | None, list, dict | 
                "options": [{"key": i["key"], "name": i["name"], "price": i["price"], "currency": i["currency"],
                             "source": i["source"]} for i in shown],
                "choices": [{"id": i["key"], "label": i["name"]} for i in shown], "selected": []}
-    return None, [], pending, shown
+    return None, pending, shown, None
 
 
 # ---------- 여러 개 선택 (ask_user min/max_select, compare 후보 2개) ----------
@@ -407,10 +419,10 @@ def server_tool(state: State) -> dict:
     elif name == "get_favorites":
         resp = get_favorites(state)
     elif name == "compare_favorites":
-        resp, effects, pending, items = compare_favorites(state, args.get("condition") or "")
+        resp, pending, items, result = compare_favorites(state, args.get("condition") or "")
         _log("compare_favorites %s → %s", args, [(i["name"], i["source"]) for i in items])
-        if pending:   # 3개 이상: 화면에서 2개 고르기 (wait_client)
-            return {"call": {**call, "items": items}, "pending": pending, "trail": ["server_tool"]}
+        if pending:   # 2개: 화면에서 비교 창 열기 / 3개 이상: 화면에서 2개 고르기 (둘 다 wait_client)
+            return {"call": {**call, "items": items, "result": result}, "pending": pending, "trail": ["server_tool"]}
     else:   # add_favorite: 대상 찾기 + 중복 찜 확인 → 승인으로
         product, err = resolve_add(state, args)
         if err:
@@ -451,11 +463,24 @@ def wait_client(state: State) -> dict:
         v = value if isinstance(value, dict) else {}
     if v.get("cancelled"):   # ask_user 대기 중 새 명령 등: 이 명령은 끝
         return {"final": "", "cancelled": True, "call": None, "pending": None, "trail": ["wait_client"]}
-    if pending.get("kind") == "choose":   # 비교할 2개를 고름 → 여기서 바로 비교
+    if pending.get("kind") == "choose":   # 비교할 2개를 고름 → 비교하고, 비교 창 열기를 다시 화면에 (wait_client 한 번 더)
         items = {i["key"]: i for i in state["call"].get("items") or []}
-        resp, effects = run_compare([items[k] for k in picked])
-        return {"messages": _respond(state, "compare_favorites", resp), "effects": effects, "call": None,
-                "pending": None, "trail": ["wait_client"]}
+        resp, payload = run_compare([items[k] for k in picked])
+        if payload is None:
+            return {"messages": _respond(state, "compare_favorites", resp), "call": None, "pending": None,
+                    "trail": ["wait_client"]}
+        return {"call": {**state["call"], "result": resp}, "trail": ["wait_client"],
+                "pending": open_compare_pending(state["call"]["args"], payload)}
+    if pending.get("compare"):   # 화면이 비교 창을 열었는지: 열었을 때만 Gemini가 "열었어요"라고 말함
+        r = v.get("response") or {}
+        if r.get("opened") is not True:
+            reason = _s(r.get("reason"), 200) or "화면에서 결과를 받지 못했어요"
+            _log("compare_favorites 비교 창 열기 실패: %s", reason)
+            return {"final": COMPARE_OPEN_FAILED.format(reason=reason), "call": None, "pending": None,
+                    "trail": ["wait_client"]}
+        resp = {**(state["call"].get("result") or {}), "opened": True, "note": COMPARE_OPENED_NOTE}
+        return {"messages": _respond(state, "compare_favorites", resp), "call": None, "pending": None,
+                "trail": ["wait_client"]}
     if pending.get("multi"):   # ask_user 여러 개 선택 → answers
         return {"messages": _respond(state, "ask_user", {"answers": picked}), "call": None, "pending": None,
                 "trail": ["wait_client"]}
@@ -495,7 +520,9 @@ def after_approve(state: State) -> str:
 
 
 def after_wait(state: State) -> str:
-    return END if state.get("cancelled") else "agent"
+    if state.get("cancelled") or state.get("final") is not None:
+        return END                                          # 취소, 비교 창 열기 실패
+    return "wait_client" if state.get("pending") else "agent"   # 비교할 2개를 고른 뒤 → 비교 창 열기
 
 
 def build(checkpointer=None):
@@ -510,7 +537,7 @@ def build(checkpointer=None):
     g.add_conditional_edges("validate", after_validate, ["agent", "server_tool", "wait_client"])
     g.add_conditional_edges("server_tool", after_server_tool, ["approve", "wait_client", "agent"])
     g.add_conditional_edges("approve", after_approve, ["wait_client", END])
-    g.add_conditional_edges("wait_client", after_wait, ["agent", END])
+    g.add_conditional_edges("wait_client", after_wait, ["agent", "wait_client", END])
     return g.compile(checkpointer=checkpointer or MemorySaver())
 
 

@@ -76,7 +76,7 @@ TOOLS = {
     "compare_favorites": (
         "두 상품을 1:1로 비교해서 하나 추천한다. condition은 짧은 이름이면 충분하다 (예: 버즈, 에어팟, 로지텍). "
         "서버가 찜 목록과 지금 검색 결과에서 맞는 상품을 찾아: 정확히 2개면 바로 비교, 3개 이상이면 화면에 2개 고르는 선택 버튼, "
-        "1개 이하면 \"비교할 상품이 부족해요\". 화면에 AI 비교 창이 열리고 추천이 보인다 (찜 목록 창은 열지 않음). "
+        "1개 이하면 \"비교할 상품이 부족해요\". 화면이 AI 비교 창을 열고 결과에 opened(true/false)를 돌려준다 (찜 목록 창은 열지 않음). "
         "사용자에게 긴 상품명을 다시 입력하라고 하지 말고 이 함수를 바로 써라.",
         {"type": "object", "properties": {"condition": {**_STR, "description": "짧은 조건 (예: 버즈). 없으면 빈 문자열 = 찜 목록 전체"}}}, True),
     "ask_user": (
@@ -114,6 +114,7 @@ SYSTEM = f"""너는 쇼핑 사이트 Pickit의 실행 도우미야. 사용자 �
 - "방금/최근에/마지막으로 찜한" 상품은 get_favorites 결과에서 saved_at이 가장 최근인 상품(찜 번호 1)이야.
 - "○○ 비교해줘/○○ vs ○○/뭐가 나아" 같은 비교 명령은 바로 compare_favorites(condition="짧은 이름")를 써.
   상품명을 길게 다시 입력해 달라고 하지 마 (후보가 여럿이면 서버가 선택 버튼을 보여 줌).
+- compare_favorites 결과에 opened: true가 있을 때만 "비교 창을 열었어요"라고 말해. 열었다는 말을 지어내지 마.
 - 찜한 상품 비교는 compare_favorites 하나로 끝내. 그 전에 찜 목록 창(open_favorites)을 열거나 search를 하지 마.
 - 여러 개를 골라야 하면 ask_user에 min_select·max_select를 줘 (예: 2개 비교 → min_select=2, max_select=2).
   결과의 answers가 고른 것들이야.

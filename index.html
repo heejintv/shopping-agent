@@ -1943,19 +1943,39 @@ const favoritesByRecent = () => [...wishList].sort((a, b) => wishTime(b) - wishT
 const jo = (w, pair) => window.josa ? window.josa(w, pair) : w + pair.split("/")[1];
 const q = w => `“${w}”`;   // 따옴표 안 이름에 조사를 붙일 때: jo(q(name), "을/를")
 
-// 서버가 "화면에서 하라"고 한 일 (effects): AI 비교 창 열기 — 비교 버튼과 같은 compareWithAI
-function applyEffect(e) {
-  if (e?.type !== "compare") return null;
-  // 찜한 상품은 찜 목록 그대로, 검색 결과에만 있는 상품은 서버가 보낸 값(+ 화면 결과의 링크)으로
-  const fromResult = it => {
-    const p = (shownResult?.products || []).find(x => wishKey(x) === it.key);
-    return { ...it, brand: it.brand || p?.brand || "", model: p?.model || it.model, url: p ? productUrl(p) : null };
+// compare_favorites (wait_client): 비교 버튼과 같은 compareWithAI로 AI 비교 창을 실제로 열고, 열렸는지 서버에 알려 줌
+// 상품 데이터는 서버가 직접 보냄 → 찜 목록에만 있고 지금 결과에 없는 상품도 열 수 있음 (찜에 있으면 찜 목록 값, 링크는 결과에서)
+async function openCompareTool(pending) {
+  const c = pending.compare || {};
+  const fail = reason => {
+    console.warn("[⚡ compare_favorites] 비교 창을 열지 못했어요:", reason, c);   // 브라우저 콘솔에 실패 사유
+    return { resume: { response: { opened: false, reason } }, summary: `비교 창 실패: ${reason}` };
   };
-  const cmp = (e.keys || []).map((k, n) => wishList.find(w => w.key === k) || (e.items?.[n] ? fromResult(e.items[n]) : null));
-  if (!cmp.every(Boolean) || cmp.length !== 2) return null;
-  const i = Number.isInteger(e.pick_id) && cmp[e.pick_id] ? e.pick_id : null;
-  compareWithAI(cmp, async () => ({ text: e.answer, pick: i })).catch(() => {});
-  return { pid: i ?? 0, onPick: k => openCompare(cmp, k), label: "👉 비교 화면에서 보기" };
+  const items = Array.isArray(c.items) ? c.items : [];
+  if (items.length !== 2) return fail(`상품이 2개가 아니에요 (${items.length}개)`);
+  const cmp = items.map(it => {
+    const saved = wishList.find(w => w.key === it.key);
+    if (saved) return saved;
+    const p = (shownResult?.products || []).find(x => wishKey(x) === it.key);
+    return { ...it, brand: it.brand || p?.brand || "", model: p?.model || it.model || it.name, url: p ? productUrl(p) : null };
+  });
+  const bad = cmp.find(w => !w || !w.model);
+  if (bad !== undefined) return fail("상품 이름이 없어요");
+  const pick = Number.isInteger(c.pick_id) && cmp[c.pick_id] ? c.pick_id : null;
+  try {
+    await compareWithAI(cmp, async () => ({ text: c.answer || "", pick }));
+  } catch (err) {
+    return fail(err?.message || String(err));
+  }
+  if (!$("cmpSheet").classList.contains("open") || cmpItems !== cmp) return fail("비교 창이 화면에 열리지 않았어요");
+  const names = cmp.map(productLabel);
+  return {
+    resume: { response: { opened: true } },
+    summary: `비교 창 열기 (${names.join(" vs ")})`,
+    message: c.answer || "",
+    see: { pid: pick ?? 0, onPick: k => openCompare(cmp, k), label: "👉 비교 화면에서 보기" },
+    targets: names,
+  };
 }
 
 // 여러 개 선택 (ask_user min/max_select, compare_favorites 후보 2개) → {selected: [id…]} | {cancelled}
@@ -2114,7 +2134,7 @@ async function runAct(sentence, opts = {}) {
   chatBusy = true; chatSetEnabled();
   let body = { sentence, recent: actHistory, results: resultsForServer(), query: shownResult?.query || "",
     favorites: favoritesForServer(), removed: recentlyRemoved.map(favForServer) };
-  let cmd = null, wait = null, applied = 0, trail = [];
+  let cmd = null, wait = null, trail = [];
   let message = "", see = null;    // 마지막 실행의 대신 보일 문구·보기 링크 (최종 답 말풍선에 붙임)
   const calls = [], targets = [];  // 이 명령의 요약 (다음 명령에 "최근 ⚡ 명령"으로 보냄)
   const show = (extra = "") => actLogLine([trail.join(" → "), extra].filter(Boolean).join(" · "));   // 지난 노드 순서
@@ -2136,12 +2156,6 @@ async function runAct(sentence, opts = {}) {
       if (!res.ok) throw new Error(data.error || "문장으로 실행하지 못했어요. 버튼으로 해 주세요.");
       cmd = data.cmd || cmd;
       trail = Array.isArray(data.trail) ? data.trail : trail;
-      for (const e of (data.effects || []).slice(applied)) {   // AI 비교 창 열기 등
-        const s = applyEffect(e);
-        if (s) { see = s; message = e.answer || message; }
-        if (e?.keys) targets.push(...(e.keys.map(k => wishList.find(w => w.key === k)).filter(Boolean).map(productLabel)));
-      }
-      applied = (data.effects || []).length;
       show();
       if (data.type === "text") {   // END: 말풍선은 최종 답 하나. 비어 있으면 그때만 앱 문구로 대신
         if (data.cancelled) return;
@@ -2163,6 +2177,9 @@ async function runAct(sentence, opts = {}) {
         if (c.byButton) chatAdd("info", p.kind === "choose" ? "비교를 취소했어요." : "선택을 취소했어요.");
         r = c.cancelled ? { resume: { cancelled: true }, summary: "취소됨" }
           : { resume: { response: { selected: c.selected } }, summary: `${c.selected.length}개 선택` };
+      } else if (p.call?.name === "compare_favorites" && p.compare) {   // 비교 창 열기
+        r = await openCompareTool(p);
+        if (r.targets) targets.push(...r.targets);
       } else {
         r = await runClientTool(p, text => show(`${callLabel(p.call?.name, p.call?.args)} → ${text}`));
       }
