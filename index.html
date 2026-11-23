@@ -310,7 +310,9 @@
   .pros li::marker { color: var(--value); }
   .cons li::marker { color: var(--bad); }
   .meta { color: var(--muted); font-size: 12px; margin-top: 14px; }
-  .nolink { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  a.find-link, .pick .go a.find-link { display: inline-block; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px;
+    background: var(--soft); color: var(--muted); font-size: 12px; font-weight: 500; text-decoration: none; white-space: nowrap; }
+  a.find-link:hover, .pick .go a.find-link:hover { color: var(--text); text-decoration: none; }
   a.uv-link, .pick .go a.uv-link { color: var(--muted); text-decoration: underline dashed; text-underline-offset: 3px; white-space: nowrap; }
   a.uv-link small { font-size: 11px; }
   a.uv-link:hover { color: var(--text); }
@@ -900,7 +902,14 @@ const hasRating = p => typeof p.rating === "number";
 const hasPrice = p => typeof p.price === "number";
 // 서버가 검증한 상품 페이지 링크만 버튼으로 보여줌. 검증 실패면 "링크 확인 안 됨"
 const productUrl = p => p && p.url_verified !== false ? safeUrl(p.url) : null;
-const NOLINK = '<span class="nolink">링크 확인 안 됨</span>';
+// 상품 링크를 끝까지 못 찾은 상품: 네이버쇼핑 검색 주소 + 상품명으로 회색 '쇼핑몰에서 찾기' (진짜 상품 링크와 구분)
+const findUrl = p => "https://search.shopping.naver.com/search/all?query=" + encodeURIComponent(`${p.brand || ""} ${p.model || ""}`.trim());
+const findLink = p => `<a class="find-link" href="${esc(findUrl(p))}" target="_blank" rel="noopener noreferrer" title="상품 페이지 링크를 찾지 못해 네이버쇼핑 검색으로 열어요">쇼핑몰에서 찾기</a>`;
+const hasLink = p => !!(productUrl(p) || unverifiedUrl(p));
+// 요약 줄에 null·URL 같은 개발 용어가 섞인 메모(예전 저장 결과)는 쉬운 말로 바꿈
+const DEV_WORDS = /\b(?:null|none|undefined|nan|n\/a|urls?|json|true|false)\b/i;
+const cleanNotes = (notes, items) => !notes || !DEV_WORDS.test(notes) ? notes
+  : items.some(p => !hasLink(p)) ? "상품 링크를 찾지 못했어요" : null;
 // 확인 불가: 서버에서 그 쇼핑몰이 차단돼 열어 보지 못한 링크 → 회색 '상품 보기 (미확인)', 누르기 전에 안내
 const UV_TIP = "서버에서 확인하지 못한 링크예요";
 const unverifiedUrl = p => p && p.url_status === "unverifiable" ? safeUrl(p.url) : null;
@@ -1475,6 +1484,15 @@ $("sort").addEventListener("click", e => {
   renderTable();
 });
 
+// 요약 줄 메모: 개발 용어는 빼고, 링크 없는 상품이 있으면 "N개 상품은 상품 링크를 찾지 못했어요"
+function noLinkNote(notes, items) {
+  const clean = cleanNotes(notes, items);
+  const n = items.filter(p => !hasLink(p)).length;
+  const line = n ? `${n === items.length ? "모든" : n + "개"} 상품은 상품 링크를 찾지 못했어요` : "";
+  if (!line) return clean;
+  return clean && clean !== "상품 링크를 찾지 못했어요" ? `${clean} · ${line}` : line;
+}
+
 function render(d) {
   const items = d.products || [];
   chatReset(items.length ? d : null);
@@ -1493,7 +1511,7 @@ function render(d) {
   $("reqCond").style.display = cond ? "block" : "none";
   $("meta").textContent = [
     d.cached ? `저장된 결과 (검색 시각 ${fmtTime(d.searched_at)})` : `방금 검색함 (${d.elapsed_sec}초)`,
-    d.notes, "가격은 수시로 바뀌니 구매 전 링크에서 다시 확인하세요.",
+    noLinkNote(d.notes, items), "가격은 수시로 바뀌니 구매 전 링크에서 다시 확인하세요.",
   ].filter(Boolean).join(" · ");
 
   // 조건에 맞는 상품이 없을 때: 지어낸 결과 대신 안내만
@@ -1558,7 +1576,7 @@ function render(d) {
       ${whyHtml}
       ${url ? `<div class="go"><a href="${esc(url)}" target="_blank" rel="noopener noreferrer">상품 보기 →</a></div>`
             : unverifiedUrl(p) ? `<div class="go">${uvLink(unverifiedUrl(p), "상품 보기")}</div>`
-            : p ? `<div class="go">${NOLINK}</div>` : ""}</div>`;
+            : p ? `<div class="go">${findLink(p)}</div>` : ""}</div>`;
   }).join("");
 
   current = { items, cheapest, valueP, qualityP, max: Math.max(...priced.map(p => p.price), 1) };
@@ -1603,7 +1621,7 @@ function renderTable() {
       <td class="rating rating-col" data-label="별점">${rating}</td>
       <td class="pc-cell" data-label="장점">${list(p.pros, "pros", DASH)}</td>
       <td class="pc-cell" data-label="단점">${list(p.cons, "cons", DASH)}</td>
-      <td class="link">${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">상품 보기</a>` : unverifiedUrl(p) ? uvLink(unverifiedUrl(p), "상품 보기") : NOLINK}</td></tr>`;
+      <td class="link">${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">상품 보기</a>` : unverifiedUrl(p) ? uvLink(unverifiedUrl(p), "상품 보기") : findLink(p)}</td></tr>`;
   }).join("") || `<tr class="filter-empty"><td colspan="7">필터 조건에 맞는 상품이 없어요 · <button type="button" class="text-btn" data-act="reset-filter">필터 초기화</button></td></tr>`;
   restoreAiBadge();   // 정렬로 표를 다시 그려도 "AI 추천" 배지 유지
 }
@@ -2762,7 +2780,7 @@ function openCompare(items, pickIndex = null) {
         <dt>별점</dt><dd class="${higher ? "win" : ""}">${fmtRating(w) ?? NA}${higher ? winTag("더 높음") : ""}</dd>
         <dt>장점</dt><dd>${list(w.pros, "pros")}</dd>
         <dt>단점</dt><dd>${list(w.cons, "cons")}</dd>
-        <dt>링크</dt><dd>${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">상품 보기 →</a>` : NOLINK}</dd>
+        <dt>링크</dt><dd>${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">상품 보기 →</a>` : findLink(w)}</dd>
       </dl></div>`;
   };
   $("cmpBody").innerHTML = col(a, b, 0) + '<div class="cmp-vs">VS</div>' + col(b, a, 1);

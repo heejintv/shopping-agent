@@ -201,12 +201,15 @@ SCHEMA = {
 PROMPT = """상품 "{q}"의 한국 쇼핑몰(다나와·네이버쇼핑·쿠팡 등) 가격을 비교해.
 - 웹 검색은 최대 3번. 다나와 같은 가격비교 사이트 위주로 찾아.
 - 인기 상위 5개 모델만: price(원, 숫자), store, rating(5점), review_count, pros/cons(각 1~2개), url.
-- url: 다나와 상품 상세(prod.danawa.com/info/?pcode=...) 또는 쇼핑몰의 그 상품 상세 페이지만. 검색·목록 페이지는 안 됨.
+- url: 그 상품 하나의 상세 페이지 주소. 기획전·이벤트·카테고리·검색·목록 페이지는 안 됨.
+  쇼핑몰 여러 곳에서 찾아: 쿠팡(coupang.com/vp/products/...), 11번가(11st.co.kr/products/...),
+  G마켓(item.gmarket.co.kr/Item?goodscode=...), 네이버쇼핑(smartstore.naver.com/.../products/... 또는 search.shopping.naver.com/catalog/...),
+  다나와 상품 상세(prod.danawa.com/info/?pcode=...). 한 곳에서 못 찾으면 다른 쇼핑몰에서 찾아.
   웹페이지 읽기로 실제로 열어서 확인한 주소만 쓰고, 추측해서 만들지 마. 확인 못 하면 null.
 - 확인 못 한 값은 null(목록은 빈 배열). 지어내지 마.
 - value_pick(가성비)·quality_pick(품질): products의 model 이름 그대로 + 이유 한 줄. 근거 없으면 null.
 - 이유(reason, fit_reason)는 "~해요", "~예요"로 끝나는 문장으로 써. "~있음", "~함", "~다", "~입니다" 같은 끝맺음은 쓰지 마.
-- notes: 주의사항 한 문장 또는 null.
+- notes: 주의사항 한 문장 또는 null. null·URL·JSON 같은 개발 용어는 쓰지 마.
 """
 
 # 사용자가 조건을 입력했을 때만 프롬프트 뒤에 붙임
@@ -219,7 +222,8 @@ CONDITION_PROMPT = """
 
 # 검증에 실패한 상품만 모아서 링크를 다시 찾게 하는 지시 (재시도는 한 번만)
 RETRY_PROMPT = """아래 상품들의 상세 페이지 주소를 찾아.
-- 다나와 상품 상세(prod.danawa.com/info/?pcode=...) 또는 쇼핑몰의 그 상품 상세 페이지만. 검색·목록 페이지는 안 됨.
+- 그 상품 하나의 상세 페이지만. 기획전·이벤트·카테고리·검색·목록 페이지는 안 됨.
+- 쿠팡·11번가·G마켓·네이버쇼핑(스마트스토어 상품·가격비교 카탈로그)·다나와 상품 상세 중 열리는 곳 아무 데나.
 - 웹페이지 읽기로 직접 열어서 제목에 모델명이 있는 걸 확인한 주소만. 추측해서 만들지 마. 못 찾으면 null.
 - 웹 검색은 상품당 1번 이내.
 {items}
@@ -508,6 +512,29 @@ def retry_links(failed: list[dict], engine: str, job: Job | None = None) -> floa
     return out.get("cost_usd")
 
 
+def has_link(p: dict) -> bool:
+    """화면에 '상품 보기'로 나올 링크가 있음: 확인된 상세 페이지, 또는 차단돼 확인 못 한 링크(미확인)."""
+    return bool(p.get("url")) and (p.get("url_verified") is not False or p.get("url_status") == "unverifiable")
+
+
+def few_links(products: list[dict]) -> bool:
+    """링크 있는 상품이 절반 미만이면 True → 같은 검색 안에서 링크만 한 번 더 찾는다."""
+    return bool(products) and sum(has_link(p) for p in products) * 2 < len(products)
+
+
+DEV_WORDS = re.compile(r"(?<![a-z])(?:null|none|undefined|nan|n/a|url|urls|json|true|false)(?![a-z])", re.I)   # 한글이 바로 붙어도 잡음 ("null이에요")
+NO_LINK_NOTE = "상품 링크를 찾지 못했어요"
+
+
+def clean_notes(data: dict) -> None:
+    """요약 줄(notes)에 null·URL 같은 개발 용어가 있으면 쉬운 말로: 링크 얘기면 '상품 링크를 찾지 못했어요', 아니면 뺌."""
+    notes = data.get("notes")
+    if not isinstance(notes, str) or not DEV_WORDS.search(notes):
+        return
+    products = data.get("products") or []
+    data["notes"] = NO_LINK_NOTE if products and not all(has_link(p) for p in products) else None
+
+
 STEP_LABELS = {"cache": "캐시", "search": "AI 검색", "links": "링크 확인", "retry": "링크 재검색", "finalize": "정리"}
 
 
@@ -536,6 +563,9 @@ def perform_search(q: str, c: str, path: Path, engine: str, step=None, job: Job 
     timings["links"] = (time.time() - t) * 1000
     check()
     t = time.time()
+    if few_links(products):   # 링크가 거의 없으면 링크 없는 상품도 같이 다시 찾기 (재검색은 이번 한 번뿐, 횟수 차감 없음)
+        stats.bump("link_few_retry")
+        failed = failed + [p for p in products if not has_link(p) and all(p is not f for f in failed)]
     if failed:
         stats.bump("link_retries")
         step("links", "링크 다시 찾는 중", len(products) - len(failed), len(products))
@@ -554,6 +584,7 @@ def perform_search(q: str, c: str, path: Path, engine: str, step=None, job: Job 
     t = time.time()
     step("finalize", "결과 정리 중")
     polish_result(data)   # 추천 이유 끝맺음을 "~해요/~예요"로
+    clean_notes(data)
     data["link_retry"] = len(failed)
     data["engine"] = engine
     if engine == "gemini":
