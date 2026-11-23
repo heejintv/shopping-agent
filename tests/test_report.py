@@ -9,6 +9,8 @@ import importlib.util
 import io
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -432,8 +434,69 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual(len(self.bad(use, perf, "1회[action.bad] 확인")), 1)
 
     def test_no_performance_data(self):
-        agg = dr.build([], [], NOW)
-        self.assertEqual(dr.bad_summary({"summary": ["검색 0회[search.total]", "기록 없음", "할 일 없음"]}, agg), [])
+        agg = dr.build([row("11-19 10:00", "chat")], [], NOW)   # 상담만 있는 날
+        self.assertEqual(dr.bad_summary({"summary": ["상담 1회[chat.total]", "기록 없음", "할 일 없음"]}, agg), [])
+
+
+class NoUsageTest(unittest.TestCase):
+    def test_judged_by_python(self):
+        self.assertTrue(dr.build([], EVENTS, NOW)["no_usage"])
+        self.assertTrue(dr.build([row("11-18 10:00")], [], NOW)["no_usage"])   # 다른 날 기록만 있음
+        for r in (row("11-19 10:00", status="limited"), row("11-19 10:00", "chat"), row("11-19 10:00", "chat", query="[실행] x")):
+            self.assertFalse(dr.build([r], [], NOW)["no_usage"])
+
+    def test_only_fixed_sentences(self):
+        ok = dr.NO_USAGE_DRAFT
+        self.assertEqual(dr.no_usage_problems(ok), [])
+        self.assertEqual(dr.no_usage_problems({**ok, "summary": ["사용 기록이 없는 날이에요."]}), [])
+        for bad in ({"summary": ["사용 기록이 없는 날이에요", "시스템 점검이 필요합니다"]}, {"summary": []},
+                    {"anomalies": ["시스템 장애 가능성"]}, {"suggestions": ["사용 없음 → 서버 점검"]}):
+            self.assertEqual(len(dr.no_usage_problems({**ok, **bad})), 1, bad)
+
+    def test_fixed_draft_is_clean(self):
+        self.assertEqual(dr.clean_draft(dr.NO_USAGE_DRAFT, True), dr.NO_USAGE_DRAFT)
+        with self.assertRaises(ValueError):   # 보통 날에는 여전히 3줄
+            dr.clean_draft(dr.NO_USAGE_DRAFT)
+
+
+@unittest.skipUnless(shutil.which("node"), "node 없음")
+class CiteTest(unittest.TestCase):
+    """화면: 근거 키를 숨기고 숫자에 항목 이름 툴팁."""
+
+    def cite(self, text, labels=None):
+        html = (ROOT / "admin.html").read_text(encoding="utf-8")
+        esc = re.search(r"^const esc = .*$", html, re.M).group(0)
+        code = html[html.index("// cite:start"):html.index("// cite:end")]
+        labels = labels if labels is not None else {"search.total": "검색 요청 수", "action.bad_top1": '1위: "<b>"'}
+        p = subprocess.run(["node", "-e", f"{esc}\n{code}\nprocess.stdout.write(citeHtml({json.dumps(text)}, {json.dumps(labels)}))"],
+                           capture_output=True, text=True, timeout=20)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        return p.stdout
+
+    def test_number_gets_tooltip_and_key_hidden(self):
+        out = self.cite("검색은 1,234회[search.total]예요")
+        self.assertNotIn("search.total", out)
+        self.assertIn('data-tip="검색 요청 수"', out)
+        self.assertIn(">1,234회</span>예요", out)
+
+    def test_key_without_number_removed(self):
+        self.assertEqual(self.cite("에어팟 찜해줘[action.bad_top1] 실패"), "에어팟 찜해줘 실패")
+
+    def test_unknown_key_and_escaping(self):
+        self.assertIn("근거를 찾을 수 없음", self.cite("3회[search.nope]"))
+        self.assertIn("근거를 찾을 수 없음", self.cite("3회[a.constructor]", {}))
+        out = self.cite("<img src=x> 1회[action.bad_top1]")
+        self.assertNotIn("<img", out)
+        self.assertNotIn("<b>", out)
+        self.assertIn("&quot;", out)
+
+    def test_plain_text_same(self):
+        self.assertEqual(self.cite("[링크] 열기, 배열[0]"), "[링크] 열기, 배열[0]")
+
+    def test_server_keeps_original(self):
+        d = draft()
+        dr.check_numbers(d, dr.build(ROWS, EVENTS, NOW))
+        self.assertIn("[search.total]", d["summary"][0])
 
 
 class RankTest(unittest.TestCase):
@@ -585,6 +648,30 @@ class CrewTest(unittest.TestCase):
         out = self.run_crew([json.dumps(d, ensure_ascii=False), OK, PASS])
         self.assertEqual((out["verdict"], out["fixes"]), ("검토 통과", 1))
         self.assertIn("summary 1번째 줄: 사용량", self.prompts[1])
+
+    def run_no_usage(self, *answers):
+        with mock.patch.object(gemini, "chat_gemini", side_effect=list(answers)) as chat, mock.patch.object(stats, "record_engine"):
+            out = report_crew.run(dr.build([], [], NOW))
+        return out, [c[0][1] for c in chat.call_args_list]
+
+    def test_no_usage_day(self):
+        fixed = json.dumps(dr.NO_USAGE_DRAFT, ensure_ascii=False)
+        out, prompts = self.run_no_usage(fixed, PASS)
+        self.assertEqual((out["verdict"], out["draft"]["summary"]), ("검토 통과", ["사용 기록이 없는 날이에요"]))
+        self.assertIn(fixed, prompts[0])
+        self.assertIn("no_usage가 true면", prompts[1])   # 검토 Agent도 확인
+
+    def test_no_usage_guess_sent_back(self):
+        fixed = json.dumps(dr.NO_USAGE_DRAFT, ensure_ascii=False)
+        guess = json.dumps({"summary": ["검색 0회[search.total]", "기록 없음", "시스템 점검이 필요해요"],
+                            "anomalies": ["특이 사항 없음"], "suggestions": ["제안 없음"]}, ensure_ascii=False)
+        out, prompts = self.run_no_usage(guess, fixed, PASS)
+        self.assertEqual((out["verdict"], out["fixes"]), ("검토 통과", 1))
+        self.assertIn("추측 금지", prompts[1])
+
+    def test_normal_day_has_no_usage_rule(self):
+        self.run_crew([OK, PASS])
+        self.assertNotIn("★ Python이", self.prompts[0])
 
     def test_prompt_examples(self):
         self.run_crew([OK, PASS])

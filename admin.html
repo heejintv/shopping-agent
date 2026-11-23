@@ -93,6 +93,11 @@
   .report-chart .plot { position: relative; height: 200px; }
   .report-chart.wide .plot { height: 240px; }
   @media (max-width: 760px) { .report-charts { grid-template-columns: 1fr; } }
+  /* 숫자에 마우스를 올리거나 초점을 주면 근거 항목 이름 */
+  .cite { position: relative; border-bottom: 1px dotted var(--muted); cursor: help; white-space: nowrap; }
+  .cite:hover::after, .cite:focus::after { content: attr(data-tip); position: absolute; left: 0; bottom: calc(100% + 4px); z-index: 5;
+    width: max-content; max-width: min(260px, 70vw); padding: 5px 9px; border-radius: 8px; background: var(--text); color: var(--card);
+    font-size: 12px; font-weight: 500; line-height: 1.4; white-space: normal; }
   .report-tabs { margin-top: 14px; flex-wrap: wrap; }
   .report-tabs button[aria-selected="true"] { background: var(--card); color: var(--accent); box-shadow: var(--shadow); }
   .report-actions { display: flex; gap: 8px; margin-top: 16px; }
@@ -553,9 +558,26 @@ const reportMeta = d => `${d.aggregates.date}${d.aggregates.label ? ` · ${d.agg
   + (d.state === "approved" ? ` · 승인됨 ${fmtTime(d.approved_at)}` : "");
 const approveOk = d => verdictOk(d) || confirm(`검토 결과가 '${d.verdict}'인 보고서예요. 그래도 승인할까요?`);
 
+// 근거 키 숨기기: "12회[search.total]" → 12회 (툴팁에 항목 이름). 서버의 원문·검증 값은 그대로 (화면에서만 바꿈)
+// cite:start (tests/test_report.py가 node로 실행)
+const CITE = /(\d[\d,]*(?:\.\d+)?[^\d\[\]\n]{0,4})?\[([a-z]+\.[a-z0-9_]+)\]/g;
+function citeHtml(text, labels) {
+  let out = "", at = 0;
+  for (const m of String(text ?? "").matchAll(CITE)) {
+    out += esc(text.slice(at, m.index));
+    const tip = Object.hasOwn(labels, m[2]) ? labels[m[2]] : "근거를 찾을 수 없음";
+    if (m[1]) out += `<span class="cite" tabindex="0" data-tip="${esc(tip)}" aria-label="${esc(m[1])} (근거: ${esc(tip)})">${esc(m[1])}</span>`;
+    at = m.index + m[0].length;
+  }
+  return out + esc(String(text ?? "").slice(at));
+}
+// cite:end
+
 // 보고서 하나를 탭으로: 요약(기본) · 그래프 · 이상·제안 · 근거. 긴 표는 근거 탭에만
 function mountReport(root, d) {
-  const list = (title, lines) => `<h3>${title}</h3><ul>${lines.map(x => `<li>${esc(x)}</li>`).join("") || "<li>없음</li>"}</ul>`;
+  const labels = Object.fromEntries(d.aggregates.metrics.map(m => [m.id, m.label + (m.text ? `: “${m.text}”` : "")]));
+  const named = t => String(t ?? "").replace(/\[([a-z]+\.[a-z0-9_]+)\]/g, (_, k) => `“${Object.hasOwn(labels, k) ? labels[k] : "?"}”`);
+  const list = (title, lines) => `<h3>${title}</h3><ul>${lines.map(x => `<li>${citeHtml(x, labels)}</li>`).join("") || "<li>없음</li>"}</ul>`;
   const val = (v, u) => v == null ? "기록 없음" : `${num(v)}${esc(u || "")}`;
   const where = { summary: "요약", anomalies: "이상 징후", suggestions: "⚡ 개선 제안" };
   const agg = d.aggregates, charts = agg.charts;
@@ -583,7 +605,7 @@ function mountReport(root, d) {
     + table(`<th>위치</th><th class="num">초안</th><th class="num">집계값</th><th>항목</th><th>출처</th><th>결과</th>`,
       d.checks.map(c => `<tr class="${c.ok ? "" : "row-bad"}"><td>${where[c.section]} ${c.line}번째 줄</td><td class="num">${esc(c.number)}</td>
       <td class="num">${c.id in unit ? val(c.expected, unit[c.id]) : "-"}</td><td class="text">${esc(c.label || c.id || "-")}</td>
-      <td class="text">${esc(c.source || "-")}</td><td>${c.ok ? "✅" : "❌ " + esc(c.reason)}</td></tr>`).join(""))
+      <td class="text">${esc(named(c.source) || "-")}</td><td>${c.ok ? "✅" : "❌ " + esc(c.reason)}</td></tr>`).join(""))
     + `</details><details><summary>전체 집계 (${agg.metrics.length}개)</summary>`
     + table(`<th>항목</th><th class="num">값</th><th>출처</th>`,
       agg.metrics.map(m => `<tr><td class="text">${esc(m.label)}${m.text ? `: “${esc(m.text)}”` : ""}</td>

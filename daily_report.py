@@ -258,7 +258,8 @@ def build(rows: list[dict], events: list[dict], now: datetime, truncated: bool =
     if not gemini_limit:
         notes.append("GEMINI_DAILY_LIMIT이 없어 Gemini 사용률은 판정하지 않음")
     return {"date": start.date().isoformat(), "label": label, "generated_at": now.astimezone(KST).isoformat(timespec="seconds"),
-            "metrics": metrics, "anomalies": anomalies, "notes": notes, "cards": list(CARDS),
+            "metrics": metrics, "anomalies": anomalies, "notes": notes,
+            "no_usage": not (searches or talk), "cards": list(CARDS),
             "charts": build_charts(rows, searches, chats, cmds, metrics, end.hour if label else 23)}
 
 
@@ -267,13 +268,15 @@ def build(rows: list[dict], events: list[dict], now: datetime, truncated: bool =
 SECTIONS = {"summary": 3, "anomalies": 6, "suggestions": 6}   # 이름: 최대 줄 수
 
 
-def clean_draft(data: dict) -> dict:
+def clean_draft(data: dict, no_usage: bool = False) -> dict:
     """AI가 준 JSON → {summary, anomalies, suggestions} 글자 목록. 요약이 3줄이 아니면 ValueError."""
     out = {}
     for name, n in SECTIONS.items():
         v = data.get(name) if isinstance(data, dict) else None
         lines = v if isinstance(v, list) else [v] if isinstance(v, str) else []
         out[name] = [" ".join(str(x).split())[:400] for x in lines if isinstance(x, (str, int, float)) and str(x).strip()][:n]
+    if no_usage:   # "사용 기록이 없는 날이에요" 한 줄 (내용은 no_usage_problems에서 확인)
+        return out
     if len(out["summary"]) != SECTIONS["summary"]:
         raise ValueError("요약이 3줄이 아니에요.")
     return out
@@ -307,6 +310,16 @@ def bad_summary(draft: dict, agg: dict) -> list[str]:
     out += [f"summary {i}번째 줄: 잘 안 된 명령은 이상 징후·개선 제안에만 쓰기" for i, c in enumerate(cited, 1)
             if any(k.startswith(("action.bad", "action.failed")) for k in c)]
     return out
+
+
+NO_USAGE_DRAFT = {"summary": ["사용 기록이 없는 날이에요"], "anomalies": ["특이 사항 없음"], "suggestions": ["제안 없음"]}
+_SECTION_NAMES = {"summary": "요약", "anomalies": "이상 징후", "suggestions": "개선 제안"}
+
+
+def no_usage_problems(draft: dict) -> list[str]:
+    """사용 기록이 없는 날의 초안이 정해진 문장만 썼는지 (추측 금지)."""
+    return [f"{name}({_SECTION_NAMES[name]}): 사용 기록이 없는 날이라 \"{want[0]}\" 한 줄만 써야 함 (추측 금지)"
+            for name, want in NO_USAGE_DRAFT.items() if [x.rstrip(". ") for x in draft[name]] != want]
 
 
 NO_SUGGESTION = "제안 없음"
