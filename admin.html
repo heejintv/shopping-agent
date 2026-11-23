@@ -254,9 +254,12 @@
         <input class="ghost" id="reportDate" type="date" aria-label="보고서 날짜 선택">
         <button type="button" class="ghost" id="reportMake">보고서 만들기</button>
         <span id="reportVerdict" class="check-res" hidden></span>
+        <button type="button" class="ghost" id="practiceMake">틀린 초안으로 검토 연습</button>
         <span id="manualRun" class="run-note" hidden></span>
         <span id="reportMsg" class="check-detail" aria-live="polite"></span>
       </div>
+      <div class="report-body" id="practiceBody" aria-live="polite" hidden></div>
+      <div class="note" id="reportBlocked" role="status" hidden></div>
       <div class="report-body" id="reportBody" hidden></div>
       <div class="report-actions" id="reportActions" hidden>
         <button type="button" class="primary" id="reportApprove">승인</button>
@@ -544,13 +547,16 @@ function showReport(d) {
   $("reportMake").textContent = d.state === "running" ? "만드는 중…" : "보고서 만들기";
   $("reportBody").hidden = $("reportActions").hidden = $("reportVerdict").hidden = !has;
   if (!has) {
+    $("reportBlocked").hidden = true;
     $("reportMsg").textContent = d.state === "running" ? "집계하고 초안을 쓰고 검토하는 중이에요 (몇 분 걸릴 수 있어요)"
       : d.state === "error" ? "⚠️ " + d.error : "";
     if (d.state === "running") reportTimer = setTimeout(() => reportCall("/admin/report"), 3000);
     return;
   }
   $("reportMsg").textContent = reportMeta(d) + (d.saved === false ? " · ⚠️ Supabase에 저장하지 못함" : "");
-  $("reportApprove").hidden = d.state === "approved";
+  $("reportApprove").hidden = d.state === "approved" || !!d.blocked;
+  $("reportBlocked").hidden = !d.blocked;
+  $("reportBlocked").textContent = d.blocked || "";
   showVerdict($("reportVerdict"), d);
   mountReport($("reportBody"), d);
 }
@@ -683,6 +689,38 @@ async function openEvidence(root, btn) {
 for (const id of ["autoBody", "reportBody"]) {
   $(id).addEventListener("click", e => { const b = e.target.closest("[data-ev]"); if (b) openEvidence($(id), b); });
 }
+
+// ---------- 검토 연습: 숫자 하나를 일부러 틀린 예시 초안 (Gemini·저장 없음) ----------
+$("practiceMake").addEventListener("click", async () => {
+  const btn = $("practiceMake"), box = $("practiceBody");
+  btn.disabled = true;
+  box.hidden = false;
+  box.textContent = "만드는 중…";
+  try {
+    const t = await token();
+    if (!t) return showGate("관리자 계정으로 Pickit에 로그인한 뒤 다시 열어 주세요.");
+    if (base === null && !(await connect())) throw new TypeError();
+    const res = await fetch(base + "/admin/report/practice", { method: "POST", cache: "no-store",
+      headers: { ...baseHeaders, Authorization: `Bearer ${t}` } });
+    const d = await res.json().catch(() => ({}));
+    if (res.status === 401) return showGate("로그인이 만료됐어요. Pickit에서 다시 로그인해 주세요.");
+    if (res.status === 403) return showGate("이 계정은 관리자 권한이 없어요.");
+    if (!res.ok) throw new Error(d.error || `서버 오류 (${res.status})`);
+    const unit = k => esc(d.units[k] || "");
+    box.innerHTML = `<h3>검토 연습 <span class="na">예시 데이터예요. 실제 보고서가 아니고 저장하지 않아요.</span></h3>
+      <ul>${d.draft.summary.map(x => `<li>${esc(x)}</li>`).join("")}</ul>
+      <div class="table-wrap"><table><thead><tr><th>항목</th><th class="num">초안</th><th class="num">실제</th><th>결과</th></tr></thead><tbody>`
+      + d.checks.map(c => `<tr class="${c.ok ? "" : "row-bad"}"><td class="text">${esc(c.label || c.id || "-")}</td>
+        <td class="num">${esc(c.number)}${unit(c.id)}</td><td class="num">${esc(c.expected ?? "-")}${unit(c.id)}</td>
+        <td>${c.ok ? "✅" : "❌ " + esc(c.reason)}</td></tr>`).join("")
+      + `</tbody></table></div><div class="note">${esc(d.message)}</div>
+      <div class="meter-note">${d.logged ? "실행 로그: manual · practice" : "실행 로그에 남기지 못했어요. (report_runs 테이블을 확인하세요)"}</div>`;
+  } catch (e) {
+    box.textContent = e instanceof TypeError ? "서버에 연결할 수 없어요" : "⚠️ " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 // ---------- 가장 최근 실행 (report_runs). 마지막 성공과 다르면 경고 색 ----------
 async function loadRuns() {

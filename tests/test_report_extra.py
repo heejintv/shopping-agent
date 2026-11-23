@@ -122,6 +122,118 @@ class RunLogTest(tc.Base):
         self.assertEqual((d["stale"], d["aggregates"]["date"]), (False, self.yesterday))
 
 
+WRONG = {**tc.CREW, "verdict": "수정 필요", "checks": [
+    {"section": "summary", "line": 1, "number": "8", "id": "search.total", "label": "검색 요청 수", "expected": 9,
+     "source": "s", "ok": False, "reason": "aggregates 값은 9"},
+    {"section": "summary", "line": 2, "number": "3", "id": "search.ok", "label": "새 검색 성공", "expected": 3,
+     "source": "s", "ok": True, "reason": None}]}
+DETAIL = [{"item": "검색 요청 수", "draft": "8", "actual": 9, "unit": "회", "why": "aggregates 값은 9", "section": "요약", "line": 1}]
+
+
+class MismatchTest(tc.Base):
+    def setUp(self):
+        super().setUp()
+        self.crew.side_effect = lambda agg: dict(WRONG)
+
+    def test_auto_not_saved_and_card_keeps_last_success(self):
+        self.db["a" * 16] = {"id": "a" * 16, "date": "2026-01-01", "source": "auto", "status": "draft", "report": dict(tc.CREW),
+                             "created_at": None, "approved_at": None}
+        self.assertEqual(self.cron().get_json()["state"], "error")
+        self.save.assert_not_called()
+        self.assertEqual(self.runs, [("auto", "failed", "mismatch", self.yesterday, DETAIL)])
+        d = self.admin("get", "/auto").get_json()
+        self.assertEqual((d["id"], d["stale"]), ("a" * 16, True))
+        self.crew.side_effect = lambda agg: dict(tc.CREW)   # 다시 부르면 성공할 수 있음
+        self.assertEqual(self.cron().get_json()["state"], "done")
+
+    def test_manual_blocked(self):
+        d = self.admin("post", "").get_json()
+        self.assertEqual((d["state"], d["blocked"]), ("draft", "틀린 숫자가 있어 저장할 수 없어요"))
+        self.assertEqual(self.runs, [("manual", "failed", "mismatch", self.yesterday, DETAIL)])
+        res = self.admin("post", "/approve", json={"id": d["id"]})
+        self.assertEqual((res.status_code, res.get_json()["error"]), (409, "틀린 숫자가 있어 저장할 수 없어요"))
+        self.assertEqual(self.admin("get", "").get_json()["state"], "draft")
+        self.save.assert_not_called()
+        self.assertEqual(list(server.REPORT_DIR.iterdir()), [])
+
+    def test_old_saved_mismatch(self):
+        """예전에 저장된 불일치 자동 보고서: 카드에 안 나오고 승인도 안 됨."""
+        self.db["b" * 16] = {"id": "b" * 16, "date": self.yesterday, "source": "auto", "status": "draft", "report": dict(WRONG),
+                             "created_at": None, "approved_at": None}
+        self.assertEqual(self.admin("get", "/auto").get_json(), {"state": "none"})
+        res = self.admin("post", "/approve", json={"id": "b" * 16})
+        self.assertEqual((res.status_code, self.db["b" * 16]["status"]), (409, "draft"))
+
+    def test_notes_only_is_not_blocked(self):
+        self.crew.side_effect = lambda agg: {**tc.CREW, "verdict": report_crew.PASS_NOTES, "problems": ["문구 지적"]}
+        d = self.admin("post", "").get_json()
+        self.assertNotIn("blocked", d)
+        self.assertEqual(self.admin("post", "/approve", json={"id": d["id"]}).status_code, 200)
+
+    def test_run_text(self):
+        run = {"id": 2, "at": NOW.isoformat(), "status": "failed", "reason": "mismatch", "detail": DETAIL * 3}
+        self.assertEqual(dr.run_summary(run, None, NOW)["text"],
+                         "09:00 실패 · 숫자 불일치 (검색 요청 수 8 → 9 외 2건) → 성공한 보고서 없음")
+
+    def test_detail_for_other_kinds(self):
+        agg = dr.build(tr.ROWS, [], NOW)
+        d = tr.draft("action.bad_top1 9회, 검색 5회[search.nope]")
+        got = [(m["item"], m["draft"], m["actual"]) for m in dr.mismatches(dr.check_numbers(d, agg), agg)]
+        self.assertIn(("잘 안 된 ⚡ 명령 1위 (오류)", "숫자 없음", "해당 없음"), got)   # 내부 키 노출
+        self.assertIn(("근거 없는 숫자", "9", "근거 없음"), got)
+        self.assertIn(("search.nope", "5", "근거 없음"), got)
+
+    def test_detail_column_missing(self):
+        sent = []
+
+        def req(method, path, params=None, body=None, extra=None):
+            sent.append(body or params)
+            if "detail" in (body or {}) or "detail" in (params or {}).get("select", ""):
+                raise members.MemberError("x", 400)
+            return {}, b"[]"
+
+        mock.patch.stopall()
+        with mock.patch.object(members, "_request", side_effect=req), self.assertLogs(members.log, "WARNING"):
+            self.assertTrue(members.log_run("auto", "failed", "mismatch", "2026-11-19", DETAIL))
+            self.assertIsNone(members.last_run("auto"))
+        self.assertEqual(sent[1]["reason"], "mismatch")   # 상세만 빼고 남김
+        self.assertIn("neq.practice", sent[-1]["or"])
+
+
+class PracticeTest(tc.Base):
+    def test_admin_only(self):
+        self.assertEqual(self.admin("post", "/practice", None).status_code, 401)
+        self.assertEqual(self.admin("post", "/practice", "user-token").status_code, 403)
+        self.assertEqual(self.runs, [])
+
+    def test_api(self):
+        with mock.patch.object(gemini, "chat_gemini") as chat, mock.patch.object(report_crew, "available", return_value=False):
+            res = self.admin("post", "/practice")   # crewai 없이도 됨
+        d = res.get_json()
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len([c for c in d["checks"] if not c["ok"]]), 1)
+        chat.assert_not_called()
+        for m in (self.crew, self.save, self.usage):
+            m.assert_not_called()
+        self.assertEqual(server._report, {"state": "none"})
+        self.assertEqual(self.runs, [("manual", "skipped", "practice", None, d["mismatches"])])
+        self.assertFalse(d["logged"])   # 가짜 log_run은 True를 돌려주지 않음
+
+    def test_every_key_makes_exactly_one_error(self):
+        for key in dr.PRACTICE_KEYS:
+            p = dr.practice(NOW, key)
+            bad = [c for c in p["checks"] if not c["ok"]]
+            self.assertEqual([c["id"] for c in bad], [key])
+            self.assertEqual(len(p["checks"]), len(dr.PRACTICE_KEYS))
+            self.assertEqual(len(p["mismatches"]), 1)
+            self.assertAlmostEqual(float(bad[0]["number"]), bad[0]["expected"] + 1)
+
+    def test_page(self):
+        html = (ROOT / "admin.html").read_text(encoding="utf-8")
+        for s in ("틀린 초안으로 검토 연습", "/admin/report/practice", 'id="reportBlocked"', "!!d.blocked"):
+            self.assertIn(s, html)
+
+
 class RunSummaryTest(unittest.TestCase):
     def run_(self, i, hhmm, status, reason=None, day="20"):
         return {"id": i, "at": f"2026-11-{day}T{hhmm}:00+09:00", "status": status, "reason": reason}

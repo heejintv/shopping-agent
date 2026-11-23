@@ -359,11 +359,59 @@ def evidence_period(day: date, until: str | None, now: datetime) -> tuple[dateti
     return start, end
 
 
+# ---------- 숫자 불일치 ----------
+
+MISMATCH_MAX = 20
+
+
+def mismatches(checks: list[dict], agg: dict) -> list[dict]:
+    """틀린 항목: 초안 몇 → 실제 몇 (실행 로그·화면용)."""
+    unit = {m["id"]: m["unit"] for m in agg["metrics"]}
+    where = {"summary": "요약", "anomalies": "이상 징후", "suggestions": "개선 제안"}
+    out = []
+    for c in checks:
+        if c["ok"]:
+            continue
+        none = "근거 없음" if c["label"] is None else "기록 없음"
+        out.append({"item": c["label"] or mask_text(c["id"]) or "근거 없는 숫자", "draft": c["number"] or "숫자 없음",
+                    "actual": "해당 없음" if not c["number"] else none if c["expected"] is None else c["expected"], "unit": unit.get(c["id"], ""),
+                    "why": c["reason"], "section": where[c["section"]], "line": c["line"]})
+    return out[:MISMATCH_MAX]
+
+
+def has_mismatch(report: dict) -> bool:
+    return any(not c.get("ok") for c in report.get("checks") or [])
+
+
+# 연습: 예시 데이터로 만든 초안에서 숫자 하나만 일부러 틀리게 (Gemini·실제 기록 안 씀)
+PRACTICE_KEYS = ("search.total", "chat.total", "action.total", "search.avg_sec", "search.fail_rate")
+
+
+def practice(now: datetime, wrong: str) -> dict:
+    start, _ = yesterday(now)
+    made = lambda n, action, status="ok", **kw: [   # noqa: E731
+        {"created_at": (start + timedelta(hours=10)).isoformat(), "user_id": "practice", "action": action, "status": status,
+         "engine": "claude", "duration_ms": 20000, "query": "예시", **kw} for _ in range(n)]
+    rows = (made(12, "search") + made(1, "search", "error", error_kind="limit") + made(3, "chat")
+            + made(4, "chat", query=ACTION_PREFIX + "예시 명령", outcome="ok", tools=[]))
+    agg = build(rows, [], now)
+    v = {m["id"]: m["value"] for m in agg["metrics"]}
+    v[wrong] = round(v[wrong] + 1, 1)
+    draft = {"summary": [f"검색 {v['search.total']}회[search.total], 상담 {v['chat.total']}회[chat.total], "
+                         f"⚡ 명령 {v['action.total']}회[action.total]",
+                         f"새 검색은 평균 {v['search.avg_sec']}초[search.avg_sec], 실패율 {v['search.fail_rate']}%[search.fail_rate]",
+                         NO_TODO],
+             "anomalies": [NO_USAGE_DRAFT["anomalies"][0]], "suggestions": [NO_SUGGESTION]}
+    checks = check_numbers(draft, agg)
+    return {"practice": True, "draft": draft, "checks": checks, "mismatches": mismatches(checks, agg),
+            "units": {k: next(m["unit"] for m in agg["metrics"] if m["id"] == k) for k in PRACTICE_KEYS}}
+
+
 # ---------- 실행 로그 (report_runs) ----------
 
 RUN_REASONS = {"no_data": "자료 없음", "gemini": "Gemini 오류", "gemini_key": "Gemini 키 오류", "token": "토큰 오류",
                "exists": "이미 있음", "busy": "다른 보고서를 만드는 중", "db": "Supabase 오류", "save": "저장 실패",
-               "crewai": "CrewAI 없음", "other": "기타 오류"}
+               "crewai": "CrewAI 없음", "mismatch": "숫자 불일치", "practice": "연습", "other": "기타 오류"}
 RUN_STATUS = {"ok": "성공", "failed": "실패", "skipped": "건너뜀"}
 
 
@@ -384,6 +432,10 @@ def run_summary(latest: dict | None, last_ok: dict | None, now: datetime, below:
     text = f"{when(latest)[0]} {RUN_STATUS.get(latest.get('status'), '알 수 없음')}"
     if latest.get("reason"):
         text += f" · {RUN_REASONS.get(latest['reason'], RUN_REASONS['other'])}"
+    detail = latest.get("detail")
+    if latest.get("reason") == "mismatch" and isinstance(detail, list) and detail and isinstance(detail[0], dict):
+        d = detail[0]
+        text += f" ({d.get('item')} {d.get('draft')} → {d.get('actual')}{f' 외 {len(detail) - 1}건' if len(detail) > 1 else ''})"
     same = bool(last_ok) and last_ok.get("id") == latest.get("id")
     warn = not same and not (latest.get("status") == "skipped" and latest.get("reason") == "exists")
     if warn:

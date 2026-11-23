@@ -312,6 +312,7 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | `GET /me` | 🔒 로그인한 사람의 등급(`role`)과 오늘 남은 새 검색·상담 횟수, 서버 전체 남은 새 검색 |
 | `POST /admin/report` · `GET /admin/report` | 🔒👑 일일 운영 보고서 만들기(`{date}` 기본 어제, 오늘은 지금까지, 뒤에서 실행) · 상태와 초안 보기 |
 | `GET /admin/report/runs` | 🔒👑 가장 최근 실행 (Supabase `report_runs`) |
+| `POST /admin/report/practice` | 🔒👑 검토 연습 (예시 데이터, Gemini·저장 없음) |
 | `POST /admin/report/evidence` | 🔒👑 근거 숫자를 만든 기록 최대 10건 (개인정보 가림) |
 | `GET /admin/report/auto` | 🔒👑 오늘 아침 자동 보고서 (Supabase `reports`) |
 | `POST·GET /admin/report/cron` | GitHub Actions 전용: 어제 보고서 만들기·상태 (`X-Report-Cron-Token` 헤더, 내용은 돌려주지 않음) |
@@ -545,7 +546,7 @@ admin 계정으로 로그인하면 헤더에 **🛠 관리자** 버튼이 보입
 python -m unittest discover -s tests -v
 ```
 
-Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니다. 현재 **376개** 통과 (crewai가 없는 Python 3.14에서는 Crew 테스트 29개를 건너뜀).
+Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니다. 현재 **387개** 통과 (crewai가 없는 Python 3.14에서는 Crew 테스트 29개를 건너뜀).
 
 | 파일 | 확인하는 것 |
 |---|---|

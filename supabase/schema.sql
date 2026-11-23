@@ -236,3 +236,11 @@ create index if not exists report_runs_latest on public.report_runs (source, id 
 alter table public.report_runs enable row level security;
 revoke all on public.report_runs from anon, authenticated;
 grant select, insert, update on public.report_runs to service_role;
+
+
+-- =====================================================================
+-- 추가분 8: 실행 로그 상세 (파일 전체를 다시 실행해도 됨)
+-- =====================================================================
+
+-- 15) report_runs.detail: 숫자 불일치(reason=mismatch·practice) 내용 [{item, draft, actual, unit, why, section, line}]
+alter table public.report_runs add column if not exists detail jsonb;

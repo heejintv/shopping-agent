@@ -245,28 +245,39 @@ def approve_report(report_id: str, source: str, at: str) -> dict | None:
     return next(iter(_rows(raw)), None)
 
 
-def latest_auto_report() -> dict | None:
-    """가장 최근 날짜의 자동 보고서 (어제 것이 없을 때 대신 보여 줌)."""
-    _, raw = _request("GET", "reports", {"select": "id,date,status,report,created_at,approved_at",
-                                         "source": "eq.auto", "order": "date.desc", "limit": "1"})
+def get_report(report_id: str) -> dict | None:
+    _, raw = _request("GET", "reports", {"select": "id,source,status,report", "id": f"eq.{report_id}", "limit": "1"})
     return next(iter(_rows(raw)), None)
 
 
-def log_run(source: str, status: str, reason: str | None = None, day: str | None = None) -> None:
-    """보고서 실행 시도 한 줄 (report_runs). 실패해도 보고서는 그대로."""
+def recent_auto_reports() -> list[dict]:
+    """최근 날짜순 자동 보고서 (어제 것이 없을 때 마지막 성공본을 찾음)."""
+    _, raw = _request("GET", "reports", {"select": "id,date,status,report,created_at,approved_at",
+                                         "source": "eq.auto", "order": "date.desc", "limit": "10"})
+    return _rows(raw)
+
+
+def log_run(source: str, status: str, reason: str | None = None, day: str | None = None,
+            detail: list[dict] | None = None) -> bool:
+    """보고서 실행 시도 한 줄 (report_runs). 실패해도 보고서는 그대로. detail: 숫자 불일치 내용. 남겼으면 True."""
+    row = {"source": source, "status": status, "reason": reason, "report_date": day}
     try:
-        _request("POST", "report_runs", body={"source": source, "status": status, "reason": reason, "report_date": day},
-                 extra={"Prefer": "return=minimal"})
+        _first_ok(([{**row, "detail": detail}] if detail else []) + [row],
+                  lambda b: _request("POST", "report_runs", body=b, extra={"Prefer": "return=minimal"}))
     except MemberError as e:
         log.warning("report run log failed: %s", e)
+        return False
+    return True
 
 
 def last_run(source: str, status: str | None = None) -> dict | None:
-    """가장 최근 실행 시도 (status를 주면 그 결과 중 최근)."""
-    params = {"select": "id,at,source,status,reason,report_date", "source": f"eq.{source}", "order": "id.desc", "limit": "1"}
+    """가장 최근 실행 시도 (status를 주면 그 결과 중 최근). 연습(practice)은 뺌."""
+    columns = "id,at,source,status,reason,report_date"
+    params = {"or": "(reason.is.null,reason.neq.practice)", "source": f"eq.{source}", "order": "id.desc", "limit": "1"}
     if status:
         params["status"] = f"eq.{status}"
-    _, raw = _request("GET", "report_runs", params)
+    _, raw = _first_ok([columns + ",detail", columns],
+                       lambda c: _request("GET", "report_runs", {**params, "select": c}))
     return next(iter(_rows(raw)), None)
 
 

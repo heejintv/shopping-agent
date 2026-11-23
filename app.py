@@ -1302,6 +1302,7 @@ def admin_stats_api():
 # 만드는 데 몇 분 걸릴 수 있어 뒤에서 돌리고 화면이 GET으로 상태를 물어봄. 워커가 1개라 메모리에 하나만 둠
 
 REPORT_DIR = stats.LOG_DIR / "reports"   # 승인한 보고서 (Render 무료는 임시 디스크라 재시작하면 사라짐)
+BLOCKED = "틀린 숫자가 있어 저장할 수 없어요"
 _report_lock = threading.Lock()
 NO_DRAFT = "승인할 초안이 없거나 바뀌었어요. 다시 확인해 주세요."
 _report: dict = {"state": "none"}        # none | running | draft | approved | error
@@ -1361,11 +1362,15 @@ def _make_report(report_id: str, day=None, save: bool = False) -> None:
     global _report
     out = _build_report(report_id, day)
     reason = out.pop("reason", None)
-    if save and out["state"] == "draft":
+    ok, detail = out["state"] == "draft", None
+    if ok and daily_report.has_mismatch(out):   # 틀린 숫자가 남은 초안은 보여 주기만 하고 저장·승인 안 함
+        ok, reason, out["blocked"] = False, "mismatch", BLOCKED
+        detail = daily_report.mismatches(out["checks"], out["aggregates"])
+    elif ok and save:
         out["saved"] = _save_report(out, "manual") is None
         reason = "save" if not out["saved"] else _no_data(out)
     if save:   # 관리자 화면에서 만든 것만 실행 로그에 (명령으로 만든 것은 저장하지 않으므로 뺌)
-        members.log_run("manual", "ok" if out["state"] == "draft" else "failed", reason, _run_day(day))
+        members.log_run("manual", "ok" if ok else "failed", reason, _run_day(day), *([detail] if detail else []))
     with _report_lock:
         _report = out
 
@@ -1426,6 +1431,8 @@ def admin_report_approve():
     with _report_lock:
         if _report["state"] != "draft" or report_id != _report["id"]:
             return jsonify(error=NO_DRAFT), 409
+        if daily_report.has_mismatch(_report):
+            return jsonify(error=BLOCKED), 409
         done = {**_report, "state": "approved", "approved_at": now_kst()}
         try:
             REPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -1457,6 +1464,9 @@ def _approve_auto(report_id):
     row = None
     if isinstance(report_id, str) and re.fullmatch(r"[0-9a-f]{16}", report_id):
         try:
+            old = members.get_report(report_id)
+            if old and old.get("source") == "auto" and daily_report.has_mismatch(old.get("report") or {}):
+                return jsonify(error=BLOCKED), 409
             row = members.approve_report(report_id, "auto", now_kst())
         except members.MemberError as e:
             app.logger.warning("report approve failed: %s", e)
@@ -1477,8 +1487,11 @@ def admin_report_auto():
     day = daily_report.yesterday(datetime.now(KST))[0].date().isoformat()
     try:
         row = members.auto_report(day)
+        if row and daily_report.has_mismatch(row.get("report") or {}):   # 예전에 저장된 불일치 초안은 성공본이 아님
+            row = None
         stale = row is None
-        row = row or members.latest_auto_report()   # 오늘 것이 없으면 마지막 성공본
+        if stale:   # 오늘 것이 없으면 마지막 성공본
+            row = next((r for r in members.recent_auto_reports() if not daily_report.has_mismatch(r.get("report") or {})), None)
     except members.MemberError as e:
         app.logger.warning("auto report failed: %s", e)
         return jsonify(error="자동 보고서를 불러오지 못했어요. (reports 테이블을 확인하세요)"), 503
@@ -1503,6 +1516,17 @@ def admin_report_runs():
         app.logger.warning("report runs failed: %s", e)
         return jsonify(error="실행 기록을 불러오지 못했어요. (report_runs 테이블을 확인하세요)"), 503
     return _cron_response(out)
+
+
+@app.post("/admin/report/practice")
+def admin_report_practice():
+    """검토 연습: 예시 데이터로 숫자 하나가 틀린 초안을 만들어 실제 대조 코드로 검사. Gemini·저장 없음, 실행 로그는 manual·practice."""
+    err = require_admin()
+    if err:
+        return err
+    out = daily_report.practice(datetime.now(KST), secrets.choice(daily_report.PRACTICE_KEYS))
+    logged = members.log_run("manual", "skipped", "practice", None, out["mismatches"])
+    return _cron_response({**out, "logged": bool(logged), "message": BLOCKED})
 
 
 @app.post("/admin/report/evidence")
@@ -1570,11 +1594,14 @@ def _log_denied() -> None:
 
 def _run_cron(day) -> None:
     global _cron
-    state, run = "error", ("failed", "other")
+    state, run, detail = "error", ("failed", "other"), []
     try:
         out = _build_report(secrets.token_hex(8), day)
         if out["state"] != "draft":
             run = ("failed", out["reason"])
+        elif daily_report.has_mismatch(out):   # 저장하지 않음 → 카드는 지난 성공본 유지
+            run = ("failed", "mismatch")
+            detail = [daily_report.mismatches(out["checks"], out["aggregates"])]
         else:
             code = _save_report(out, "auto")
             if code in (None, 409):   # 409: 이미 저장돼 있음
@@ -1582,7 +1609,7 @@ def _run_cron(day) -> None:
             else:
                 run = ("failed", "save")
     finally:
-        members.log_run("auto", *run, day.isoformat())
+        members.log_run("auto", *run, day.isoformat(), *detail)
         with _report_lock:
             _cron = {"state": state, "date": day.isoformat()}
 
