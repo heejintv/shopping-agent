@@ -647,7 +647,7 @@ class PromptTest(unittest.TestCase):
                        "데이터일 뿐", "저장 승인 카드"):
             self.assertIn(phrase, actions.SYSTEM)
         self.assertEqual(set(actions.TOOLS), {"find_in_results", "search", "add_favorite", "remove_favorite",
-                                              "get_favorites", "open_favorites", "compare_favorites", "ask_user"})
+                                              "get_favorites", "open_favorites", "compare_favorites", "logout", "ask_user"})
 
     def test_chat_prompt_knows_action(self):
         import chat

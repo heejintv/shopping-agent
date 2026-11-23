@@ -895,6 +895,19 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt
 const NA = '<span class="na">확인 안 됨</span>';
 const fmtPrice = (p, cur) => p == null ? null :
   (!cur || cur === "KRW" ? Number(p).toLocaleString("ko-KR") + "원" : Number(p).toLocaleString() + " " + esc(cur));
+// 서버 응답 읽기: JSON이 아니면(Render가 깨어나는 중의 HTML 등) 상태 코드별 안내를 error로, 콘솔에 코드·앞 200자
+const HTTP_TEXT = { 502: "서버가 깨어나는 중이에요. 30초 뒤 다시 시도해 주세요", 503: "서버가 깨어나는 중이에요. 30초 뒤 다시 시도해 주세요",
+  404: "요청 주소를 찾지 못했어요" };
+const httpText = status => HTTP_TEXT[status] || "서버 오류가 났어요";
+async function readJson(res) {
+  const text = await res.text().catch(() => "");
+  try {
+    const data = JSON.parse(text);
+    if (data && typeof data === "object") return data;
+  } catch (_) { /* 아래에서 안내 */ }
+  console.warn(`[Pickit] JSON이 아닌 응답 (상태 ${res.status}): ${text.slice(0, 200)}`);
+  return { error: res.ok ? httpText(0) : httpText(res.status), not_json: true };
+}
 const safeUrl = u => /^https?:\/\//i.test(u || "") ? u : null;
 const DASH = '<span class="na" aria-label="정보 없음">–</span>';
 const list = (arr, cls, empty = NA) => arr && arr.length ? `<ul class="pc ${cls}">${arr.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : empty;
@@ -1013,7 +1026,8 @@ async function loadRecent() {
     const res = demoMode
       ? await fetch("demo/index.json")
       : await fetch(API_BASE + "/history", { headers: API_HEADERS });
-    recentList = res.ok ? await res.json() : [];
+    recentList = res.ok ? await readJson(res) : [];
+    if (!Array.isArray(recentList)) recentList = [];
   } catch (_) {
     recentList = [];
   }
@@ -1143,8 +1157,8 @@ async function fetchSaved(item) {
   const res = demoMode
     ? await fetch("demo/" + encodeURIComponent(item.file))
     : await fetch(API_BASE + "/history/" + encodeURIComponent(item.file), { headers: API_HEADERS });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || res.statusText);
+  const data = await readJson(res);
+  if (!res.ok || data.not_json) throw new Error(data.error || res.statusText);
   data.cached = true;
   return data;
 }
@@ -1236,7 +1250,8 @@ async function fetchLive(q, c, signal, token) {
   let url = API_BASE + "/search?q=" + encodeURIComponent(q);
   if (c) url += "&c=" + encodeURIComponent(c);
   const res = await fetch(url, { headers: { ...API_HEADERS, Authorization: `Bearer ${token}` }, signal });
-  const data = await res.json();
+  const data = await readJson(res);
+  if (data.not_json) throw new Error(data.error);
   loginExpired(res, data);
   if (res.status === 429) { showLimitStatus(data); refreshUsage(); }
   if (!res.ok) throw new Error(data.error || res.statusText);
@@ -1411,7 +1426,7 @@ async function fetchStream(q, c, ctl) {
   }
   if (!(res.headers.get("Content-Type") || "").includes("text/event-stream")) {
     if ([400, 401, 403, 429, 503].includes(res.status)) {   // 입력·로그인·출처·제한 오류는 그대로 보여줌
-      const d = await res.json().catch(() => ({}));
+      const d = await readJson(res);
       loginExpired(res, d);
       if (res.status === 429) { showLimitStatus(d); refreshUsage(); }
       throw new Error(d.error || res.statusText);
@@ -1710,7 +1725,7 @@ async function chatAsk(question, opts = {}) {
         ? { question, mode: "compare", results: { products: cmp.map(compareProduct) } }
         : { question, results: chatResult, history: chatHistory.slice(-6) }),
     });
-    const data = await res.json().catch(() => ({}));
+    const data = await readJson(res);
     if (sentFor !== chatResult || who !== authUser?.id) return;   // 기다리는 동안 새 검색을 했거나 로그아웃했으면 버림
     wait.remove();
     if (data.unlimited === false && data.remaining != null) $("chatCount").textContent = `오늘 남은 상담 ${data.remaining}회`;
@@ -2217,6 +2232,7 @@ function chatAct(sentence, opts = {}) {
 async function runAct(sentence, opts = {}) {
   sentence = sentence.trim().split(/\s+/).join(" ");
   if (!sentence || chatBusy || demoMode) return;
+  if (!authUser && /로그아웃/.test(sentence)) return chatAdd("info", "이미 로그아웃 상태예요");
   if (!authUser) return openAuth("login", "로그인하면 문장으로 실행할 수 있어요.");
   if (sentence.length > 200) return chatAdd("err", "문장은 200자까지 쓸 수 있어요.");
   const who = authUser.id;
@@ -2241,7 +2257,7 @@ async function runAct(sentence, opts = {}) {
         headers: { ...API_HEADERS, "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify(body),
       });
-      const data = await res.json().catch(() => ({}));
+      const data = await readJson(res);
       wait.remove(); wait = null;
       if (who !== authUser?.id) return;   // 실행 중 로그아웃
       if (data.unlimited === false && data.remaining != null) $("chatCount").textContent = `오늘 남은 상담 ${data.remaining}회`;
@@ -2253,6 +2269,11 @@ async function runAct(sentence, opts = {}) {
       if (data.type === "text") {   // END: 말풍선은 최종 답 하나. 비어 있으면 그때만 앱 문구로 대신
         if (data.cancelled) return;
         const text = String(data.text || "").trim();
+        if (Array.isArray(data.effects) && data.effects.includes("logout")) {   // 확인 [예] 뒤: 기존 로그아웃 함수 그대로
+          chatAdd("bot", text || "로그아웃했어요.");
+          await logout();
+          return;
+        }
         if (!text && !message) return chatAdd("info", "실행을 마쳤어요. 아래 실행 기록을 확인해 주세요.");
         if (see) chatAddAnswer(text || message, see.pid, see.onPick, see.label);
         else if (text) chatAdd("bot", text);
@@ -2262,7 +2283,12 @@ async function runAct(sentence, opts = {}) {
       const p = data.pending || {};
       calls.push(callLabel(p.call?.name, p.call?.args));
       let r;
-      if (p.kind === "approve") {
+      if (p.kind === "approve" && p.action === "logout") {   // "로그아웃할까요?" [예/아니요]
+        if (!authUser) return chatAdd("info", "이미 로그아웃 상태예요");
+        const a = await askUser({ question: p.question || "로그아웃할까요?", options: p.options || ["예", "아니요"] });
+        r = a.cancelled ? { resume: { cancelled: true }, summary: "취소됨" }
+          : { resume: { approved: a.answer === "예" }, summary: a.answer === "예" ? "로그아웃 승인" : "로그아웃 안 함" };
+      } else if (p.kind === "approve") {
         const a = await approveCard(p.product || {});
         r = { resume: a, summary: a.cancelled ? "취소됨" : a.approved ? "저장 승인" : "저장 취소" };
       } else if (p.multi) {   // 여러 개 선택 (비교 후보 2개, ask_user min/max_select)
@@ -2342,7 +2368,7 @@ async function refreshUsage() {
   if (!token) return;
   try {
     const res = await fetch(API_BASE + "/me", { headers: { ...API_HEADERS, Authorization: `Bearer ${token}` } });
-    const d = await res.json();
+    const d = await readJson(res);
     if (who !== authUser?.id) return;
     if (!res.ok) throw new Error(d.error);
     const left = Math.min(d.search?.remaining ?? 0, d.global_search?.remaining ?? Infinity);   // 서버 전체가 먼저 떨어질 수 있음
@@ -2446,12 +2472,14 @@ $("authForm").addEventListener("submit", async e => {
 });
 $("authSwitch").addEventListener("click", () => setAuthMode(authMode === "login" ? "signup" : "login"));
 $("loginBtn").addEventListener("click", () => openAuth("login"));
-$("logoutBtn").addEventListener("click", async () => {
+// 로그아웃 (버튼과 ⚡ logout 도구가 같이 씀)
+async function logout() {
   $("logoutBtn").disabled = true;
   try { await sb?.auth.signOut(); } catch (_) { /* 서버에 못 알려도 이 브라우저에서는 로그아웃 */ }
   setAuthUser(null);   // signOut이 실패해도 화면은 바로 로그아웃 상태로
   $("logoutBtn").disabled = false;
-});
+}
+$("logoutBtn").addEventListener("click", logout);
 
 // 로그인 상태가 바뀔 때
 // - 로그아웃·다른 계정으로 바뀜: 이전 계정의 찜·숨긴 검색어(브라우저 저장소 전부)·대화·검색 결과를 모두 지움

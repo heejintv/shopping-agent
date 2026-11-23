@@ -3,6 +3,7 @@
     START → agent ─(functionCall)→ validate ─(통과)→ server_tool ──→ agent        (find_in_results·get_favorites·compare_favorites)
               │                      │            └(add_favorite)→ approve → wait_client → agent
               │                      ├(통과)→ wait_client → agent                  (search·remove_favorite·open_favorites·ask_user)
+              │                      ├(logout)→ approve("로그아웃할까요?" [예/아니요]) → END (화면이 기존 로그아웃 실행)
               │                      └(거부: 사유를 functionResponse로)→ agent
               └(최종 답 / Gemini 호출 MAX_CALLS번 넘음)→ END
 
@@ -34,6 +35,11 @@ SERVER_TOOLS = {"find_in_results", "get_favorites", "compare_favorites"}
 CLIENT_TOOLS = {"search", "add_favorite", "remove_favorite", "open_favorites", "ask_user"}
 ALREADY = "이미 찜한 상품이에요"
 SAVE_CANCELLED = "저장을 취소했어요. 찜 목록은 그대로예요."
+LOGOUT_QUESTION = "로그아웃할까요?"
+LOGOUT_OPTIONS = ["예", "아니요"]
+LOGOUT_DONE = "로그아웃했어요."
+LOGOUT_KEPT = "로그아웃하지 않았어요."
+ALREADY_LOGGED_OUT = "이미 로그아웃 상태예요"
 MAX_CANDIDATES = 20
 RECURSION_LIMIT = 100
 
@@ -118,6 +124,8 @@ def clean_resume(raw) -> dict:
         raise ValueError("요청 형식이 잘못됐어요.")
     if raw.get("cancelled") is True:
         return {"cancelled": True}
+    if raw.get("logged_out") is True:   # 로그아웃 확인 때 화면이 이미 로그아웃 상태
+        return {"logged_out": True}
     if "approved" in raw:
         return {"approved": raw["approved"] is True}
     resp = raw.get("response")
@@ -402,7 +410,10 @@ def validate(state: State) -> dict:
         return {"messages": _respond(state, call["name"], {"error": why}), "call": None, "trail": ["validate"]}
     call = {"name": call["name"], "args": args}
     pending = None
-    if call["name"] == "ask_user":
+    if call["name"] == "logout":   # 실행 전 확인 필수: approve에서 [예/아니요]
+        pending = {"kind": "approve", "action": "logout", "call": call,
+                   "question": LOGOUT_QUESTION, "options": LOGOUT_OPTIONS}
+    elif call["name"] == "ask_user":
         pending = ask_pending(call)
     elif call["name"] in CLIENT_TOOLS and call["name"] != "add_favorite":
         pending = {"kind": "client", "call": call}
@@ -439,6 +450,8 @@ def server_tool(state: State) -> dict:
 def approve(state: State) -> dict:
     """add_favorite 전 승인 카드 (상품명·가격·"내 찜 목록"에 저장 [저장/취소])."""
     answer = interrupt(state["pending"])
+    if state["pending"].get("action") == "logout":
+        return logout_answer(answer)
     if not (isinstance(answer, dict) and answer.get("approved") is True):
         cancelled = isinstance(answer, dict) and answer.get("cancelled") is True
         return {"final": "" if cancelled else SAVE_CANCELLED, "cancelled": cancelled, "call": None, "pending": None,
@@ -446,6 +459,19 @@ def approve(state: State) -> dict:
     call = state["call"]
     return {"pending": {"kind": "client", "call": {"name": call["name"], "args": call["args"]}, "product": call["product"]},
             "trail": ["approve"]}
+
+
+def logout_answer(answer) -> dict:
+    """로그아웃 확인 답 → END. "예"면 화면이 기존 로그아웃 함수를 실행하도록 effects에 logout."""
+    a = answer if isinstance(answer, dict) else {}
+    end = {"call": None, "pending": None, "trail": ["approve"]}
+    if a.get("cancelled") is True:
+        return {**end, "final": "", "cancelled": True}
+    if a.get("logged_out") is True:   # 화면에서 이미 로그아웃된 상태
+        return {**end, "final": ALREADY_LOGGED_OUT}
+    if a.get("approved") is True:
+        return {**end, "final": LOGOUT_DONE, "effects": ["logout"]}
+    return {**end, "final": LOGOUT_KEPT}
 
 
 def wait_client(state: State) -> dict:
@@ -505,7 +531,7 @@ def after_validate(state: State) -> str:
         return "agent"                                      # 검증 실패 → 사유를 담아 agent로
     if call["name"] in SERVER_TOOLS or call["name"] == "add_favorite":
         return "server_tool"
-    return "wait_client"
+    return "approve" if call["name"] == "logout" else "wait_client"
 
 
 def after_server_tool(state: State) -> str:
@@ -534,7 +560,7 @@ def build(checkpointer=None):
     g.add_node("wait_client", wait_client)
     g.add_edge(START, "agent")
     g.add_conditional_edges("agent", after_agent, ["validate", END])
-    g.add_conditional_edges("validate", after_validate, ["agent", "server_tool", "wait_client"])
+    g.add_conditional_edges("validate", after_validate, ["agent", "server_tool", "approve", "wait_client"])
     g.add_conditional_edges("server_tool", after_server_tool, ["approve", "wait_client", "agent"])
     g.add_conditional_edges("approve", after_approve, ["wait_client", END])
     g.add_conditional_edges("wait_client", after_wait, ["agent", "wait_client", END])

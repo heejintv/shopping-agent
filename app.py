@@ -647,6 +647,29 @@ def cors(resp):
     return resp
 
 
+# ---------- 오류도 JSON으로 (HTML 오류 페이지 대신. 화면은 data.error를 그대로 보여 줌) ----------
+
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify(error="요청 주소를 찾지 못했어요."), 404
+
+
+@app.errorhandler(405)
+def method_not_allowed(e):
+    resp = jsonify(error="허용되지 않는 요청 방식이에요.")
+    resp.status_code = 405
+    allowed = getattr(e, "valid_methods", None)
+    if allowed:
+        resp.headers["Allow"] = ", ".join(allowed)
+    return resp
+
+
+@app.errorhandler(500)
+def server_error(e):
+    app.logger.error("500 %s %s: %s", request.method, request.path, getattr(e, "original_exception", e))
+    return jsonify(error="서버 오류가 났어요."), 500
+
+
 @app.get("/health")
 def health():
     return jsonify(ok=True, **limit_info())

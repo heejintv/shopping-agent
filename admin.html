@@ -69,6 +69,13 @@
   .ghost:hover { border-color: var(--accent); color: var(--accent); }
   .ghost:disabled { opacity: .5; cursor: default; }
 
+  /* Claude 연결 확인 */
+  .check-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+  .check-res { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 999px; font-size: 14px; font-weight: 700; }
+  .check-res.ok { background: var(--good-soft); color: var(--good); }
+  .check-res.fail { background: var(--bad-soft); color: var(--bad); }
+  .check-detail { color: var(--muted); font-size: 13px; }
+
   /* 숫자 카드 */
   .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 16px; }
   .tile { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px 18px; box-shadow: var(--shadow); min-width: 0; }
@@ -186,6 +193,15 @@
         <div class="meter-note" id="glbNote">-</div>
       </section>
     </div>
+
+    <section class="panel" id="claudePanel">
+      <div class="panel-head"><h2>Claude 연결 확인</h2><span class="na">claude CLI 토큰이 살아 있는지 짧게 한 번 호출</span></div>
+      <div class="check-row">
+        <button type="button" class="ghost" id="claudeCheck">Claude 연결 확인</button>
+        <span id="claudeResult" class="check-res" hidden></span>
+        <span id="claudeDetail" class="check-detail" aria-live="polite"></span>
+      </div>
+    </section>
 
     <section class="panel">
       <div class="panel-head"><h2>최근 7일 사용량</h2>
@@ -388,6 +404,49 @@ function renderChart(days) {
         <line class="grid" x1="${left}" x2="${W - right}" y1="${H - bottom}" y2="${H - bottom}"/>${bars}</svg>`
     : '<div class="empty">최근 7일 동안 성공한 기록이 없어요.</div>';
 }
+
+// ---------- Claude 연결 확인 (/admin/claude-check: 성공/실패와 에러 종류만 옴) ----------
+const CLAUDE_KIND = { auth: "로그인·토큰", limit: "사용량 한도", timeout: "시간 초과", other: "기타", not_installed: "기타 (claude 미설치)" };
+const claudeKind = k => CLAUDE_KIND[k] || "기타";
+const nowText = () => new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+
+function showClaude(ok, detail) {
+  const r = $("claudeResult");
+  r.hidden = false;
+  r.className = "check-res " + (ok ? "ok" : "fail");
+  r.textContent = ok ? "✅ 성공" : "❌ 실패";
+  $("claudeDetail").textContent = `${detail} · 확인 시각 ${nowText()}`;
+}
+
+async function claudeCheck() {
+  const btn = $("claudeCheck");
+  btn.disabled = true;
+  btn.textContent = "확인 중…";
+  try {
+    const t = await token();
+    if (!t) return showGate("관리자 계정으로 Pickit에 로그인한 뒤 다시 열어 주세요.");
+    if (base === null && !(await connect())) return showClaude(false, "검색 서버에 연결할 수 없어요");
+    const res = await fetch(`${base}/admin/claude-check`, {
+      headers: { ...baseHeaders, Authorization: `Bearer ${t}` }, cache: "no-store" });
+    const d = await res.json().catch(() => ({}));
+    if (res.status === 401) return showGate("로그인이 만료됐어요. Pickit에서 다시 로그인해 주세요.");
+    if (res.status === 403) return showGate("이 계정은 관리자 권한이 없어요.");
+    if (!res.ok) return showClaude(false, d.error || `서버 오류 (${res.status})`);
+    if (d.ok) {
+      const ver = d.version?.value ? `claude ${d.version.value}` : "claude";
+      return showClaude(true, `${ver} · 응답 ${fmtMs(d.prompt?.ms)}`);
+    }
+    const kind = d.version && !d.version.ok ? d.version.error : d.prompt?.error;
+    showClaude(false, `에러 종류: ${claudeKind(kind)}`);
+  } catch (e) {
+    showClaude(false, e instanceof TypeError ? "서버에 연결할 수 없어요" : "확인하지 못했어요");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Claude 연결 확인";
+  }
+}
+$("claudeCheck").addEventListener("click", claudeCheck);
 
 // ---------- 조작 ----------
 $("period").addEventListener("click", e => {
