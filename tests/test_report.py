@@ -23,6 +23,7 @@ os.environ.setdefault("DATA_DIR", tempfile.mkdtemp(prefix="pickit-test-"))
 
 import app as server  # noqa: E402
 import auth  # noqa: E402
+import claude_errors  # noqa: E402
 import daily_report as dr  # noqa: E402
 import gemini  # noqa: E402
 import make_report  # noqa: E402
@@ -155,9 +156,126 @@ class DayTest(unittest.TestCase):
                 dr.parse_day(bad)
 
 
-def draft(line="검색은 9회[search.total]예요"):
+def draft(line="검색은 9회[search.total]예요", extra=None):
     return {"summary": [line, "실패 4회[search.failed]", "평균 3초[search.avg_sec]"],
-            "anomalies": ['2026-11-19 "아이폰 16" 1회[query.top2]'], "suggestions": ["제안 없음"]}
+            "anomalies": ['2026-11-19 "아이폰 16" 1회[query.top2]', *(extra or [])], "suggestions": ["제안 없음"]}
+
+
+class RuleTest(unittest.TestCase):
+    def judged(self, rows, **kw):
+        agg = dr.build(rows, [], NOW, **kw)
+        return {a["id"]: a for a in agg["anomalies"]}, agg
+
+    def searches(self, ok, fail=0, **kw):
+        return [row("11-19 10:00", **kw)] * ok + [row("11-19 10:00", status="error", error_kind="limit")] * fail
+
+    def test_fail_rate(self):
+        j, agg = self.judged(self.searches(6, 1))
+        self.assertEqual(j["rule.fail_rate"]["text"], "검색 실패율 14.3%[search.fail_rate] > 기준 10%[rule.fail_rate]")
+        self.assertFalse(self.judged(self.searches(9, 1))[0]["rule.fail_rate"]["triggered"])   # 딱 10%는 아님
+        v = self.judged(self.searches(2240, 250))[0]["rule.fail_rate"]   # 10.04%: 반올림해도 기준과 구별
+        self.assertTrue(v["triggered"])
+        self.assertNotEqual(v["value"], 10)
+
+    def test_avg_sec(self):
+        self.assertFalse(self.judged(self.searches(1, duration_ms=45000))[0]["rule.avg_sec"]["triggered"])
+        self.assertTrue(self.judged(self.searches(1, duration_ms=45001))[0]["rule.avg_sec"]["triggered"])
+
+    def test_other_rate(self):
+        other, known = row("11-19 10:00", status="error", error_kind="other"), self.searches(0, 1)
+        self.assertTrue(self.judged([other] + known)[0]["rule.other_rate"]["triggered"])        # 50% 이상
+        self.assertFalse(self.judged([other] + known * 2)[0]["rule.other_rate"]["triggered"])
+
+    def test_gemini_rate(self):
+        g = [row("11-19 10:00", "chat", engine="gemini")]
+        self.assertFalse(self.judged(g * 8, gemini_limit=10)[0]["rule.gemini_rate"]["triggered"])
+        self.assertTrue(self.judged(g * 9, gemini_limit=10)[0]["rule.gemini_rate"]["triggered"])
+        self.assertIsNone(self.judged(g * 9)[0]["rule.gemini_rate"]["triggered"])   # 한도 설정 없음
+
+    def test_limited_user_and_empty(self):
+        self.assertTrue(self.judged([row("11-19 10:00", status="limited")])[0]["rule.limited_users"]["triggered"])
+        self.assertFalse(any(a["triggered"] for a in self.judged([])[0].values()))
+
+    def test_rule_text_passes_number_check(self):
+        _, agg = self.judged(self.searches(6, 1) + [row("11-19 10:00", status="limited")])
+        d = draft(extra=triggered(agg))
+        self.assertTrue(all(c["ok"] for c in dr.check_numbers({**d, "summary": [], "anomalies": triggered(agg)}, agg)))
+        self.assertEqual(dr.missing_anomalies(d, agg), [])
+        self.assertEqual(len(dr.missing_anomalies(draft(), agg)), 2)
+
+
+class BadCommandTest(unittest.TestCase):
+    def cmd(self, outcome, text="찜해줘", **kw):
+        return row("11-19 10:00", "chat", query="[실행] " + text, outcome=outcome, **kw)
+
+    def test_counts_and_top(self):
+        rows = [self.cmd(k, "kim@a.com 찜") for k in dr.BAD_OUTCOMES] + [
+            self.cmd("ok"), self.cmd("waiting"), self.cmd(None), self.cmd("cannot", "비교"), self.cmd(None, status="error")]
+        agg = dr.build(rows, [], NOW)
+        v = values(agg)
+        self.assertEqual((v["action.bad"], v["action.bad_cannot"], v["action.bad_error"], v["action.unfinished"]), (9, 2, 2, 1))
+        top = {m["id"]: m for m in agg["metrics"]}["action.bad_top1"]
+        self.assertEqual((top["text"], top["value"]), ("[이메일] 찜", 7))
+        self.assertIn("승인 카드 취소", top["label"])
+        self.assertTrue(any("outcome" in n for n in agg["notes"]))
+
+    def test_top_five(self):
+        agg = dr.build([self.cmd("cannot", f"명령{c}") for c in "가나다라마바"], [], NOW)
+        self.assertEqual(sum(m["id"].startswith("action.bad_top") for m in agg["metrics"]), 5)
+
+
+class ErrorKindTest(unittest.TestCase):
+    def test_saved_kind_first(self):
+        rows = [row("11-19 10:00", status="error", error_kind=k) for k in ("token", "limit", "server", "db", "timeout")]
+        v = values(dr.build(rows + [row("11-19 10:00", status="error")], EVENTS, NOW))
+        # 저장된 종류가 EVENTS의 401·429·504와 같은 실패라서 두 번 세지 않음 → 종류 없는 1건은 기타
+        self.assertEqual([v[f"search.fail_{k}"] for k in dr.FAIL_KINDS], [1, 1, 1, 1, 1, 1])
+
+    def test_classify(self):
+        E = gemini.EngineError
+        for e, want in ((E("x", 401), "token"), (E("x", 429), "limit"), (E("x", 504), "timeout"), (E("x", 503), "server"),
+                        (members.MemberError("x"), "db"), (subprocess.TimeoutExpired("c", 1), "timeout"),
+                        (E("GEMINI_API_KEY 환경변수가 설정되지 않았어요."), "token"), (E("JSON을 찾지 못했어요."), "other"),
+                        (KeyError("x"), "other")):
+            self.assertEqual(claude_errors.error_kind(e), want, e)
+        e = E("너무 오래")
+        e.__cause__ = TimeoutError()
+        self.assertEqual(claude_errors.error_kind(e), "timeout")
+
+
+class NewColumnTest(unittest.TestCase):
+    """schema.sql을 아직 실행하지 않은 DB에서도 기록(하루 횟수)과 보고서가 동작."""
+
+    def test_log_falls_back(self):
+        sent = []
+
+        def req(method, path, params=None, body=None, extra=None):
+            sent.append(body)
+            if "outcome" in body:
+                raise members.MemberError("x", 400)
+
+        with mock.patch.object(members, "_request", side_effect=req), self.assertLogs(members.log, "WARNING"):
+            members.log_usage("u", "e", "chat", "ok", outcome="waiting", log_id="L")
+        self.assertEqual(len(sent), 2)
+        self.assertNotIn("log_id", sent[1])
+
+    def test_other_errors_not_retried(self):
+        with mock.patch.object(members, "_request", side_effect=members.MemberError("x", 500)) as req, \
+                self.assertLogs(members.log, "WARNING"):
+            members.log_usage("u", "e", "chat", "ok", outcome="ok")
+        self.assertEqual(req.call_count, 1)
+
+    def test_read_falls_back(self):
+        with mock.patch.object(members, "select_rows", side_effect=[members.MemberError("x", 400), ([], False)]) as sel, \
+                self.assertLogs(members.log, "WARNING"):
+            members.usage_between(*dr.yesterday(NOW))
+        self.assertNotIn("outcome", sel.call_args[0][1]["select"])
+
+    def test_update(self):
+        with mock.patch.object(members, "_request") as req:
+            members.update_outcome("L", "cannot")
+        self.assertEqual(req.call_args[0], ("PATCH", "usage_logs", {"log_id": "eq.L"}))
+        self.assertEqual(req.call_args[1]["body"], {"outcome": "cannot"})
 
 
 class CheckTest(unittest.TestCase):
@@ -187,7 +305,14 @@ class CheckTest(unittest.TestCase):
             dr.clean_draft({"summary": ["한 줄"]})
 
 
-OK, BAD = json.dumps(draft(), ensure_ascii=False), json.dumps(draft("검색은 8회[search.total]"), ensure_ascii=False)
+def triggered(agg):
+    return [a["text"] for a in agg["anomalies"] if a["triggered"]]
+
+
+HITS = triggered(dr.build(ROWS, EVENTS, NOW))   # 이 날의 이상 징후: 초안에 꼭 있어야 함
+OK = json.dumps(draft(extra=HITS), ensure_ascii=False)
+BAD = json.dumps(draft("검색은 8회[search.total]", HITS), ensure_ascii=False)
+MISSING = json.dumps(draft(), ensure_ascii=False)
 PASS, REJECT = '{"pass": true, "problems": []}', '{"pass": false, "problems": ["항목이 다름"]}'
 
 
@@ -229,6 +354,17 @@ class CrewTest(unittest.TestCase):
         out = self.run_crew([BAD, OK, PASS])
         self.assertEqual((out["verdict"], out["calls"], out["fixes"]), ("검토 통과", 3, 1))
         self.assertIn("aggregates 값은 9", self.prompts[1])
+
+    def test_missing_anomaly_fixed(self):
+        out = self.run_crew([MISSING, OK, PASS])
+        self.assertEqual((out["verdict"], out["calls"], out["fixes"]), ("검토 통과", 3, 1))
+        self.assertIn("이상 징후 빠짐: " + HITS[0], self.prompts[1])
+        self.assertIn("triggered가 true인 항목이 초안 anomalies에 빠짐없이", self.prompts[2])   # 검토 Agent도 확인
+
+    def test_missing_anomaly_never_passes(self):
+        out = self.run_crew([MISSING] * 3)
+        self.assertEqual(out["verdict"], "수정 필요")
+        self.assertIn("이상 징후 빠짐", out["problems"][0])
 
     def test_reviewer_rejects_then_pass(self):
         out = self.run_crew([OK, REJECT, OK, PASS])

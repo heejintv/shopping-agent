@@ -11,7 +11,7 @@ allowed-tools: Bash(.venv/bin/python make_report.py)
 2. `verdict`가 "수정 필요"면 `problems`를 한두 문장으로 요약해 5줄 보고 앞에 쓴다. "검토 통과"면 생략한다.
 3. 결과를 정확히 5줄로 보고한다.
    1. 검색 수·실패율: `search.total`, `search.fail_rate`
-   2. 가장 많은 에러 종류: `search.fail_token`·`fail_limit`·`fail_timeout`·`fail_other` 중 가장 큰 것 (동점이면 모두, 전부 0이면 "에러 없음")
+   2. 가장 많은 에러 종류: `search.fail_token`·`fail_limit`·`fail_timeout`·`fail_server`·`fail_db`·`fail_other` 중 가장 큰 것 (동점이면 모두, 전부 0이면 "에러 없음")
    3. ⚡ 실패 명령 상위 3개: `action.failed_top1`~`3`의 `text`와 횟수 (없으면 "없음")
    4. 이상 징후: `draft.anomalies` 요약
    5. 내가 할 일: 위 내용에서 바로 이어지는 일만 (없으면 "할 일 없음")

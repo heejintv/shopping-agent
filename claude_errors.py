@@ -33,6 +33,22 @@ _SECRET_RE = [
 ]
 
 
+def error_kind(e: BaseException) -> str:
+    """검색 실패 예외 → usage_logs.error_kind: token · limit · timeout · server(AI 서버 장애) · db(회원 DB) · other."""
+    if type(e).__name__ == "MemberError":
+        return "db"
+    if "timeout" in type(e).__name__.lower() or "timeout" in type(e.__cause__).__name__.lower():
+        return "timeout"
+    code = getattr(e, "code", None)
+    by_code = {401: "token", 403: "token", 429: "limit", 504: "timeout", 500: "server", 503: "server"}
+    if code in by_code:
+        return by_code[code]
+    if "GEMINI_API_KEY" in str(e):   # 키가 없음
+        return "token"
+    kind = classify(str(e), str(e.__cause__ or ""))
+    return "token" if kind == "auth" else kind
+
+
 def mask(text: str) -> str:
     """토큰·키로 보이는 부분을 ***로 바꾼다."""
     text = text or ""

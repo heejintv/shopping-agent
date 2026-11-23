@@ -538,7 +538,7 @@ class ScopeDefaultTest(unittest.TestCase):
 
 # ---------- /chat/action/step ----------
 
-class StepApiTest(unittest.TestCase):
+class StepBase(unittest.TestCase):
     def setUp(self):
         self.client = server.app.test_client()
         self.used, self.logs = {}, []
@@ -567,6 +567,8 @@ class StepApiTest(unittest.TestCase):
     def resume(self, cmd, value, headers=GOOD):
         return self.client.post("/chat/action/step", json={"cmd": cmd, "resume": value}, headers=headers)
 
+
+class StepApiTest(StepBase):
     def test_full_command_counts_once(self):
         d = self.start().get_json()
         self.assertEqual(d["type"], "interrupt")
@@ -627,6 +629,85 @@ class StepApiTest(unittest.TestCase):
     def test_old_endpoints_gone(self):
         self.assertIn(self.client.post("/chat/action/compare", json={}, headers=GOOD).status_code, (404, 405))
         self.assertIn(self.client.post("/chat/action", json={}, headers=GOOD).status_code, (404, 405))
+
+
+class OutcomeTest(StepBase):
+    """⚡ 명령이 끝난 종류(outcome): 처음 줄에 남기거나(waiting) 끝날 때 고침."""
+
+    def setUp(self):
+        super().setUp()
+        self.updates = []
+        mock.patch.object(members, "update_outcome", side_effect=lambda i, o: self.updates.append((i, o))).start()
+
+    def play(self, outs, *resumes, **kw):
+        self.llm.outs = list(outs)
+        self.logs.clear()
+        self.updates.clear()
+        d = self.start(**kw).get_json()
+        for r in resumes:
+            d = self.resume(d["cmd"], r).get_json()
+        self.assertNotIn("outcome", d)
+        self.assertEqual(len(self.logs), 1)   # 한도용 기록은 명령당 한 줄
+        if not self.updates:
+            return self.logs[0]["outcome"]
+        self.assertEqual(self.logs[0]["outcome"], "waiting")
+        self.assertEqual(self.updates[0][0], self.logs[0]["log_id"])
+        return self.updates[0][1]
+
+    ASK_SEARCH = call("ask_user", {"question": "버즈를 새로 검색할까요? (하루 검색 5회 중 1회 사용)", "options": ["검색", "취소"]})
+    ASK = call("ask_user", {"question": "어느 상품인가요? 다른 검색어도 좋아요", "options": ["1. A", "2. B"]})
+    ADD = call("add_favorite", {"number": 2})
+
+    def test_ok(self):
+        self.assertEqual(self.play([self.ADD, text("찜했어요.")], {"approved": True}, {"response": {"ok": True}}), "ok")
+        self.assertEqual(self.play([text("찜했어요.")]), "ok")
+
+    def test_approve_cancelled(self):
+        self.assertEqual(self.play([self.ADD], {"approved": False}), "approve_cancelled")
+        self.assertEqual(self.play([self.ADD], {"cancelled": True}), "approve_cancelled")
+
+    def test_ask_cancelled(self):
+        self.assertEqual(self.play([self.ASK], {"cancelled": True}), "ask_cancelled")
+        self.assertEqual(self.play([self.ASK, text("알겠어요.")], {"response": {"answer": "취소"}}), "ask_cancelled")
+
+    def test_search_cancelled(self):
+        self.assertEqual(self.play([self.ASK_SEARCH], {"cancelled": True}), "search_cancelled")
+        self.assertEqual(self.play([self.ASK_SEARCH, text("그만할게요.")], {"response": {"answer": "취소"}}), "search_cancelled")
+
+    def test_rejected_only_when_it_ends_so(self):
+        bad = call("add_favorite", {"number": 0})
+        self.assertEqual(self.play([bad, text("다시 말해 주세요.")]), "rejected")
+        self.assertEqual(self.play([bad, self.ADD, text("찜했어요.")], {"approved": True}, {"response": {"ok": True}}), "ok")
+
+    def test_cannot(self):
+        for t in ("그건 할 수 없어요.", "상품을 찾지 못했어요."):
+            self.assertEqual(self.play([text(t)]), "cannot")
+
+    def test_too_many(self):
+        self.assertEqual(self.play([call("get_favorites")]), "too_many")
+
+    def test_error_first_and_later(self):
+        self.assertEqual(self.play([EngineError("x", 503)]), "error")
+        self.assertEqual(self.play([self.ASK, EngineError("x", 503)], {"response": {"answer": "1. A"}}), "error")
+
+    def test_left_alone_stays_waiting(self):
+        self.assertEqual(self.play([self.ASK]), "waiting")
+
+
+class SearchErrorKindTest(unittest.TestCase):
+    def test_search_and_stream_save_kind(self):
+        for path in ("/search", "/search/stream"):
+            logs = []
+            with mock.patch.object(auth, "fetch_user", side_effect=fake_fetch_user), \
+                    mock.patch.object(members, "get_role", return_value="user"), \
+                    mock.patch.object(members, "count_today", return_value=0), \
+                    mock.patch.object(members, "log_usage", side_effect=lambda *a, **kw: logs.append((a[3], kw.get("error_kind")))), \
+                    mock.patch.object(server, "is_local_request", return_value=False), \
+                    mock.patch.object(server.stats, "record_request"), \
+                    mock.patch.object(server, "perform_search", side_effect=EngineError("한도", 429)):
+                res = server.app.test_client().get(path, query_string={"q": "없는검색어kk"}, headers=GOOD)
+                res.get_data()
+            self.assertEqual(logs, [("error", "limit")], path)
 
 
 class CompareItemsTest(unittest.TestCase):

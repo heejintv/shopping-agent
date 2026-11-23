@@ -525,7 +525,12 @@ function showReport(d) {
   const unit = Object.fromEntries(d.aggregates.metrics.map(m => [m.id, m.unit]));
   $("reportBody").innerHTML = (d.problems.length ? list("검토 지적", d.problems) : "")
     + list("요약", d.draft.summary) + list("이상 징후", d.draft.anomalies) + list("⚡ 개선 제안", d.draft.suggestions)
-    + `<details open><summary>숫자별 근거 (${d.checks.length}개)</summary><div class="table-wrap"><table>
+    + `<details open><summary>이상 징후 판정 (${d.aggregates.anomalies.filter(a => a.triggered).length}개)</summary><div class="table-wrap"><table>
+      <thead><tr><th>규칙</th><th class="num">실제값</th><th class="num">기준</th><th>판정</th></tr></thead><tbody>`
+    + d.aggregates.anomalies.map(a => `<tr class="${a.triggered ? "row-warn" : ""}"><td class="text">${esc(a.label)}</td>
+      <td class="num">${val(a.value, a.unit)}</td><td class="num">${esc(a.op)} ${val(a.threshold, a.unit)}</td>
+      <td>${a.triggered == null ? "판정 안 함" : a.triggered ? "⚠️ 이상" : "정상"}</td></tr>`).join("")
+    + `</tbody></table></div></details><details open><summary>숫자별 근거 (${d.checks.length}개)</summary><div class="table-wrap"><table>
       <thead><tr><th>위치</th><th class="num">초안</th><th class="num">집계값</th><th>항목</th><th>출처</th><th>결과</th></tr></thead><tbody>`
     + d.checks.map(c => `<tr class="${c.ok ? "" : "row-bad"}"><td>${where[c.section]} ${c.line}번째 줄</td><td class="num">${esc(c.number)}</td>
       <td class="num">${c.id in unit ? val(c.expected, unit[c.id]) : "-"}</td><td class="text">${esc(c.label || c.id || "-")}</td>

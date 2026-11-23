@@ -58,6 +58,8 @@ class State(TypedDict, total=False):
     search_limit: int
     final: str | None         # 최종 답 (END)
     cancelled: bool
+    issue: str | None         # 직전 걸음의 문제 (rejected·search_cancelled·ask_cancelled). 다음 함수가 통과하면 지움
+    outcome: str | None       # 명령이 어떻게 끝났는지 (usage_logs.outcome)
     tokens: int
     trail: Annotated[list, operator.add]     # 지난 노드 순서
     effects: Annotated[list, operator.add]   # 화면이 할 일 (AI 비교 창 열기 등)
@@ -144,7 +146,7 @@ def initial_state(sentence, user_id, recent, candidates, query, favorites, remov
             "candidates": clean_candidates(candidates), "query": _s(query), "favorites": clean_favorites(favorites),
             "removed": clean_favorites(removed, 10), "recent_actions": actions.clean_recent(recent),
             "step_count": 0, "pending": None, "call": None, "user_id": user_id, "search_limit": search_limit,
-            "final": None, "cancelled": False, "tokens": 0, "trail": [], "effects": []}
+            "final": None, "cancelled": False, "issue": None, "outcome": None, "tokens": 0, "trail": [], "effects": []}
 
 
 # ---------- 서버 도구 ----------
@@ -380,11 +382,33 @@ def _respond(state, name, response) -> list:
     return state["messages"] + [{"role": "user", "parts": [{"functionResponse": {"name": name, "response": response}}]}]
 
 
+# ---------- 명령 결과 종류 (일일 보고서의 "잘 안 된 명령") ----------
+
+_CANNOT = re.compile(r"수\s*(?:가|는)?\s*없(?!이)|못\s?(?:했|해|하|찾)|지원하지 않|부족해요")
+_SEARCH_Q = re.compile(r"검색\s*(?:을\s*)?(?:할|해|하)\s*(?:까|볼|드릴|시겠)")
+_NO = re.compile(r"^\s*(?:취소|그만|됐어|아니|안\s*(?:해|할|돼|됨))")
+
+
+def _is_search_question(call: dict) -> bool:
+    args = call.get("args") or {}
+    return call.get("name") == "ask_user" and bool(_SEARCH_Q.search(str(args.get("question") or "")))
+
+
+def ask_issue(call: dict, response) -> str | None:
+    """ask_user 답이 취소면 search_cancelled(검색 확인)·ask_cancelled, 아니면 None."""
+    if call.get("name") != "ask_user":
+        return None
+    answer = str((response or {}).get("answer") or "")
+    if not _NO.search(answer):
+        return None
+    return "search_cancelled" if _is_search_question(call) else "ask_cancelled"
+
+
 # ---------- 노드 ----------
 
 def agent(state: State) -> dict:
     if state["step_count"] >= actions.MAX_CALLS:
-        return {"final": actions.TOO_MANY, "call": None, "trail": ["agent(한도)"]}
+        return {"final": actions.TOO_MANY, "call": None, "outcome": "too_many", "trail": ["agent(한도)"]}
     usage = {}
     out = llm(actions.system_prompt(state.get("recent_actions") or []), state["messages"], actions.TOOLS,
               actions.TIMEOUT, usage)
@@ -392,7 +416,8 @@ def agent(state: State) -> dict:
            "tokens": (state.get("tokens") or 0) + (usage.get("tokens") or 0)}
     if out["type"] == "text":
         _log("agent #%d → 최종 답 (%d자)", upd["step_count"], len(out["text"]))
-        return {**upd, "final": out["text"], "call": None}
+        outcome = state.get("issue") or ("cannot" if _CANNOT.search(out["text"]) else "ok")
+        return {**upd, "final": out["text"], "call": None, "outcome": outcome}
     _log("agent #%d → functionCall %s %s", upd["step_count"], out["name"], out["args"])
     part = {"functionCall": {"name": out["name"], "args": out["args"]}}
     if out.get("signature"):
@@ -407,7 +432,8 @@ def validate(state: State) -> dict:
     if why is None and call["name"] == "search" and not actions.search_confirmed(state["messages"]):
         why = actions.search_confirm_reason(args["query"], state.get("search_limit") or 0)   # 검색은 확인부터
     if why:   # 사유를 담아 agent로
-        return {"messages": _respond(state, call["name"], {"error": why}), "call": None, "trail": ["validate"]}
+        return {"messages": _respond(state, call["name"], {"error": why}), "call": None, "issue": "rejected",
+                "trail": ["validate"]}
     call = {"name": call["name"], "args": args}
     pending = None
     if call["name"] == "logout":   # 실행 전 확인 필수: approve에서 [예/아니요]
@@ -417,7 +443,7 @@ def validate(state: State) -> dict:
         pending = ask_pending(call)
     elif call["name"] in CLIENT_TOOLS and call["name"] != "add_favorite":
         pending = {"kind": "client", "call": call}
-    return {"call": call, "pending": pending, "trail": ["validate"]}
+    return {"call": call, "pending": pending, "issue": None, "trail": ["validate"]}
 
 
 def server_tool(state: State) -> dict:
@@ -455,7 +481,7 @@ def approve(state: State) -> dict:
     if not (isinstance(answer, dict) and answer.get("approved") is True):
         cancelled = isinstance(answer, dict) and answer.get("cancelled") is True
         return {"final": "" if cancelled else SAVE_CANCELLED, "cancelled": cancelled, "call": None, "pending": None,
-                "trail": ["approve"]}
+                "outcome": "approve_cancelled", "trail": ["approve"]}
     call = state["call"]
     return {"pending": {"kind": "client", "call": {"name": call["name"], "args": call["args"]}, "product": call["product"]},
             "trail": ["approve"]}
@@ -466,12 +492,12 @@ def logout_answer(answer) -> dict:
     a = answer if isinstance(answer, dict) else {}
     end = {"call": None, "pending": None, "trail": ["approve"]}
     if a.get("cancelled") is True:
-        return {**end, "final": "", "cancelled": True}
+        return {**end, "final": "", "cancelled": True, "outcome": "approve_cancelled"}
     if a.get("logged_out") is True:   # 화면에서 이미 로그아웃된 상태
-        return {**end, "final": ALREADY_LOGGED_OUT}
+        return {**end, "final": ALREADY_LOGGED_OUT, "outcome": "ok"}
     if a.get("approved") is True:
-        return {**end, "final": LOGOUT_DONE, "effects": ["logout"]}
-    return {**end, "final": LOGOUT_KEPT}
+        return {**end, "final": LOGOUT_DONE, "effects": ["logout"], "outcome": "ok"}
+    return {**end, "final": LOGOUT_KEPT, "outcome": "approve_cancelled"}
 
 
 def wait_client(state: State) -> dict:
@@ -488,7 +514,9 @@ def wait_client(state: State) -> dict:
         value = interrupt({**pending, "selected": picked, "error": why, "question": pending["question"]})
         v = value if isinstance(value, dict) else {}
     if v.get("cancelled"):   # ask_user 대기 중 새 명령 등: 이 명령은 끝
-        return {"final": "", "cancelled": True, "call": None, "pending": None, "trail": ["wait_client"]}
+        search_q = _is_search_question(state.get("call") or {})
+        return {"final": "", "cancelled": True, "call": None, "pending": None, "trail": ["wait_client"],
+                "outcome": "search_cancelled" if search_q else "ask_cancelled"}
     if pending.get("kind") == "choose":   # 비교할 2개를 고름 → 비교하고, 비교 창 열기를 다시 화면에 (wait_client 한 번 더)
         items = {i["key"]: i for i in state["call"].get("items") or []}
         resp, payload = run_compare([items[k] for k in picked])
@@ -503,6 +531,7 @@ def wait_client(state: State) -> dict:
             reason = _s(r.get("reason"), 200) or "화면에서 결과를 받지 못했어요"
             _log("compare_favorites 비교 창 열기 실패: %s", reason)
             return {"final": COMPARE_OPEN_FAILED.format(reason=reason), "call": None, "pending": None,
+                    "outcome": "error",
                     "trail": ["wait_client"]}
         resp = {**(state["call"].get("result") or {}), "opened": True, "note": COMPARE_OPENED_NOTE}
         return {"messages": _respond(state, "compare_favorites", resp), "call": None, "pending": None,
@@ -511,7 +540,7 @@ def wait_client(state: State) -> dict:
         return {"messages": _respond(state, "ask_user", {"answers": picked}), "call": None, "pending": None,
                 "trail": ["wait_client"]}
     upd = {"messages": _respond(state, state["call"]["name"], v.get("response") or {}), "call": None, "pending": None,
-           "trail": ["wait_client"]}
+           "issue": ask_issue(state["call"], v.get("response")), "trail": ["wait_client"]}
     if "candidates" in v:
         upd["candidates"], upd["query"] = v["candidates"], v.get("query") or ""
     if "favorites" in v:
@@ -577,7 +606,7 @@ def run(inp, thread_id: str) -> dict:
     config = {"configurable": {"thread_id": thread_id}, "recursion_limit": RECURSION_LIMIT}
     if not isinstance(inp, Command):   # 새 명령: 새 thread에서 빈 상태로 시작 (이전 candidates·pending이 남지 않게)
         forget(thread_id)
-        inp = {**inp, "pending": None, "call": None, "final": None, "cancelled": False}
+        inp = {**inp, "pending": None, "call": None, "final": None, "cancelled": False, "issue": None, "outcome": None}
     graph.invoke(inp, config)
     snap = graph.get_state(config)
     v = snap.values
@@ -586,7 +615,8 @@ def run(inp, thread_id: str) -> dict:
     if waits:
         return {"type": "interrupt", "pending": waits[0].value, "done": False, **base}
     base["trail"].append("END")
-    return {"type": "text", "text": v.get("final") or "", "cancelled": bool(v.get("cancelled")), "done": True, **base}
+    return {"type": "text", "text": v.get("final") or "", "cancelled": bool(v.get("cancelled")), "done": True,
+            "outcome": v.get("outcome") or "ok", **base}
 
 
 def resume(value) -> Command:

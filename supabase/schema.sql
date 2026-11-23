@@ -171,3 +171,17 @@ grant insert (user_id, item_key, item, query) on public.favorites to authenticat
 alter table public.usage_logs add column if not exists tokens integer check (tokens is null or tokens >= 0);
 -- 대시보드가 기간별로 최신순으로 읽을 때 쓰는 색인
 create index if not exists usage_logs_created on public.usage_logs (created_at desc);
+
+
+-- =====================================================================
+-- 추가분 4: 일일 보고서 근거 (파일 전체를 다시 실행해도 됨)
+-- =====================================================================
+
+-- 11) usage_logs.outcome: ⚡ 명령이 어떻게 끝났는지
+--     ok · rejected · ask_cancelled · approve_cancelled · search_cancelled · cannot · too_many · error · waiting(아직 안 끝남)
+--     usage_logs.error_kind: 검색 실패 종류 (token · limit · timeout · server · db · other)
+--     usage_logs.log_id: ⚡ 명령이 끝났을 때 서버가 같은 줄의 outcome을 고치기 위한 무작위 값
+alter table public.usage_logs add column if not exists outcome text;
+alter table public.usage_logs add column if not exists error_kind text;
+alter table public.usage_logs add column if not exists log_id text;
+create unique index if not exists usage_logs_log_id on public.usage_logs (log_id) where log_id is not null;

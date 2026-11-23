@@ -32,7 +32,11 @@ KIND_ACTIONS = {"search": ("search",), "chat": ("chat", "compare")}
 
 
 class MemberError(Exception):
-    """Supabase 회원 기록에 연결할 수 없음 (설정 없음·네트워크 오류)."""
+    """Supabase 회원 기록에 연결할 수 없음 (설정 없음·네트워크 오류). code: HTTP 상태 코드(모르면 None)."""
+
+    def __init__(self, message: str, code: int | None = None):
+        super().__init__(message)
+        self.code = code
 
 
 class LimitReached(Exception):
@@ -70,7 +74,7 @@ def _request(method: str, path: str, params: dict | None = None, body=None, extr
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             return resp.headers, resp.read()
     except urllib.error.HTTPError as e:
-        raise MemberError(f"Supabase {path} {e.code}") from None   # 응답 본문·키는 남기지 않음
+        raise MemberError(f"Supabase {path} {e.code}", e.code) from None   # 응답 본문·키는 남기지 않음
     except (urllib.error.URLError, TimeoutError, OSError):
         raise MemberError(f"Supabase {path} 연결 실패") from None
 
@@ -129,11 +133,19 @@ def usage_since(start_iso: str) -> tuple[list[dict], bool]:
 
 def usage_between(start: datetime, end: datetime) -> tuple[list[dict], bool]:
     """start 이상 end 미만의 사용 기록 (최신순, 일일 보고서용)."""
-    return select_rows("usage_logs", {
-        "select": "created_at,user_id,action,status,query,engine,duration_ms,tokens",   # 이메일은 읽지 않음
+    columns = "created_at,user_id,action,status,query,engine,duration_ms,tokens"   # 이메일은 읽지 않음
+    params = {
+        "select": columns + ",outcome,error_kind",
         "and": f'(created_at.gte."{start.isoformat()}",created_at.lt."{end.isoformat()}")',
         "order": "created_at.desc",
-    })
+    }
+    try:
+        return select_rows("usage_logs", params)
+    except MemberError as e:
+        if e.code != 400:
+            raise
+        log.warning("usage_logs에 outcome·error_kind 열이 없어요. supabase/schema.sql을 실행하세요.")
+        return select_rows("usage_logs", {**params, "select": columns})
 
 
 # ---------- 오늘 사용 횟수 ----------
@@ -169,9 +181,11 @@ def count_today(user_id: str | None, kind: str) -> int:
 
 def log_usage(user_id: str, email: str | None, action: str, status: str, query: str | None = None,
               engine: str | None = None, duration_ms: float | None = None, exempt: bool = False,
-              tokens: int | None = None) -> None:
+              tokens: int | None = None, outcome: str | None = None, error_kind: str | None = None,
+              log_id: str | None = None) -> None:
     """usage_logs에 한 줄 쓴다. 실패해도 응답은 그대로 (경고 로그만, 내용·키는 남기지 않음).
-    exempt=True: 한도 예외(admin·내 PC) 사용이라 서버 전체 상한에 안 셈."""
+    exempt=True: 한도 예외(admin·내 PC) 사용이라 서버 전체 상한에 안 셈.
+    outcome(⚡ 결과 종류)·error_kind(검색 실패 종류)·log_id 열이 아직 없는 DB면 그 값만 빼고 다시 씀 (하루 횟수는 꼭 세야 함)."""
     row = {
         "user_id": user_id, "email": email, "action": action, "status": status,
         "query": (query or "")[:QUERY_MAX] or None, "engine": engine,
@@ -179,10 +193,26 @@ def log_usage(user_id: str, email: str | None, action: str, status: str, query: 
     }
     if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens >= 0:
         row["tokens"] = tokens   # Gemini가 알려 준 사용 토큰 수 (모르면 열을 비워 둠)
+    new = {k: v for k, v in (("outcome", outcome), ("error_kind", error_kind), ("log_id", log_id)) if v}
     try:
-        _request("POST", "usage_logs", body=row, extra={"Prefer": "return=minimal"})
+        try:
+            _request("POST", "usage_logs", body={**row, **new}, extra={"Prefer": "return=minimal"})
+        except MemberError as e:
+            if not new or e.code != 400:
+                raise
+            log.warning("usage_logs에 새 열이 없어요. supabase/schema.sql을 실행하세요.")
+            _request("POST", "usage_logs", body=row, extra={"Prefer": "return=minimal"})
     except MemberError as e:
         log.warning("usage log failed: %s", e)
+
+
+def update_outcome(log_id: str, outcome: str) -> None:
+    """⚡ 명령이 끝났을 때 처음 남긴 줄의 outcome을 고침. 실패해도 응답은 그대로."""
+    try:
+        _request("PATCH", "usage_logs", {"log_id": f"eq.{log_id}"}, body={"outcome": outcome},
+                 extra={"Prefer": "return=minimal"})
+    except MemberError as e:
+        log.warning("outcome update failed: %s", e)
 
 
 # ---------- 한도 ----------

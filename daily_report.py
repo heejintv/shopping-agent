@@ -19,6 +19,20 @@ ACTION_PREFIX = "[실행] "   # ⚡ 명령 기록의 query 앞머리 (app.chat_a
 TOP = 5
 TEXT_MAX = 80
 FAILED = ("error", "timeout")
+FAIL_KINDS = {"token": "로그인·토큰", "limit": "AI 사용량 한도", "timeout": "시간 초과", "server": "AI 서버 장애",
+              "db": "회원 DB 연결", "other": "기타(원인 로그 없음 포함)"}
+# 잘 안 된 ⚡ 명령: usage_logs.outcome → 이름 (status=error·timeout도 error로 셈)
+BAD_OUTCOMES = {"error": "오류", "rejected": "검사(validate) 거부", "ask_cancelled": "되물음 후 취소",
+                "approve_cancelled": "승인 카드 취소", "cannot": "할 수 없다는 답변",
+                "search_cancelled": "검색 확인에서 취소", "too_many": "반복 한도 초과"}
+# 이상 징후 규칙: (id, 이름, 보는 값, 비교, 기준값, 단위)
+RULES = (
+    ("rule.fail_rate", "검색 실패율", "search.fail_rate", ">", 10, "%"),
+    ("rule.avg_sec", "새 검색 평균 시간", "search.avg_sec", ">", 45, "초"),
+    ("rule.other_rate", "실패 중 기타 비율", "search.other_rate", "≥", 50, "%"),
+    ("rule.gemini_rate", "Gemini 하루 한도 사용률", "gemini.usage_rate", ">", 80, "%"),
+    ("rule.limited_users", "한도 도달 사용자", "users.limited", "≥", 1, "명"),
+)
 
 
 # ---------- 개인정보 가리기 ----------
@@ -88,17 +102,36 @@ def load_events(start: datetime, end: datetime) -> list[dict]:
 
 
 def _failure_kinds(failed: list[dict], events: list[dict]) -> dict:
-    """실패 검색을 토큰/한도/시간 초과/기타로. usage_logs에는 오류 코드가 없어서 모니터링 로그의 코드를 씀.
-    로그가 없으면(서버 재시작 등) 기타. 합계는 항상 실패 수와 같음."""
+    """실패 검색을 종류별로. usage_logs.error_kind가 있으면 그 값, 없는 예전 기록은 모니터링 로그의 코드로 맞춤.
+    둘 다 없으면 기타. 합계는 항상 실패 수와 같음."""
+    out = Counter("timeout" if r.get("status") == "timeout" else r["error_kind"] if r.get("error_kind") in FAIL_KINDS
+                  else "" for r in failed)
+    left = out.pop("", 0)   # 종류를 모르는 예전 기록
     codes = Counter(str(e.get("code")) for e in events if e.get("kind") == "search" and e.get("ok") is False)
-    left = sum(1 for r in failed if r.get("status") == "error")
-    timeout = len(failed) - left
-    out = {}
-    for kind, n in (("token", codes["401"]), ("limit", codes["429"]), ("timeout", max(0, codes["504"] - timeout))):
-        out[kind] = min(n, left)
-        left -= out[kind]
-    out["timeout"] += timeout
-    out["other"] = left
+    for kind, code in (("token", "401"), ("limit", "429"), ("timeout", "504"), ("server", "503")):
+        n = min(left, max(0, codes[code] - out[kind]))   # error_kind로 이미 센 것은 빼고
+        out[kind] += n
+        left -= n
+    out["other"] += left
+    return {k: out[k] for k in FAIL_KINDS}
+
+
+def _rounded(exact: float, rule: str) -> float:
+    """소수 1자리. 반올림 때문에 기준값과 같아 보이면 더 자세히 (10.04% > 기준 10%)."""
+    base = next(r[4] for r in RULES if r[0] == rule)
+    v = round(exact, 1)
+    return round(exact, 4) if v == base and exact != base else v
+
+
+def judge(metrics: list[dict]) -> list[dict]:
+    """이상 징후 규칙 판정. 값이 없는 규칙(기록 없음·한도 설정 없음)은 triggered=None."""
+    known = {m["id"]: m["value"] for m in metrics}
+    out = []
+    for rid, label, mid, op, base, unit in RULES:
+        v = known.get(mid)
+        hit = None if v is None else v > base if op == ">" else v >= base
+        out.append({"id": rid, "label": label, "metric": mid, "op": op, "threshold": base, "value": v, "unit": unit,
+                    "triggered": hit, "text": f"{label} {v}{unit}[{mid}] {op} 기준 {base}{unit}[{rid}]" if hit else None})
     return out
 
 
@@ -124,7 +157,7 @@ def build(rows: list[dict], events: list[dict], now: datetime, truncated: bool =
         metrics.append({"id": mid, "label": label, "value": value, "unit": unit, "source": source, **kw})
 
     s = "usage_logs action=search"
-    log = "logs/stats-*.json events.code (usage_logs 실패 건과 맞춤)"
+    log = "logs/stats-*.json events.code"
     add("search.total", "검색 요청 수", len(searches), "회", s)
     add("search.ok", "새 검색 성공", ok, "회", f"{s}, status=ok")
     add("search.cached", "저장된 결과로 응답", by(searches, "cached"), "회", f"{s}, status=cached")
@@ -132,13 +165,14 @@ def build(rows: list[dict], events: list[dict], now: datetime, truncated: bool =
     add("search.limited", "한도 초과로 막힌 검색", by(searches, "limited"), "회", f"{s}, status=limited")
     add("search.cancelled", "취소된 검색", by(searches, "cancelled"), "회", f"{s}, status=cancelled")
     add("search.fail_rate", "검색 실패율 (실패 ÷ (성공+실패))",
-        round(len(failed) * 100 / (ok + len(failed)), 1) if ok + len(failed) else None, "%",
+        _rounded(len(failed) * 100 / (ok + len(failed)), "rule.fail_rate") if ok + len(failed) else None, "%",
         "계산: search.failed ÷ (search.ok + search.failed)")
-    add("search.fail_token", "실패: 로그인·토큰", kinds["token"], "회", f"{log} 401·403")
-    add("search.fail_limit", "실패: AI 사용량 한도", kinds["limit"], "회", f"{log} 429")
-    add("search.fail_timeout", "실패: 시간 초과", kinds["timeout"], "회", f"usage_logs status=timeout + {log} 504")
-    add("search.fail_other", "실패: 기타(원인 로그 없음 포함)", kinds["other"], "회", "계산: search.failed − 나머지 실패 종류")
-    add("search.avg_sec", "새 검색 평균 시간", round(sum(ms) / len(ms) / 1000, 1) if ms else None, "초",
+    for kind, name in FAIL_KINDS.items():
+        add(f"search.fail_{kind}", f"실패: {name}", kinds[kind], "회", f"usage_logs error_kind={kind}, 없으면 {log}")
+    add("search.other_rate", "실패 중 기타 비율",
+        _rounded(kinds["other"] * 100 / len(failed), "rule.other_rate") if failed else None, "%",
+        "계산: search.fail_other ÷ search.failed")
+    add("search.avg_sec", "새 검색 평균 시간", _rounded(sum(ms) / len(ms) / 1000, "rule.avg_sec") if ms else None, "초",
         f"{s}, status=ok, duration_ms 평균")
     add("chat.total", "상담·비교 요청 수 (⚡ 제외)", len(chats), "회", "usage_logs action=chat·compare")
     add("chat.failed", "상담·비교 실패", by(chats, *FAILED), "회", "usage_logs action=chat·compare, status=error·timeout")
@@ -149,6 +183,20 @@ def build(rows: list[dict], events: list[dict], now: datetime, truncated: bool =
                   and (t := mask_text(str(r["query"])[len(ACTION_PREFIX):])))
     for i, (text, n) in enumerate(top.most_common(TOP), 1):
         add(f"action.failed_top{i}", f"⚡ 실패 명령 {i}위", n, "회", f"{c}, status=error·timeout, 문장별 수", text=text)
+    result = lambda r: "error" if r.get("status") in FAILED else r.get("outcome")   # noqa: E731
+    bad = [r for r in cmds if result(r) in BAD_OUTCOMES]
+    o = f"{c}, outcome"
+    add("action.bad", "잘 안 된 ⚡ 명령", len(bad), "회", f"{o} (status=error·timeout 포함)")
+    for kind, name in BAD_OUTCOMES.items():
+        add(f"action.bad_{kind}", f"잘 안 된 ⚡ 명령: {name}", sum(1 for r in bad if result(r) == kind), "회", f"{o}={kind}")
+    add("action.unfinished", "⚡ 도중에 떠났거나 진행 중인 명령", sum(1 for r in cmds if result(r) == "waiting"), "회", f"{o}=waiting")
+    texts: dict[str, Counter] = {}
+    for r in bad:
+        if t := mask_text(str(r["query"])[len(ACTION_PREFIX):]):
+            texts.setdefault(t, Counter())[BAD_OUTCOMES[result(r)]] += 1
+    for i, (text, why) in enumerate(sorted(texts.items(), key=lambda x: -x[1].total())[:TOP], 1):
+        add(f"action.bad_top{i}", f"잘 안 된 ⚡ 명령 {i}위 ({', '.join(k for k, _ in why.most_common())})", why.total(), "회",
+            f"{o}, 문장별 수", text=text)
     top = Counter(t for r in searches if r.get("status") in ("ok", "cached")
                   and (t := mask_text(str(r.get("query") or "").lower())))
     for i, (text, n) in enumerate(top.most_common(TOP), 1):
@@ -159,16 +207,25 @@ def build(rows: list[dict], events: list[dict], now: datetime, truncated: bool =
     add("gemini.tokens", "Gemini 토큰", sum(_int(r.get("tokens")) for r in gem), "개", "usage_logs engine=gemini, tokens 합계")
     if gemini_limit:
         add("gemini.limit", "Gemini 하루 한도", gemini_limit, "회", "환경변수 GEMINI_DAILY_LIMIT")
+        add("gemini.usage_rate", "Gemini 하루 한도 사용률", _rounded(len(gem) * 100 / gemini_limit, "rule.gemini_rate"), "%",
+            "계산: gemini.calls ÷ gemini.limit")
+    anomalies = judge(metrics)
+    for a in anomalies:
+        add(a["id"], f"기준: {a['label']}", a["threshold"], a["unit"], "이상 징후 규칙 (daily_report.RULES)")
 
     notes = ["⚡ 명령 하나는 Gemini를 여러 번 불러도 사용 요청 한 건으로 집계됨"]
     if label:
         notes.append("하루가 끝나지 않아 지금 시각까지만 집계됨 (다른 날과 바로 비교할 수 없음)")
     if truncated:
         notes.append("기록이 너무 많아 일부만 집계됨")
-    if failed and not events:
-        notes.append("모니터링 로그가 없어(서버 재시작 등) 시간 초과 외 실패 원인은 기타로 집계됨")
+    if any(r.get("status") == "error" and r.get("error_kind") not in FAIL_KINDS for r in failed):
+        notes.append("실패 종류를 저장하지 않은 기록이 있어, 모니터링 로그로 못 찾은 원인은 기타로 집계됨")
+    if any(r.get("status") == "ok" and not r.get("outcome") for r in cmds):
+        notes.append("결과 종류(outcome)가 없는 ⚡ 기록이 있어 잘 안 된 명령이 실제보다 적게 집계될 수 있음")
+    if not gemini_limit:
+        notes.append("GEMINI_DAILY_LIMIT이 없어 Gemini 사용률은 판정하지 않음")
     return {"date": start.date().isoformat(), "label": label, "generated_at": now.astimezone(KST).isoformat(timespec="seconds"),
-            "metrics": metrics, "notes": notes}
+            "metrics": metrics, "anomalies": anomalies, "notes": notes}
 
 
 # ---------- 초안 정리·숫자 대조 ----------
@@ -192,6 +249,12 @@ _TOKEN = re.compile(r"\[([a-z]+\.[a-z0-9_]+)\]|(\d[\d,]*(?:\.\d+)?)")
 _GAP = re.compile(r"[^\d\[\]\n]{0,4}")   # 숫자와 근거 사이에는 단위("회", "초", " %")만
 # 숫자로 쓰지 않고 한글로 쓴 수는 대조할 수 없으므로 틀린 것으로 봄
 _HANGUL_NUM = re.compile(r"(?<![가-힣])(?:한|두|세|네|다섯|여섯|일곱|여덟|아홉|열|스무|수십|수백)\s?(?:번|건|회|명|개|배)")
+
+
+def missing_anomalies(draft: dict, agg: dict) -> list[str]:
+    """판정된 이상 징후 중 초안의 anomalies에 (실제값·기준값 근거를 한 줄에 같이) 안 쓴 것."""
+    return [f"이상 징후 빠짐: {a['text']}" for a in agg.get("anomalies") or [] if a["triggered"]
+            and not any(f"[{a['metric']}]" in line and f"[{a['id']}]" in line for line in draft["anomalies"])]
 
 
 def check_numbers(draft: dict, agg: dict) -> list[dict]:

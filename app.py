@@ -351,16 +351,41 @@ def reserve(user: dict, kind: str, unlimited: bool):
 
 
 def finish(user: dict, action: str, status: str, t0: float, query=None, engine=None,
-           ticket: "members.Ticket | None" = None, exempt: bool = False, tokens: int | None = None):
+           ticket: "members.Ticket | None" = None, exempt: bool = False, tokens: int | None = None, **extra):
     """사용 기록을 남기고, 잡아 둔 한도 칸(ticket)을 놓는다. 기록이 끝난 뒤 놓아야 횟수가 정확함.
-    exempt: admin·내 PC 사용 (서버 전체 상한에 안 셈). tokens: Gemini 사용 토큰 수."""
+    exempt: admin·내 PC 사용 (서버 전체 상한에 안 셈). tokens: Gemini 사용 토큰 수.
+    extra: outcome·error_kind·log_id (있을 때만). 백그라운드로 남기면 그 스레드를 돌려줌."""
+    extra = {k: v for k, v in extra.items() if v is not None}
+
     def run():
         try:
             members.log_usage(user["id"], user.get("email"), action, status, query=query, engine=engine,
-                              duration_ms=(time.time() - t0) * 1000, exempt=exempt, tokens=tokens)
+                              duration_ms=(time.time() - t0) * 1000, exempt=exempt, tokens=tokens, **extra)
         finally:
             if ticket:
                 ticket.release()
+    if ASYNC_LOG:
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        return t
+    run()
+    return None
+
+
+_action_logs: dict[str, tuple] = {}   # 진행 중인 ⚡ 명령(cmd) → (usage_logs.log_id, 처음 기록하는 스레드)
+MAX_ACTION_LOGS = 500                 # 끝내지 않고 떠난 명령이 쌓이지 않게
+
+
+def finish_action(cmd: str, outcome: str) -> None:
+    """⚡ 명령이 끝남: 처음 남긴 줄의 outcome을 고침 (처음 기록이 끝난 뒤에)."""
+    log_id, first = _action_logs.pop(cmd, (None, None))
+    if not log_id:
+        return
+
+    def run():
+        if first:
+            first.join(timeout=15)
+        members.update_outcome(log_id, outcome)
     if ASYNC_LOG:
         threading.Thread(target=run, daemon=True).start()
     else:
@@ -828,17 +853,17 @@ def search():
             data = perform_search(q, c, path, engine, timings=timings)
         except subprocess.TimeoutExpired:
             record(ok=False, code=504)
-            done("timeout", engine=engine, ticket=ticket)
+            done("timeout", engine=engine, ticket=ticket, error_kind="timeout")
             return jsonify(error=f"검색 시간이 {CLAUDE_TIMEOUT}초를 넘었어요. 다시 시도해 주세요."), 504
         except EngineError as e:  # 엔진(Gemini·claude) 한도 초과·로그인 오류 등은 이유를 화면에 보여줌
             app.logger.warning("search engine failed: %s (%s)", e, e.__cause__)
             record(ok=False, code=e.code)
-            done("error", engine=engine, ticket=ticket)
+            done("error", engine=engine, ticket=ticket, error_kind=claude_errors.error_kind(e))
             return jsonify(error=str(e)), 502
-        except Exception:  # 실패한 결과는 캐시에 저장하지 않음
+        except Exception as e:  # 실패한 결과는 캐시에 저장하지 않음
             app.logger.exception("search failed")
             record(ok=False)
-            done("error", engine=engine, ticket=ticket)
+            done("error", engine=engine, ticket=ticket, error_kind=claude_errors.error_kind(e))
             return jsonify(error="검색 중 오류가 났어요. 서버 로그를 확인하세요."), 502
         data.update(cached=False, **quota_info(unlimited, "search", left))
         log_steps(q, timings)
@@ -886,6 +911,7 @@ def search_stream():
         ticket = None
         engine = None
         tokens = None
+        kind = None        # 실패 종류 (usage_logs.error_kind)
         status = "error"   # 사용 기록에 남길 결과 (ok·cached·limited·cancelled·timeout·error)
         timings = {}
         try:
@@ -925,22 +951,26 @@ def search_stream():
             status = "cancelled"   # 취소된 검색은 status가 ok가 아니라 하루 횟수에 안 셈
             job.emit("cancelled", {"refunded": ticket is not None})
         except members.MemberError as e:
+            kind = claude_errors.error_kind(e)
             app.logger.warning("quota check failed: %s", e)
             job.emit("error", {"error": MEMBER_DOWN, "status": 503})
         except subprocess.TimeoutExpired:
             record(ok=False, code=504)
-            status = "timeout"
+            status = kind = "timeout"
             job.emit("error", {"error": f"검색 시간이 {CLAUDE_TIMEOUT}초를 넘었어요. 다시 시도해 주세요.", "status": 504})
         except EngineError as e:
             app.logger.warning("search engine failed: %s (%s)", e, e.__cause__)
             record(ok=False, code=e.code)
+            kind = claude_errors.error_kind(e)
             job.emit("error", {"error": str(e), "status": 502})
-        except Exception:
+        except Exception as e:
             app.logger.exception("search stream failed")
             record(ok=False)
+            kind = claude_errors.error_kind(e)
             job.emit("error", {"error": "검색 중 오류가 났어요. 서버 로그를 확인하세요.", "status": 502})
         finally:
-            finish(user, "search", status, t0, query=q, engine=engine, ticket=ticket, exempt=unlimited, tokens=tokens)
+            finish(user, "search", status, t0, query=q, engine=engine, ticket=ticket, exempt=unlimited, tokens=tokens,
+                   error_kind=kind)
             job.emit(None)   # 끝 표시
             _jobs.pop(job.id, None)
 
@@ -1124,12 +1154,23 @@ def chat_action_step():
         actions.commands.drop(cmd)
         if first:
             record(ok=False, code=getattr(e, "code", None))
-            finish(user, "chat", "error", t0, query=topic, engine="gemini", ticket=ticket, exempt=unlimited)
+            finish(user, "chat", "error", t0, query=topic, engine="gemini", ticket=ticket, exempt=unlimited,
+                   outcome="error")
+        else:
+            finish_action(cmd, "error")
         return jsonify(error=actions.FAIL_MESSAGE, stop=True, **info), 502
+    outcome = out.pop("outcome", None)   # 끝났을 때만 있음
     if first:
         record()
-        finish(user, "chat", "ok", t0, query=topic, engine="gemini", ticket=ticket, exempt=unlimited,
-               tokens=out["tokens"] or None)
+        log_id = secrets.token_hex(8)
+        thread = finish(user, "chat", "ok", t0, query=topic, engine="gemini", ticket=ticket, exempt=unlimited,
+                        tokens=out["tokens"] or None, outcome=outcome or "waiting", log_id=log_id)
+        if not outcome:   # 화면을 기다림: 끝날 때 outcome을 고침
+            _action_logs[cmd] = (log_id, thread)
+            while len(_action_logs) > MAX_ACTION_LOGS:
+                _action_logs.pop(next(iter(_action_logs)), None)
+    elif outcome:
+        finish_action(cmd, outcome)
     if out.pop("done"):
         actions.commands.drop(cmd)   # 체크포인트도 지움
     out.pop("tokens", None)
