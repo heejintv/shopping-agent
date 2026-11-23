@@ -1813,12 +1813,11 @@ $("chatForm").addEventListener("submit", async e => {
   chatAsk(text);
 });
 
-// ---------- ⚡ 문장으로 실행 (Gemini Function Calling + ReAct 반복) ----------
-// 서버(/chat/action/step)는 Gemini가 고른 함수·입력값(functionCall)만 줌. 여기서 기존 찜(toggleWish)·검색(#f 제출)으로 실행하고
-// 결과를 functionResponse로 붙여 다시 보냄 → Gemini가 다음 함수를 고르거나 최종 답. 명령 하나에 최대 5번, 상담 횟수는 1회
+// ---------- ⚡ 문장으로 실행 (서버 LangGraph + 화면 실행) ----------
+// 서버(/chat/action/step, react_graph.py)가 agent → validate → server_tool / approve / wait_client 를 돌다가
+// 화면에서 할 일(찜·검색·창 열기·되묻기·저장 승인)이 생기면 멈춤(interrupt) → 여기서 기존 찜(toggleWish)·검색(#f 제출)으로
+// 실행하고 {cmd, resume}으로 이어 감. 명령 하나에 상담 1회, Gemini 최대 5번 (서버가 셈)
 
-const ACT_MAX = 5;
-const MARKS = "①②③④⑤";
 $("actMode").addEventListener("click", () => {
   actMode = !actMode;
   chatSetEnabled();
@@ -1899,62 +1898,16 @@ function answerAsk(text, typed = text) {
 }
 function cancelAsk() { if (pendingAsk) pendingAsk({ cancelled: true }); }
 
-// Gemini에 돌려줄 후보 (번호는 지금 결과 순서, 1부터)
-const candidate = (p, i) => ({
-  number: i + 1, name: productLabel(p), price: typeof p.price === "number" ? p.price : null, currency: p.currency || null,
+// 서버(LangGraph)에 보낼 지금 화면 상태: 검색 결과 후보·찜 목록(최근순)·최근에 찜 취소한 상품
+const resultsForServer = () => (shownResult?.products || []).map(p => ({
+  key: wishKey(p), name: productLabel(p), price: typeof p.price === "number" ? p.price : null, currency: p.currency || null,
   rating: typeof p.rating === "number" ? p.rating : null, review_count: typeof p.review_count === "number" ? p.review_count : null,
-  store: p.store || null, features: strList(p.pros).slice(0, 2), cons: strList(p.cons).slice(0, 1), wished: isWished(wishKey(p)),
-});
-
-// find_in_results: 설명 단어로 후보를 거름. 검색어에 있는 단어(예: "마우스")는 모든 상품에 맞는 것으로 봄
-// 딱 맞는 게 없으면 전체를 보내고 Gemini가 판단 (exact: false)
-function findInResults(description) {
-  const products = shownResult?.products || [];
-  if (!products.length) return { response: { candidates: [], total: 0, note: "지금 검색 결과가 없어요. 필요하면 search를 쓰세요." }, summary: "결과 없음" };
-  const q = norm(shownResult.query || "");
-  const words = norm(description || "").split(" ").filter(w => w.length >= 2 && !q.includes(w));
-  const text = p => norm([productLabel(p), p.store, ...strList(p.pros), ...strList(p.cons)].join(" "));
-  const all = products.map(candidate);
-  const hit = words.length ? all.filter((c, i) => words.some(w => text(products[i]).includes(w))) : all;
-  if (!hit.length) {
-    return { response: { candidates: all, total: all.length, exact: false,
-      note: "설명과 딱 맞는 상품이 없어 전체 결과를 보냈어요. 맞는 게 없으면 ask_user로 물어보세요." }, summary: `딱 맞는 후보 0개 (전체 ${all.length}개 전달)` };
-  }
-  return { response: { candidates: hit, total: all.length, exact: true }, summary: `후보 ${hit.length}개` };
-}
-
-// compare_favorites용: 비교에 필요한 값만 보냄 (서버가 조건으로 거르고 기존 1:1 비교로 추천)
-const favForCompare = w => ({ key: w.key, brand: w.brand, model: w.model, query: w.query, price: w.price, currency: w.currency,
-  rating: w.rating, review_count: w.review_count, pros: w.pros, cons: w.cons, store: w.store });
-
-async function compareFavorites(condition, cmd) {
-  const token = await authToken();
-  if (!token) return { response: { error: "로그인이 만료됐어요." }, summary: "로그인 만료" };
-  const res = await fetch(API_BASE + "/chat/action/compare", {
-    method: "POST",
-    headers: { ...API_HEADERS, "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ cmd, condition, favorites: wishList.map(favForCompare) }),
-  });
-  const r = await res.json().catch(() => ({}));
-  if (!res.ok || r.error) {
-    const msg = r.error || "비교하지 못했어요.";
-    return { response: { error: msg, matched: r.matched ?? null }, summary: `멈춤: ${msg}`, stop: !!r.stop };
-  }
-  const cmp = (r.keys || []).map(k => wishList.find(w => w.key === k));
-  const names = cmp.map(w => w ? productLabel(w) : "?");
-  const i = Number.isInteger(r.pick_id) && cmp[r.pick_id] ? r.pick_id : null;
-  const more = r.matched > 2 ? ` (찜 ${r.matched}개 중 최근 2개)` : "";
-  // 비교 버튼(🤖 AI에게 물어보기)과 똑같은 함수로 AI 비교 창을 열고 답을 보여 줌
-  if (cmp.every(Boolean)) compareWithAI(cmp, async () => ({ text: r.answer, pick: i })).catch(() => {});
-  return {
-    response: { ok: true, compared: names, recommended: i != null ? names[i] : null, analysis: r.answer,
-      note: "analysis는 서버가 숫자를 확인한 비교 결과예요. 추천 상품과 이유를 2~3문장으로 전해 주세요." },
-    summary: `${names.join(" vs ")}${more}${i != null ? ` → 추천 ${names[i]}` : ""}`,
-    target: names.join(", "),
-    message: r.answer,   // 최종 답이 비면 이 비교 답을 대신 보여 줌
-    see: cmp.every(Boolean) ? { pid: i ?? 0, onPick: k => openCompare(cmp, k), label: "👉 비교 화면에서 보기" } : null,
-  };
-}
+  store: p.store || null, features: strList(p.pros).slice(0, 2), cons: strList(p.cons).slice(0, 1),
+}));
+const favForServer = w => ({ key: w.key, brand: w.brand, model: w.model, price: w.price, currency: w.currency, rating: w.rating,
+  review_count: w.review_count, store: w.store, saved_at: w.saved_at, query: w.query,
+  pros: strList(w.pros).slice(0, 3), cons: strList(w.cons).slice(0, 3) });
+const favoritesForServer = () => favoritesByRecent().map(favForServer);
 
 // 찜 취소했던 상품을 그대로 다시 찜 (하트 버튼과 같은 저장 순서: 화면 → DB)
 function reWish(w) {
@@ -1967,90 +1920,101 @@ function reWish(w) {
   refreshWish();
 }
 
-// 찜 목록 (찜한 시각 최근순) → get_favorites의 번호 기준
+// 찜 목록 (찜한 시각 최근순) → 서버 get_favorites·remove_favorite(favorite_number)의 번호 기준
 const favoritesByRecent = () => [...wishList].sort((a, b) => wishTime(b) - wishTime(a));
-const favoriteInfo = (w, i) => ({ favorite_number: i + 1, name: productLabel(w), price: typeof w.price === "number" ? w.price : null,
-  currency: w.currency || null, rating: typeof w.rating === "number" ? w.rating : null,
-  review_count: typeof w.review_count === "number" ? w.review_count : null, saved_at: w.saved_at || null, query: w.query || null });
 
 // 조사: 받침에 맞게 (intent.js의 josa, 없으면 받침 없는 쪽)
 const jo = (w, pair) => window.josa ? window.josa(w, pair) : w + pair.split("/")[1];
 const q = w => `“${w}”`;   // 따옴표 안 이름에 조사를 붙일 때: jo(q(name), "을/를")
 
-// 함수 하나 실행 → {response(Gemini에 돌려줄 결과), summary(실행 기록 문구), message?(최종 답이 비면 대신 보일 문구),
-//                  see?(최종 답 아래 "보기" 링크), stop?}. 말풍선은 띄우지 않음 (말풍선은 Gemini 최종 답 하나)
-async function execTool(name, args, cmd, progress) {
+// 서버가 "화면에서 하라"고 한 일 (effects): AI 비교 창 열기 — 비교 버튼과 같은 compareWithAI
+function applyEffect(e) {
+  if (e?.type !== "compare") return null;
+  const cmp = (e.keys || []).map(k => wishList.find(w => w.key === k));
+  if (!cmp.every(Boolean) || cmp.length !== 2) return null;
+  const i = Number.isInteger(e.pick_id) && cmp[e.pick_id] ? e.pick_id : null;
+  compareWithAI(cmp, async () => ({ text: e.answer, pick: i })).catch(() => {});
+  return { pid: i ?? 0, onPick: k => openCompare(cmp, k), label: "👉 비교 화면에서 보기" };
+}
+
+// 승인 카드: 상품명·가격·"내 찜 목록"에 저장 [저장/취소] → {approved} | {cancelled}
+async function approveCard(p) {
+  const price = p.price != null ? fmtPrice(p.price, p.currency) : "가격 정보 없음";
+  const r = await askUser({ question: `♥ “내 찜 목록”에 저장할까요?\n상품: ${p.name}\n가격: ${price}`, options: ["저장", "취소"] });
+  if (r.cancelled) return { cancelled: true };
+  return { approved: r.answer === "저장" };
+}
+
+// wait_client: 화면에서 실행할 도구 → {resume(서버로 보낼 결과), summary, message?, see?, target?}
+// 찜은 기존 하트 버튼 함수(toggleWish)로, 검색은 검색창 제출로. 이미 찜된 상품은 절대 토글하지 않음
+async function runClientTool(pending, progress) {
+  const { name, args = {} } = pending.call || {};
   const products = shownResult?.products || [];
   const before = wishList.length;
-  const noItem = n => ({ response: { error: `${n}번 상품이 지금 결과에 없어요 (결과 ${products.length}개).` }, summary: `${n}번 없음` });
-  if (name === "find_in_results") return findInResults(args.description);
+  const done = (response, extra = {}) => ({ resume: { response, ...extra.data }, ...extra });
+  if (name === "ask_user") {
+    const r = await askUser(args);
+    if (r.cancelled) return { resume: { cancelled: true }, summary: "취소됨" };
+    return done({ answer: r.answer }, { summary: `“${r.answer}”` });
+  }
   if (name === "search") {
-    if (searchCtl) return { response: { error: "이미 진행 중인 검색이 있어요." }, summary: "검색 중이라 못 함" };
+    if (searchCtl) return done({ error: "이미 진행 중인 검색이 있어요." }, { summary: "검색 중이라 못 함" });
     progress("검색 중…");
     const r = await searchAndWait(args.query);
-    if (!r.ok) return { response: { error: r.error }, summary: `검색 실패: ${r.error}` };
-    const list = r.result?.products || [];
-    if (!list.length) return { response: { error: "검색 결과가 0개예요." }, summary: "결과 0개" };
-    return { response: { candidates: list.map(candidate), total: list.length }, summary: `검색 완료 ${list.length}개` };
+    const data = { candidates: resultsForServer(), query: shownResult?.query || args.query };
+    if (!r.ok) return done({ error: r.error }, { summary: `검색 실패: ${r.error}`, data });
+    const n = r.result?.products?.length || 0;
+    if (!n) return done({ error: "검색 결과가 0개예요." }, { summary: "결과 0개", data });
+    return done({ ok: true, total: n, note: "새 검색 결과예요. 고르려면 find_in_results를 쓰세요." },
+      { summary: `검색 완료 ${n}개`, data, target: args.query });
   }
-  if (name === "add_favorite") {
-    const p = args.number ? products[args.number - 1] : findProduct(args.name, products);
-    if (!p && !args.number) {   // 결과에 없으면 최근에 ⚡로 찜 취소한 상품에서 ("다시 찜해줘")
-      const w = findProduct(args.name, recentlyRemoved);
-      if (!w) return { response: { error: `${jo(q(args.name), "을/를")} 지금 결과에서 찾지 못했어요.` }, summary: "못 찾음" };
-      if (isWished(w.key)) return { response: { ok: true, already: true, name: productLabel(w), count: before }, summary: `이미 찜 (${before}개)`, target: productLabel(w) };
-      reWish(w);
-      return { response: { ok: true, name: productLabel(w), before, after: wishList.length }, summary: `찜 ${before}→${wishList.length}`,
-        message: `♥ ${jo(q(productLabel(w)), "을/를")} 다시 찜했어요.`, target: productLabel(w) };
+  if (name === "add_favorite") {   // approve를 지난 뒤
+    const p = pending.product || {};
+    const data = () => ({ favorites: favoritesForServer() });
+    if (isWished(p.key)) {   // 그사이 하트로 찜했어도 토글(해제)하지 않음
+      return done({ ok: true, already: true, name: p.name, message: "이미 찜한 상품이에요" }, { summary: "이미 찜 (실행 0회)", data: data(), target: p.name });
     }
-    if (!p) return noItem(args.number);
-    const pid = products.indexOf(p);
-    const see = { pid, onPick: highlightProduct, label: "👉 결과에서 보기" };
-    highlightProduct(pid);   // 찜한(이미 찜된) 상품 카드 강조 (예전 추천 강조와 같은 방식)
-    if (isWished(wishKey(p))) {
-      return { response: { ok: true, already: true, name: productLabel(p), count: before }, summary: `이미 찜 (${before}개)`,
-        message: `${jo(q(productLabel(p)), "은/는")} 이미 찜했어요.`, see, target: productLabel(p) };
+    const idx = products.findIndex(x => wishKey(x) === p.key);
+    const removed = recentlyRemoved.find(w => w.key === p.key);
+    if (idx >= 0) {
+      toggleWish(products[idx], shownResult);   // 하트 버튼과 같은 함수
+      highlightProduct(idx);                    // 찜한 상품 카드 강조
+    } else if (removed) {
+      reWish(removed);
+    } else {
+      return done({ error: "그 상품이 지금 화면에 없어요." }, { summary: "상품 없음", data: data() });
     }
-    toggleWish(p, shownResult);   // 하트 버튼과 같은 함수
-    return { response: { ok: true, name: productLabel(p), before, after: wishList.length }, summary: `찜 ${before}→${wishList.length}`,
-      message: `♥ ${jo(q(productLabel(p)), "을/를")} 찜했어요.`, see, target: productLabel(p) };
+    return done({ ok: true, name: p.name, before, after: wishList.length }, {
+      summary: `찜 ${before}→${wishList.length}`, data: data(), target: p.name,
+      message: `♥ ${jo(q(p.name), "을/를")} 찜했어요.`,
+      see: idx >= 0 ? { pid: idx, onPick: highlightProduct, label: "👉 결과에서 보기" } : null });
   }
   if (name === "remove_favorite") {
     const favs = favoritesByRecent();
+    const data = () => ({ favorites: favoritesForServer() });
     if (args.favorite_number && !favs[args.favorite_number - 1]) {
-      return { response: { error: `찜 ${args.favorite_number}번이 없어요 (찜 ${favs.length}개).` }, summary: `찜 ${args.favorite_number}번 없음` };
+      return done({ error: `찜 ${args.favorite_number}번이 없어요 (찜 ${favs.length}개).` }, { summary: `찜 ${args.favorite_number}번 없음`, data: data() });
     }
     const p = args.favorite_number ? favs[args.favorite_number - 1]
       : args.number ? products[args.number - 1] : (findProduct(args.name, products) || findProduct(args.name, wishList));
-    if (!p) return args.number ? noItem(args.number) : { response: { error: `${jo(q(args.name), "을/를")} 찾지 못했어요.` }, summary: "못 찾음" };
-    if (!isWished(wishKey(p))) return { response: { error: `${jo(q(productLabel(p)), "은/는")} 찜 목록에 없어요.` }, summary: "찜에 없음" };
+    if (!p) return done({ error: `${jo(q(args.name || `${args.number}번`), "을/를")} 찾지 못했어요.` }, { summary: "못 찾음", data: data() });
+    if (!isWished(wishKey(p))) return done({ error: `${jo(q(productLabel(p)), "은/는")} 찜 목록에 없어요.` }, { summary: "찜에 없음", data: data() });
     const saved = wishList.find(w => w.key === wishKey(p));
     if (saved) recentlyRemoved = [saved, ...recentlyRemoved.filter(w => w.key !== saved.key)].slice(0, 10);
     toggleWish(p, shownResult);
-    return { response: { ok: true, name: productLabel(p), before, after: wishList.length }, summary: `찜 ${before}→${wishList.length}`,
-      message: `♡ ${jo(q(productLabel(p)), "을/를")} 찜에서 뺐어요.`, target: productLabel(p) };
+    return done({ ok: true, name: productLabel(p), before, after: wishList.length }, {
+      summary: `찜 ${before}→${wishList.length}`, data: data(), target: productLabel(p),
+      message: `♡ ${jo(q(productLabel(p)), "을/를")} 찜에서 뺐어요.` });
   }
-  if (name === "get_favorites") {   // 데이터만 (화면 그대로)
-    const favs = favoritesByRecent();
-    return { response: { count: favs.length, favorites: favs.slice(0, 30).map(favoriteInfo),
-      note: "최근에 찜한 순서예요. 1번이 방금(가장 최근에) 찜한 상품이에요." }, summary: `찜 ${favs.length}개 확인` };
-  }
-  if (name === "open_favorites") {   // 사용자가 찜 목록을 열어/보여 달라고 할 때만
+  if (name === "open_favorites") {   // 사용자가 찜 목록을 열어/보여 달라고 할 때만 (서버 validate가 이 도구만 창을 엶)
     renderWishSheet(); openSheet("wishSheet");
-    return { response: { ok: true, count: wishList.length }, summary: `찜 목록 열기 (${wishList.length}개)`,
-      message: `찜 목록을 열었어요 (${wishList.length}개).` };
+    return done({ ok: true, count: wishList.length }, { summary: `찜 목록 열기 (${wishList.length}개)`, message: `찜 목록을 열었어요 (${wishList.length}개).` });
   }
-  if (name === "compare_favorites") return compareFavorites(args.condition || "", cmd);
-  if (name === "ask_user") {
-    const r = await askUser(args);
-    if (r.cancelled) return { response: { error: "사용자가 다른 일을 해서 멈췄어요." }, summary: "취소됨", stop: true };
-    return { response: { answer: r.answer }, summary: `“${r.answer}”` };
-  }
-  return { response: { error: `모르는 함수예요: ${name}` }, summary: "모르는 함수" };
+  return done({ error: `화면에서 실행할 수 없는 함수예요: ${name}` }, { summary: "모르는 함수" });
 }
 
-// 실행 기록용 함수 표시: find_in_results("휴대용 마우스"), add_favorite(2), get_favorites
-function callLabel(name, args) {
+// 실행 기록용 함수 표시: add_favorite(2), search("에어팟")
+function callLabel(name, args = {}) {
   const v = args.description ?? args.query ?? args.condition ?? args.favorite_number ?? args.number ?? args.name;
   if (name === "ask_user" || v == null || v === "") return name;
   return `${name}(${typeof v === "number" ? v : JSON.stringify(v)})`;
@@ -2061,6 +2025,8 @@ function chatAct(sentence, opts = {}) {
   actRun = runAct(sentence, opts);
   return actRun;
 }
+
+// ⚡ 명령 하나: 서버 그래프가 멈출 때마다(interrupt) 화면에서 실행·승인하고 resume으로 이어 감
 async function runAct(sentence, opts = {}) {
   sentence = sentence.trim().split(/\s+/).join(" ");
   if (!sentence || chatBusy || demoMode) return;
@@ -2072,21 +2038,21 @@ async function runAct(sentence, opts = {}) {
   chatAdd("user", (actAuto ? "⚡(자동) " : "⚡ ") + sentence);
   $("chatIn").value = "";
   chatBusy = true; chatSetEnabled();
-  const contents = [{ role: "user", parts: [{ text: sentence }] }];
-  const log = [];
-  const show = (extra = "") => actLogLine([...log, extra].filter(Boolean).join(" → "));
-  let cmd = null, wait = null;
-  let message = "", see = null;   // 마지막 도구의 대신 보일 문구·보기 링크 (최종 답 말풍선에 붙임)
+  let body = { sentence, recent: actHistory, results: resultsForServer(), query: shownResult?.query || "",
+    favorites: favoritesForServer(), removed: recentlyRemoved.map(favForServer) };
+  let cmd = null, wait = null, applied = 0, trail = [];
+  let message = "", see = null;    // 마지막 실행의 대신 보일 문구·보기 링크 (최종 답 말풍선에 붙임)
   const calls = [], targets = [];  // 이 명령의 요약 (다음 명령에 "최근 ⚡ 명령"으로 보냄)
+  const show = (extra = "") => actLogLine([trail.join(" → "), extra].filter(Boolean).join(" · "));   // 지난 노드 순서
   try {
-    for (let i = 0; i < ACT_MAX; i++) {
+    for (let guard = 0; guard < 20; guard++) {
       const token = await authToken();
       if (!token) { openAuth("login", "로그인이 만료됐어요. 다시 로그인해 주세요."); throw new Error("로그인이 만료됐어요."); }
-      wait = chatAdd("bot wait", i ? "다음 단계를 고르는 중..." : "실행할 동작을 고르는 중...");
+      wait = chatAdd("bot wait", cmd ? "다음 단계를 고르는 중..." : "실행할 동작을 고르는 중...");
       const res = await fetch(API_BASE + "/chat/action/step", {
         method: "POST",
         headers: { ...API_HEADERS, "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify(cmd ? { contents, cmd } : { contents, recent: actHistory }),   // 첫 단계에만 최근 명령 요약
+        body: JSON.stringify(body),
       });
       const data = await res.json().catch(() => ({}));
       wait.remove(); wait = null;
@@ -2095,43 +2061,52 @@ async function runAct(sentence, opts = {}) {
       if (res.status === 401 && data.login_required) { loginExpired(res, data); throw new Error(data.error || "다시 로그인해 주세요."); }
       if (!res.ok) throw new Error(data.error || "문장으로 실행하지 못했어요. 버튼으로 해 주세요.");
       cmd = data.cmd || cmd;
-      if (data.type === "text") {   // 최종 답: 말풍선은 이것 하나. 비어 있으면 그때만 앱 문구로 대신
-        if (data.rejected) log.push(`거부: ${data.rejected}`);
-        show();
+      trail = Array.isArray(data.trail) ? data.trail : trail;
+      for (const e of (data.effects || []).slice(applied)) {   // AI 비교 창 열기 등
+        const s = applyEffect(e);
+        if (s) { see = s; message = e.answer || message; }
+        if (e?.keys) targets.push(...(e.keys.map(k => wishList.find(w => w.key === k)).filter(Boolean).map(productLabel)));
+      }
+      applied = (data.effects || []).length;
+      show();
+      if (data.type === "text") {   // END: 말풍선은 최종 답 하나. 비어 있으면 그때만 앱 문구로 대신
+        if (data.cancelled) return;
         const text = String(data.text || "").trim();
-        if (!text && !message) return chatAdd("info", log.length ? "실행을 마쳤어요. 아래 실행 기록을 확인해 주세요." : "알아듣지 못했어요. 버튼으로 해 주세요.");
+        if (!text && !message) return chatAdd("info", "실행을 마쳤어요. 아래 실행 기록을 확인해 주세요.");
         if (see) chatAddAnswer(text || message, see.pid, see.onPick, see.label);
         else if (text) chatAdd("bot", text);
         else chatAdd("info", message);
         return;
       }
-      const { name, args = {}, signature } = data.call || {};
-      contents.push({ role: "model", parts: [{ functionCall: { name, args }, ...(signature ? { thoughtSignature: signature } : {}) }] });
-      // 서버가 거부한 함수(입력값·권한 오류)는 실행하지 않고 사유를 Gemini에 돌려보냄
-      const step = `${MARKS[i]} ${callLabel(name, args)}`;
-      show(step);
-      const r = data.rejected ? { response: { error: data.rejected }, summary: `거부: ${data.rejected}` }
-        : await execTool(name, args, cmd, text => show(`${step} → ${text}`));
+      const p = data.pending || {};
+      calls.push(callLabel(p.call?.name, p.call?.args));
+      let r;
+      if (p.kind === "approve") {
+        const a = await approveCard(p.product || {});
+        r = { resume: a, summary: a.cancelled ? "취소됨" : a.approved ? "저장 승인" : "저장 취소" };
+      } else {
+        r = await runClientTool(p, text => show(`${callLabel(p.call?.name, p.call?.args)} → ${text}`));
+      }
       if (who !== authUser?.id) return;
-      log.push(`${step}${r.summary ? " → " + r.summary : ""}`);
-      show();
-      calls.push(callLabel(name, args) + (data.rejected ? " (거부)" : ""));
-      if (r.target && !targets.includes(r.target)) targets.push(r.target);
+      show(`${callLabel(p.call?.name, p.call?.args)} → ${r.summary}`);
       if (r.message) message = r.message;
       if (r.see) see = r.see;
-      if (r.stop) return;
-      contents.push({ role: "user", parts: [{ functionResponse: { name, response: r.response } }] });
+      if (r.target && !targets.includes(r.target)) targets.push(r.target);
+      body = { cmd, resume: r.resume };
+      if (r.resume.cancelled) {   // 새 명령으로 넘어감: 서버 그래프도 끝내 두고(END) 기다리지 않음
+        fetch(API_BASE + "/chat/action/step", { method: "POST", body: JSON.stringify(body),
+          headers: { ...API_HEADERS, "Content-Type": "application/json", Authorization: `Bearer ${token}` } }).catch(() => {});
+        return;
+      }
     }
-    log.push(`최대 ${ACT_MAX}번이라 멈춤`); show();
-    chatAdd("err", `단계가 너무 많아서 멈췄어요 (명령 하나에 최대 ${ACT_MAX}번). 버튼으로 해 주세요.`);
+    chatAdd("err", "단계가 너무 많아서 멈췄어요. 버튼으로 해 주세요.");
   } catch (err) {
     wait?.remove();
     if (who !== authUser?.id) return;
     chatAdd("err", err instanceof TypeError ? "서버에 연결할 수 없어요. 버튼으로 해 주세요." : err.message);
-    if (log.length) { log.push("멈춤"); show(); }
   } finally {
     cancelAsk();
-    if (who === authUser?.id) actHistory = [{ input: sentence, calls, targets }, ...actHistory].slice(0, 5);
+    if (who === authUser?.id) actHistory = [{ input: sentence, calls, targets: [...new Set(targets)] }, ...actHistory].slice(0, 5);
     chatBusy = false; actAuto = false; actRunning = false; chatSetEnabled();
   }
 }

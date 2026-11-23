@@ -17,8 +17,7 @@
 - CORS는 GitHub Pages 주소(ALLOWED_ORIGIN)만 허용
 - /search/stream: 새 검색의 진행 단계를 실시간으로 보냄 (Server-Sent Events). 취소하면 claude를 멈추고 횟수에서 빼지 않음
 - /me: 로그인한 사람의 등급과 오늘 남은 횟수
-- /chat/action/step: 챗봇 ⚡. Gemini Function Calling 한 단계씩 (ReAct, 실행은 화면, 명령 하나에 상담 1회·최대 5번)
-- /chat/action/compare: ⚡ compare_favorites 실행 (진행 중인 명령으로만)
+- /chat/action/step: 챗봇 ⚡. LangGraph(react_graph.py)로 ReAct 반복, 화면 실행·승인은 interrupt/resume (명령 하나에 상담 1회·Gemini 최대 5번)
 - /admin/stats: 관리자 대시보드 (admin.html). 토큰 확인 + profiles.role=admin일 때만, 아니면 403
 - /admin/claude-check: admin 전용. claude --version + 짧은 claude -p로 토큰이 살아 있는지 (성공/실패·원인 종류만)
 - Render 배포(환경변수 RENDER=true): 모든 요청을 외부로 보고 하루 제한 적용, 처음 켜질 때 demo/ 결과를 캐시로 불러옴
@@ -42,6 +41,7 @@ from pathlib import Path
 from flask import Flask, Response, g, jsonify, request, send_from_directory
 
 import actions
+import react_graph
 import admin_stats
 import auth
 import chat
@@ -49,13 +49,13 @@ import claude_errors
 import members
 import stats
 from gemini import EngineError, call_gemini
-from gemini import step_call as gemini_step
 from gemini import model_name as gemini_model
 import links
 from links import verify_links
 from polish import polish_result
 
 BASE_DIR = Path(__file__).resolve().parent
+actions.commands.on_drop = react_graph.forget   # ⚡ 명령이 끝나거나 만료되면 LangGraph 체크포인트도 지움
 
 
 def load_env(path: Path) -> None:
@@ -966,27 +966,26 @@ def _member_post():
 
 @app.post("/chat/action/step")
 def chat_action_step():
-    """⚡ ReAct 한 단계: 대화 기록(사용자 문장 + functionCall/functionResponse)을 받아 Gemini Function Calling 1번
-    → {"type": "call", "call": {name, args, signature}} (화면이 실행) 또는 {"type": "text", "text"} (끝).
-    - 첫 단계(cmd 없음): 상담 하루 한도 1회 사용, cmd 발급. 이어지는 단계: cmd로 이어서 (한도 안 셈, 최대 actions.MAX_CALLS번)
-    - Gemini가 고른 함수가 등록 안 됐거나 입력값·권한이 틀리면 "rejected"에 사유 (화면은 실행하지 않고 사유를 돌려보냄)"""
+    """⚡ 명령 한 걸음 (LangGraph, react_graph.py). 서버가 대화 상태를 체크포인트(MemorySaver)로 들고 있음.
+    - 새 명령: {sentence, recent, results, query, favorites, removed} → 상담 하루 한도 1회, cmd(thread_id) 발급
+    - 이어 가기: {cmd, resume} → Command(resume=resume)로 멈췄던 노드(wait_client·approve)부터
+    응답: {"type": "interrupt", "pending": {kind, call, product?}} (화면이 실행·승인) 또는 {"type": "text", "text"} (끝)
+          + trail(지난 노드 순서), effects(AI 비교 창 열기 등)"""
     user, body, err = _member_post()
     if err:
         return err
-    try:
-        contents = actions.clean_contents(body.get("contents"))
-    except ValueError as e:
-        return jsonify(error=str(e)), 400
     cmd = body.get("cmd")
     first = not cmd
-    if first and len(contents) != 1:
-        return jsonify(error="대화 기록 형식이 잘못됐어요."), 400
-    topic = "[실행] " + contents[0]["parts"][0]["text"]
     t0 = time.time()
     record = lambda **kw: stats.record_request("chat", (time.time() - t0) * 1000, **kw)  # noqa: E731
-    ticket, info, unlimited = None, {}, False
-    recent = actions.clean_recent(body.get("recent")) if first else actions.commands.recent(cmd)
+    ticket, info, unlimited, topic = None, {}, False, None
     if first:
+        sentence = " ".join(str(body.get("sentence") or "").split())
+        if not sentence:
+            return jsonify(error="문장을 입력하세요."), 400
+        if len(sentence) > actions.MAX_SENTENCE:
+            return jsonify(error=f"문장이 너무 길어요 ({actions.MAX_SENTENCE}자 이하)."), 400
+        topic = "[실행] " + sentence
         try:
             unlimited = is_unlimited(user)
         except members.MemberError as e:
@@ -999,67 +998,34 @@ def chat_action_step():
                 finish(user, "chat", "limited", t0, query=topic, exempt=unlimited)
             return err
         info = quota_info(unlimited, "chat", ticket.remaining if ticket else None)
+        cmd = actions.commands.start(user["id"])
+        inp = react_graph.initial_state(sentence, user["id"], body.get("recent"), body.get("results"), body.get("query"),
+                                        body.get("favorites"), body.get("removed"), DAILY_LIMIT)
     else:
-        why = actions.commands.use(cmd, user["id"])
+        why = actions.commands.check(cmd, user["id"])
         if why:
-            return jsonify(error=why, stop=True), 429 if why == actions.TOO_MANY else 403
-    usage = {}
+            return jsonify(error=why, stop=True), 403
+        try:
+            inp = react_graph.resume(react_graph.clean_resume(body.get("resume")))
+        except ValueError as e:
+            return jsonify(error=str(e)), 400
     try:
-        out = gemini_step(actions.system_prompt(recent), contents, actions.TOOLS, actions.TIMEOUT, usage)
+        out = react_graph.run(inp, cmd)
     except Exception as e:
         app.logger.warning("chat action step failed: %s (%s)", e, getattr(e, "__cause__", None))
+        actions.commands.drop(cmd)
         if first:
             record(ok=False, code=getattr(e, "code", None))
             finish(user, "chat", "error", t0, query=topic, engine="gemini", ticket=ticket, exempt=unlimited)
-        else:
-            actions.commands.drop(cmd)
         return jsonify(error=actions.FAIL_MESSAGE, stop=True, **info), 502
     if first:
         record()
         finish(user, "chat", "ok", t0, query=topic, engine="gemini", ticket=ticket, exempt=unlimited,
-               tokens=usage.get("tokens"))
-        cmd = actions.commands.start(user["id"], recent)
-    if out["type"] == "text":
-        actions.commands.drop(cmd)
-        return jsonify(type="text", text=out["text"], cmd=cmd, **info)
-    args, why = actions.check_call(out["name"], out["args"], user)
-    if why is None and out["name"] == "search" and not actions.search_confirmed(contents):
-        why = actions.search_confirm_reason(args["query"], DAILY_LIMIT)   # 검색은 비용이 드니 확인부터
-    call = {"name": out["name"], "args": args if why is None else out["args"], "signature": out["signature"]}
-    if out["name"] not in actions.TOOLS:   # 등록 안 된 함수는 대화 기록에 넣을 수 없어서 여기서 끝
-        actions.commands.drop(cmd)
-        return jsonify(type="text", text=f"{why} 버튼으로 해 주세요.", rejected=why, cmd=cmd, **info)
-    resp = {"type": "call", "call": call, "cmd": cmd, "calls_left": actions.commands.left(cmd), **info}
-    if why:
-        resp["rejected"] = why
-    return jsonify(resp)
-
-
-@app.post("/chat/action/compare")
-def chat_action_compare():
-    """⚡ compare_favorites 실행 (화면이 부름): 찜 목록에서 조건에 맞는 2개를 기존 1:1 비교로 추천.
-    진행 중인 cmd로만 (상담 한도는 첫 단계에서 이미 셈, Gemini 1번이라 cmd 횟수도 1 씀). 2개 미만이면 안내만."""
-    user, body, err = _member_post()
-    if err:
-        return err
-    cmd = body.get("cmd")
-    condition = " ".join(str(body.get("condition") or "").split())[:100]
-    picked, total = actions.match_favorites(body.get("favorites"), condition)
-    cmp = chat.clean_compare({"products": picked}) if len(picked) == 2 else None
-    if cmp is None:
-        return jsonify(error=actions.NEED_TWO, matched=total)
-    why = actions.commands.use(cmd, user["id"])
-    if why:
-        return jsonify(error=why, stop=True), 429 if why == actions.TOO_MANY else 403
-    try:
-        ans = chat.answer("두 상품을 비교해서 더 나은 하나를 추천해줘", cmp, [], True)   # 숫자는 compare.py가 검증
-    except EngineError as e:
-        app.logger.warning("chat action compare failed: %s (%s)", e, e.__cause__)
-        return jsonify(error=str(e)), 502
-    if ans.get("reasons_fixed"):
-        app.logger.info("chat action compare: 이유 %d줄을 일반 장점 문장으로 바꿈", ans["reasons_fixed"])
-    return jsonify(answer=ans["answer"], pick_id=ans["pick_id"], matched=total,
-                   keys=[str(p.get("key") or "") for p in picked], calls_left=actions.commands.left(cmd))
+               tokens=out["tokens"] or None)
+    if out.pop("done"):
+        actions.commands.drop(cmd)   # 체크포인트도 지움
+    out.pop("tokens", None)
+    return jsonify(**out, cmd=cmd, **info)
 
 
 @app.get("/me")

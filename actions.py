@@ -1,19 +1,12 @@
-"""챗봇 ⚡ "문장으로 실행": Gemini 공식 Function Calling + ReAct 반복.
+"""챗봇 ⚡ "문장으로 실행": 도구 정의·시스템 프롬프트·검사 규칙.
+반복(ReAct)은 react_graph.py의 LangGraph StateGraph가 서버에서 돌린다.
 
-흐름 (명령 하나):
-  화면 → /chat/action/step {contents: [사용자 문장]}            ← 처음: 상담 하루 한도 1회 사용, cmd 발급
-  서버 → Gemini 1번 → functionCall(도구·입력값) 또는 최종 답
-  화면이 도구를 실행(기존 찜·검색 함수) → 결과를 functionResponse로 붙여 다시 /chat/action/step {cmd, contents}
-  … 명령 하나에 Gemini 호출은 최대 MAX_CALLS번 (ask_user로 사용자에게 되물을 수 있음)
-
-서버가 매번 검사하는 것: 로그인, cmd가 이 사용자 것인지·남은 횟수, 대화 기록 모양,
-Gemini가 고른 함수가 등록된 것인지·입력값이 맞는지·권한(찜은 로그인 필요). 아니면 거부 사유를 돌려주고,
-화면은 그 사유를 functionResponse로 Gemini에 다시 보낸다.
+명령 하나: 화면 → /chat/action/step {sentence, …} (상담 하루 한도 1회, cmd = thread_id 발급)
+  → 그래프가 agent(Gemini 함수 호출) → validate → server_tool / approve / wait_client 를 돌다가
+    화면에서 실행할 일이 생기면 interrupt()로 멈춤 → 화면이 실행하고 {cmd, resume}으로 이어 감
+  … 명령 하나에 Gemini 호출은 최대 MAX_CALLS번
 """
 
-import base64
-import binascii
-import json
 import re
 import secrets
 import threading
@@ -22,10 +15,8 @@ import time
 MAX_SENTENCE = 200
 MAX_CALLS = 5            # 명령 하나당 Gemini 호출 수 (ReAct 반복 상한)
 CMD_TTL = 600            # 초. ask_user에 답을 기다리는 시간 포함
-MAX_TURNS = 1 + MAX_CALLS * 2
 MAX_TEXT = 300
 MAX_RESPONSE = 6000      # functionResponse JSON 글자 수
-MAX_SIGNATURE = 20000    # thoughtSignature(base64) 글자 수
 MAX_FAVORITES = 100
 TIMEOUT = 30             # 초
 FAIL_MESSAGE = "문장으로 실행하지 못했어요. 버튼으로 해 주세요."
@@ -91,6 +82,7 @@ SYSTEM = f"""너는 쇼핑 사이트 Pickit의 실행 도우미야. 사용자 �
 - 후보가 2개 이상인데 사용자가 기준(최저가, 평점, 브랜드, 번호, 가격대 등)을 말하지 않았으면 ask_user로 물어봐.
   options에는 후보 이름을 넣어 (최대 6개, 예: "1. 로지텍 M196"). 기준이 있으면 후보의 가격·평점·특징을 보고 직접 골라.
 - add_favorite의 number는 반드시 후보 결과에 있는 번호를 써. 번호를 지어내지 마.
+  찜하기 전에 화면이 저장 승인 카드를 보여 줘. 결과에 "already"가 있으면 이미 찜한 상품이니 그렇다고만 말해.
 - 범위 기본값: "최저가/제일 싼/가장 비싼/평점 높은" 같은 기준은 현재 검색 결과(find_in_results) 기준이야.
   사용자가 "찜한 것 중/찜 목록에서"라고 말할 때만 찜 목록(get_favorites) 기준으로 골라.
 - search는 하루 검색 횟수를 쓰니 사용자가 "검색/찾아"를 직접 말하지 않았으면 먼저
@@ -108,46 +100,42 @@ SYSTEM = f"""너는 쇼핑 사이트 Pickit의 실행 도우미야. 사용자 �
 # ---------- 명령(cmd): 상담 한도 1회로 여러 단계 ----------
 
 class Commands:
-    """진행 중인 ⚡ 명령. 워커가 하나라서(gunicorn.conf.py) 프로세스 메모리에 둔다."""
+    """진행 중인 ⚡ 명령(thread_id)의 주인·만료. 워커가 하나라서(gunicorn.conf.py) 프로세스 메모리에 둔다.
+    끝나거나 만료되면 on_drop(cmd)으로 체크포인트도 지움."""
 
-    def __init__(self):
+    def __init__(self, on_drop=None):
         self._lock = threading.Lock()
         self._items: dict[str, dict] = {}
+        self.on_drop = on_drop
 
-    def start(self, user_id: str, recent: list[dict] | None = None) -> str:
-        """새 명령 (Gemini 1번 쓴 상태로 시작). recent: 직전 ⚡ 명령 요약 (이어지는 단계에서도 같이 보냄)."""
+    def start(self, user_id: str) -> str:
         now = time.time()
         with self._lock:
-            for k in [k for k, v in self._items.items() if v["exp"] < now]:
+            old = [k for k, v in self._items.items() if v["exp"] < now]
+            for k in old:
                 del self._items[k]
             cmd = secrets.token_urlsafe(12)
-            self._items[cmd] = {"user": user_id, "calls": 1, "exp": now + CMD_TTL, "recent": recent or []}
+            self._items[cmd] = {"user": user_id, "exp": now + CMD_TTL}
+        for k in old:
+            self._dropped(k)
         return cmd
 
-    def use(self, cmd, user_id: str) -> str | None:
-        """이어지는 단계에서 Gemini 1번 더 쓰기. 안 되면 사유 문장, 되면 None."""
+    def check(self, cmd, user_id: str) -> str | None:
+        """이어 가도 되면 None, 아니면 사유 (없음·만료·다른 사람 명령)."""
         with self._lock:
             item = self._items.get(str(cmd or ""))
-            if not item or item["exp"] < time.time() or item["user"] != user_id:
-                return CMD_EXPIRED
-            if item["calls"] >= MAX_CALLS:
-                return TOO_MANY
-            item["calls"] += 1
-        return None
-
-    def recent(self, cmd: str) -> list[dict]:
-        with self._lock:
-            item = self._items.get(cmd)
-            return item["recent"] if item else []
-
-    def left(self, cmd: str) -> int:
-        with self._lock:
-            item = self._items.get(cmd)
-            return MAX_CALLS - item["calls"] if item else 0
+            ok = item and item["exp"] >= time.time() and item["user"] == user_id
+        return None if ok else CMD_EXPIRED
 
     def drop(self, cmd: str) -> None:
         with self._lock:
-            self._items.pop(cmd, None)
+            had = self._items.pop(cmd, None)
+        if had:
+            self._dropped(cmd)
+
+    def _dropped(self, cmd: str) -> None:
+        if self.on_drop:
+            self.on_drop(cmd)
 
 
 commands = Commands()
@@ -237,6 +225,7 @@ def system_prompt(recent: list[dict]) -> str:
 # ---------- 2) search는 확인 필수 ----------
 
 def search_confirmed(contents: list[dict]) -> bool:
+    # contents: [사용자 문장, (functionCall, functionResponse) …] (그래프 State의 messages)
     """사용자가 첫 문장에서 검색을 직접 말했거나, ask_user로 검색 확인 질문에 "검색"이라고 답했으면 True."""
     if SEARCH_WORDS.search(contents[0]["parts"][0]["text"]):
         return True
@@ -270,64 +259,6 @@ def search_confirm_reason(query: str, daily_limit: int) -> str:
     """확인 없이 search를 부르면 Gemini에 돌려줄 거부 사유 (다음에 ask_user로 물어보게)."""
     return (f"사용자가 검색을 직접 말하지 않았어요. 먼저 ask_user로 확인하세요: "
             f"question=\"{eul_reul(query or '이 상품')} 새로 검색할까요? (하루 검색 {daily_limit}회 중 1회 사용)\", options=[\"검색\", \"취소\"]")
-
-
-# ---------- 화면이 보낸 대화 기록 검사 ----------
-
-def _is_b64(s: str) -> bool:
-    try:
-        base64.b64decode(s, validate=True)
-        return True
-    except (binascii.Error, ValueError):
-        return False
-
-
-def clean_contents(raw) -> list[dict]:
-    """[{role, parts}] 검사. 허용: 첫 턴은 사용자 문장(text) 하나, 그 뒤로
-    model(functionCall 하나, thoughtSignature 선택) ↔ user(그 함수의 functionResponse) 반복. 아니면 ValueError(사유)."""
-    if not isinstance(raw, list) or not raw or len(raw) > MAX_TURNS:
-        raise ValueError("대화 기록 형식이 잘못됐어요.")
-    out = []
-    for i, turn in enumerate(raw):
-        if not isinstance(turn, dict) or not isinstance(turn.get("parts"), list) or len(turn["parts"]) != 1:
-            raise ValueError("대화 기록 형식이 잘못됐어요.")
-        part, role = turn["parts"][0], turn.get("role")
-        if not isinstance(part, dict):
-            raise ValueError("대화 기록 형식이 잘못됐어요.")
-        if i == 0:
-            text = " ".join(str(part.get("text") or "").split()) if role == "user" and set(part) == {"text"} else ""
-            if not text:
-                raise ValueError("문장을 입력하세요.")
-            if len(text) > MAX_SENTENCE:
-                raise ValueError(f"문장이 너무 길어요 ({MAX_SENTENCE}자 이하).")
-            out.append({"role": "user", "parts": [{"text": text}]})
-        elif i % 2 == 1:   # Gemini가 고른 함수 (서버가 준 그대로 돌아와야 함)
-            fc = part.get("functionCall")
-            sig = part.get("thoughtSignature")
-            if (role != "model" or not isinstance(fc, dict) or fc.get("name") not in TOOLS
-                    or set(part) - {"functionCall", "thoughtSignature"}):
-                raise ValueError("대화 기록 형식이 잘못됐어요.")
-            if sig is not None and (not isinstance(sig, str) or len(sig) > MAX_SIGNATURE or not _is_b64(sig)):
-                raise ValueError("대화 기록 형식이 잘못됐어요.")
-            args = fc.get("args") if isinstance(fc.get("args"), dict) else {}
-            if len(json.dumps(args, ensure_ascii=False)) > MAX_RESPONSE:
-                raise ValueError("대화 기록이 너무 길어요.")
-            p = {"functionCall": {"name": fc["name"], "args": args}}
-            if sig:
-                p["thoughtSignature"] = sig
-            out.append({"role": "model", "parts": [p]})
-        else:              # 화면이 실행한 결과
-            fr = part.get("functionResponse")
-            prev = out[-1]["parts"][0]["functionCall"]["name"]
-            if (role != "user" or not isinstance(fr, dict) or fr.get("name") != prev
-                    or not isinstance(fr.get("response"), dict)):
-                raise ValueError("대화 기록 형식이 잘못됐어요.")
-            if len(json.dumps(fr["response"], ensure_ascii=False)) > MAX_RESPONSE:
-                raise ValueError("도구 결과가 너무 길어요.")
-            out.append({"role": "user", "parts": [{"functionResponse": {"name": prev, "response": fr["response"]}}]})
-    if out[-1]["role"] != "user":
-        raise ValueError("도구 결과가 빠졌어요.")
-    return out
 
 
 # ---------- compare_favorites (찜 목록 조건 매칭) ----------
