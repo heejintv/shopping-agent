@@ -78,21 +78,23 @@
   .check-detail { color: var(--muted); font-size: 13px; }
 
   /* 일일 운영 보고서 */
-  #reportBody h3 { font-size: 14px; margin: 16px 0 4px; }
-  #reportBody ul { margin: 0; padding-left: 20px; }
-  #reportBody li { margin: 3px 0; overflow-wrap: anywhere; }
-  #reportBody details { margin-top: 14px; }
-  #reportBody summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+  .report-body h3 { font-size: 14px; margin: 16px 0 4px; }
+  .report-body ul { margin: 0; padding-left: 20px; }
+  .report-body li { margin: 3px 0; overflow-wrap: anywhere; }
+  .report-body details { margin-top: 14px; }
+  .report-body summary { cursor: pointer; font-weight: 600; font-size: 14px; }
   /* 보고서 그래프 색: 색각 이상에서도 구별되는 조합으로 확인함 (밝은·어두운 화면) */
-  #reportBody { --s1: #2563eb; --s2: #d97706; --s3: #0d9488; }
-  @media (prefers-color-scheme: dark) { #reportBody { --s1: #3b82f6; } }
+  .report-body { --s1: #2563eb; --s2: #d97706; --s3: #0d9488; }
+  @media (prefers-color-scheme: dark) { .report-body { --s1: #3b82f6; } }
   .report-charts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 12px; }
   .report-chart { border: 1px solid var(--line); border-radius: 12px; padding: 14px; min-width: 0; }
   .report-chart.wide { grid-column: 1 / -1; }
-  #reportBody .report-chart h3 { margin: 0 0 8px; }
+  .report-body .report-chart h3 { margin: 0 0 8px; }
   .report-chart .plot { position: relative; height: 200px; }
   .report-chart.wide .plot { height: 240px; }
   @media (max-width: 760px) { .report-charts { grid-template-columns: 1fr; } }
+  .report-tabs { margin-top: 14px; flex-wrap: wrap; }
+  .report-tabs button[aria-selected="true"] { background: var(--card); color: var(--accent); box-shadow: var(--shadow); }
   .report-actions { display: flex; gap: 8px; margin-top: 16px; }
 
   /* 숫자 카드 */
@@ -181,6 +183,16 @@
   <div class="err" id="err" role="alert" hidden></div>
 
   <div id="dash" hidden>
+    <section class="panel" id="autoPanel">
+      <div class="panel-head"><h2>오늘 아침 자동 보고서</h2><span class="na">매일 오전 9시쯤 · 어제 집계</span></div>
+      <div class="check-row">
+        <span id="autoVerdict" class="check-res" hidden></span>
+        <span id="autoMsg" class="check-detail" aria-live="polite">불러오는 중…</span>
+      </div>
+      <div class="report-body" id="autoBody" hidden></div>
+      <div class="report-actions" id="autoActions" hidden><button type="button" class="primary" id="autoApprove">승인</button></div>
+    </section>
+
     <div class="controls">
       <div class="seg" id="period" role="group" aria-label="기간">
         <button type="button" data-p="today" aria-pressed="true">오늘</button>
@@ -234,7 +246,7 @@
         <span id="reportVerdict" class="check-res" hidden></span>
         <span id="reportMsg" class="check-detail" aria-live="polite"></span>
       </div>
-      <div id="reportBody" hidden></div>
+      <div class="report-body" id="reportBody" hidden></div>
       <div class="report-actions" id="reportActions" hidden>
         <button type="button" class="primary" id="reportApprove">승인</button>
         <button type="button" class="ghost" id="reportRedo">다시 만들기</button>
@@ -524,40 +536,50 @@ function showReport(d) {
     if (d.state === "running") reportTimer = setTimeout(() => reportCall("/admin/report"), 3000);
     return;
   }
-  const pass = d.verdict === "검토 통과";
-  $("reportVerdict").className = "check-res " + (pass ? "ok" : "fail");
-  $("reportVerdict").textContent = (pass ? "✅ " : "⚠️ ") + d.verdict;
-  $("reportMsg").textContent = `${d.aggregates.date}${d.aggregates.label ? ` · ${d.aggregates.label}` : ""} · 수정 ${d.fixes}번 · Gemini ${d.calls}번 · 토큰 ${num(d.tokens)}개`
-    + (d.state === "approved" ? ` · 승인됨 ${fmtTime(d.approved_at)}` : "");
+  $("reportMsg").textContent = reportMeta(d) + (d.saved === false ? " · ⚠️ Supabase에 저장하지 못함" : "");
   $("reportApprove").hidden = d.state === "approved";
+  showVerdict($("reportVerdict"), d);
+  mountReport($("reportBody"), d);
+}
+
+const VERDICT_OK = ["검토 통과", "숫자 검증 통과 (AI 최종 검토 생략)"];
+const verdictOk = d => VERDICT_OK.includes(d.verdict);
+function showVerdict(el, d) {
+  el.hidden = false;
+  el.className = "check-res " + (verdictOk(d) ? "ok" : "fail");
+  el.textContent = (verdictOk(d) ? "✅ " : "⚠️ ") + d.verdict;
+}
+const reportMeta = d => `${d.aggregates.date}${d.aggregates.label ? ` · ${d.aggregates.label}` : ""} · 수정 ${d.fixes}번 · Gemini ${d.calls}번 · 토큰 ${num(d.tokens)}개`
+  + (d.state === "approved" ? ` · 승인됨 ${fmtTime(d.approved_at)}` : "");
+const approveOk = d => verdictOk(d) || confirm(`검토 결과가 '${d.verdict}'인 보고서예요. 그래도 승인할까요?`);
+
+// 보고서 하나를 탭으로: 요약(기본) · 그래프 · 이상·제안 · 근거. 긴 표는 근거 탭에만
+function mountReport(root, d) {
   const list = (title, lines) => `<h3>${title}</h3><ul>${lines.map(x => `<li>${esc(x)}</li>`).join("") || "<li>없음</li>"}</ul>`;
   const val = (v, u) => v == null ? "기록 없음" : `${num(v)}${esc(u || "")}`;
   const where = { summary: "요약", anomalies: "이상 징후", suggestions: "⚡ 개선 제안" };
-  const unit = Object.fromEntries(d.aggregates.metrics.map(m => [m.id, m.unit]));
   const agg = d.aggregates, charts = agg.charts;
+  const unit = Object.fromEntries(agg.metrics.map(m => [m.id, m.unit]));
   const metric = Object.fromEntries(agg.metrics.map(m => [m.id, m]));
   const table = (head, rows) => `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
   const chartTable = c => c.series
     ? table(`<th>시간</th>${c.series.map(x => `<th class="num">${esc(x.name)}</th>`).join("")}`,
         c.labels.map((l, i) => `<tr><td>${esc(l)}</td>${c.series.map(x => `<td class="num">${num(x.values[i])}</td>`).join("")}</tr>`).join(""))
     : table(`<th>항목</th><th class="num">값</th>`, c.bars.map(b => `<tr><td class="text">${esc(b.label)}</td><td class="num">${val(b.value, c.unit)}</td></tr>`).join(""));
-  $("reportBody").innerHTML =
-    // 1) 숫자 카드
-    `<div class="tiles">${agg.cards.map(id => `<div class="tile"><div class="k">${esc(metric[id].label)}</div>
-      <div class="v">${val(metric[id].value, metric[id].unit)}</div></div>`).join("")}</div>`
-    // 2) 그래프 (집계값 그대로)
-    + `<div class="report-charts">${Object.entries(charts).map(([id, c]) => `<div class="report-chart ${c.series ? "wide" : ""}">
+  const tabs = [
+    ["요약", `<div class="tiles">${agg.cards.map(id => `<div class="tile"><div class="k">${esc(metric[id].label)}</div>
+      <div class="v">${val(metric[id].value, metric[id].unit)}</div></div>`).join("")}</div>` + list("AI 요약", d.draft.summary)],
+    ["그래프", `<div class="report-charts">${Object.entries(charts).map(([id, c]) => `<div class="report-chart ${c.series ? "wide" : ""}">
       <h3>${esc(c.title)}</h3><div class="plot" data-chart="${id}"></div>
-      ${c.missing ? `<div class="meter-note">도구 기록이 없는 명령 ${num(c.missing)}개는 빠졌어요.</div>` : ""}</div>`).join("")}</div>`
-    // 3) 요약 4) 이상 징후·개선 제안
-    + list("AI 요약", d.draft.summary) + list("이상 징후", d.draft.anomalies)
+      ${c.missing ? `<div class="meter-note">도구 기록이 없는 명령 ${num(c.missing)}개는 빠졌어요.</div>` : ""}</div>`).join("")}</div>`],
+    ["이상·제안", list("이상 징후", d.draft.anomalies)
     + table(`<th>규칙</th><th class="num">실제값</th><th class="num">기준</th><th>판정</th>`,
       agg.anomalies.map(a => `<tr class="${a.triggered ? "row-warn" : ""}"><td class="text">${esc(a.label)}</td>
       <td class="num">${val(a.value, a.unit)}</td><td class="num">${esc(a.op)} ${val(a.threshold, a.unit)}</td>
       <td>${a.triggered == null ? "판정 안 함" : a.triggered ? "⚠️ 이상" : "정상"}</td></tr>`).join(""))
-    + list("⚡ 개선 제안", d.draft.suggestions) + (d.problems.length ? list("검토 지적", d.problems) : "")
-    // 5) 근거·전체 집계 (접어 둠)
-    + `<details><summary>숫자별 근거 (${d.checks.length}개)</summary>`
+    + list("⚡ 개선 제안", d.draft.suggestions)],
+    ["근거", (d.problems.length ? list("검토 지적", d.problems) : "")
+    + `<details open><summary>숫자별 근거 (${d.checks.length}개)</summary>`
     + table(`<th>위치</th><th class="num">초안</th><th class="num">집계값</th><th>항목</th><th>출처</th><th>결과</th>`,
       d.checks.map(c => `<tr class="${c.ok ? "" : "row-bad"}"><td>${where[c.section]} ${c.line}번째 줄</td><td class="num">${esc(c.number)}</td>
       <td class="num">${c.id in unit ? val(c.expected, unit[c.id]) : "-"}</td><td class="text">${esc(c.label || c.id || "-")}</td>
@@ -566,17 +588,71 @@ function showReport(d) {
     + table(`<th>항목</th><th class="num">값</th><th>출처</th>`,
       agg.metrics.map(m => `<tr><td class="text">${esc(m.label)}${m.text ? `: “${esc(m.text)}”` : ""}</td>
       <td class="num">${val(m.value, m.unit)}</td><td class="text">${esc(m.source)}</td></tr>`).join(""))
-    + Object.values(charts).map(c => `<h3>${esc(c.title)} <span class="na">${esc(c.source)}</span></h3>${chartTable(c)}`).join("")
-    + `${list("참고", agg.notes)}</details>`;
-  drawCharts(charts);
+    + `${list("참고", agg.notes)}</details><details><summary>시간대별·그래프 표</summary>`
+    + Object.values(charts).map(c => `<h3>${esc(c.title)} <span class="na">${esc(c.source)}</span></h3>${chartTable(c)}`).join("") + "</details>"],
+  ];
+  (root.charts || []).forEach(c => c.destroy());
+  root.charts = null;        // 그래프 탭을 처음 열 때 그림 (숨은 칸에서는 크기가 0)
+  root.chartData = charts;
+  root.innerHTML = `<div class="seg report-tabs" role="tablist" aria-label="보고서">${tabs.map(([name], i) =>
+      `<button type="button" role="tab" id="${root.id}-t${i}" aria-controls="${root.id}-p${i}">${name}</button>`).join("")}</div>`
+    + tabs.map(([, html], i) => `<div role="tabpanel" id="${root.id}-p${i}" aria-labelledby="${root.id}-t${i}">${html}</div>`).join("");
+  const btns = [...root.querySelectorAll('[role="tab"]')], panels = [...root.querySelectorAll('[role="tabpanel"]')];
+  const select = i => {
+    btns.forEach((b, n) => { b.setAttribute("aria-selected", String(n === i)); b.tabIndex = n === i ? 0 : -1; });
+    panels.forEach((p, n) => { p.hidden = n !== i; });
+    if (i === 1 && !root.charts) drawCharts(root);
+  };
+  btns.forEach((b, i) => {
+    b.addEventListener("click", () => select(i));
+    b.addEventListener("keydown", e => {
+      const n = { ArrowRight: i + 1, ArrowLeft: i - 1 }[e.key];
+      if (n === undefined) return;
+      e.preventDefault();
+      const next = (n + btns.length) % btns.length;
+      select(next); btns[next].focus();
+    });
+  });
+  select(0);
 }
 
-// 그래프: 서버가 준 집계값을 그대로 그림 (Chart.js). 표는 맨 아래 "전체 집계"에도 있음
-let reportCharts = [];
-function drawCharts(charts) {
-  reportCharts.forEach(c => c.destroy());
-  reportCharts = [];
-  const css = getComputedStyle($("reportBody")), color = n => css.getPropertyValue(n).trim();
+// ---------- 오늘 아침 자동 보고서 (GitHub Actions가 만들고 Supabase에 저장된 것) ----------
+let autoReport = null;
+async function autoCall(path, method = "GET", body) {
+  $("autoApprove").disabled = true;
+  try {
+    const t = await token();
+    if (!t) return showGate("관리자 계정으로 Pickit에 로그인한 뒤 다시 열어 주세요.");
+    if (base === null && !(await connect())) throw new TypeError();
+    const headers = { ...baseHeaders, Authorization: `Bearer ${t}` };
+    if (body) headers["Content-Type"] = "application/json";
+    const res = await fetch(base + path, { method, headers, cache: "no-store", body: body && JSON.stringify(body) });
+    const d = await res.json().catch(() => ({}));
+    if (res.status === 401) return showGate("로그인이 만료됐어요. Pickit에서 다시 로그인해 주세요.");
+    if (res.status === 403) return showGate("이 계정은 관리자 권한이 없어요.");
+    if (!res.ok) throw new Error(d.error || `서버 오류 (${res.status})`);
+    autoReport = d;
+    const has = d.state === "draft" || d.state === "approved";
+    $("autoBody").hidden = $("autoVerdict").hidden = !has;
+    $("autoActions").hidden = d.state !== "draft";
+    $("autoMsg").textContent = has ? `${reportMeta(d)} · 만든 시각 ${fmtTime(d.created_at)}` : "아직 자동 보고서가 없어요.";
+    if (has) { showVerdict($("autoVerdict"), d); mountReport($("autoBody"), d); }
+  } catch (e) {
+    $("autoMsg").textContent = e instanceof TypeError ? "서버에 연결할 수 없어요" : "⚠️ " + e.message;
+  } finally {
+    $("autoApprove").disabled = false;
+  }
+}
+$("autoApprove").addEventListener("click", () => {
+  if (autoReport && approveOk(autoReport)) autoCall("/admin/report/approve", "POST", { id: autoReport.id });
+});
+
+// 그래프: 서버가 준 집계값을 그대로 그림 (Chart.js). 표는 근거 탭에도 있음
+function drawCharts(root) {
+  (root.charts || []).forEach(c => c.destroy());
+  root.charts = [];
+  const charts = root.chartData;
+  const css = getComputedStyle(root), color = n => css.getPropertyValue(n).trim();
   const ink = color("--text"), muted = color("--muted"), line = color("--line"), surface = color("--card");
   const cut = t => t.length > 12 ? t.slice(0, 12) + "…" : t;
   const barValues = { id: "barValues", afterDatasetsDraw(ch) {   // 가로 막대 끝에 값 표시
@@ -585,18 +661,18 @@ function drawCharts(charts) {
     ch.getDatasetMeta(0).data.forEach((b, i) => g.fillText(num(ch.data.datasets[0].data[i]), b.x + 5, b.y));
     g.restore();
   } };
-  for (const box of $("reportBody").querySelectorAll("[data-chart]")) {
+  for (const box of root.querySelectorAll("[data-chart]")) {
     const c = charts[box.dataset.chart];
     const values = c.series ? c.series.flatMap(s => s.values) : c.bars.map(b => b.value);
     if (!values.some(v => v > 0)) { box.innerHTML = '<div class="empty">기록이 없어요.</div>'; continue; }
-    if (!window.Chart) { box.innerHTML = '<div class="empty">그래프를 불러오지 못했어요. 값은 아래 전체 집계에 있어요.</div>'; continue; }
+    if (!window.Chart) { box.innerHTML = '<div class="empty">그래프를 불러오지 못했어요. 값은 근거 탭에 있어요.</div>'; continue; }
     const cv = document.createElement("canvas");
     cv.setAttribute("role", "img");
-    cv.setAttribute("aria-label", `${c.title} 그래프. 값은 아래 전체 집계 표에 있어요.`);
+    cv.setAttribute("aria-label", `${c.title} 그래프. 값은 근거 탭의 표에 있어요.`);
     box.replaceChildren(cv);
     const axis = { border: { display: false }, ticks: { color: muted, precision: 0, font: { size: 11 } } };
     const tip = { callbacks: { label: t => `${c.series ? t.dataset.label + " " : ""}${num(t.raw)}${c.unit}` } };
-    reportCharts.push(new Chart(cv, c.series ? {
+    root.charts.push(new Chart(cv, c.series ? {
       type: "bar",
       data: { labels: c.labels, datasets: c.series.map((s, i) => ({ label: s.name, data: s.values, backgroundColor: color(`--s${i + 1}`),
         borderColor: surface, borderWidth: { top: 2 }, borderRadius: 4, maxBarThickness: 24 })) },
@@ -614,7 +690,14 @@ function drawCharts(charts) {
     }));
   }
 }
-matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (report?.aggregates) drawCharts(report.aggregates.charts); });
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+  for (const id of ["autoBody", "reportBody"]) {   // 그린 적 있는 그래프만 새 색으로 (숨어 있으면 다음에 열 때)
+    const root = $(id);
+    if (!root.charts) continue;
+    if (root.querySelectorAll('[role="tabpanel"]')[1].hidden) { root.charts.forEach(c => c.destroy()); root.charts = null; }
+    else drawCharts(root);
+  }
+});
 
 // 날짜: 어제(기본)·오늘은 누르는 순간의 한국 날짜, 직접 고르면 그 날짜. 다시 만들기는 지금 초안의 날짜
 let reportAgo = 1;   // 1 어제, 0 오늘, null 직접 선택
@@ -635,7 +718,7 @@ const makeReport = date => reportCall("/admin/report", "POST", { date });
 $("reportMake").addEventListener("click", () => { if (reportAgo !== null) setReportDay(reportAgo); makeReport($("reportDate").value); });
 $("reportRedo").addEventListener("click", () => makeReport(report.aggregates.date));
 $("reportApprove").addEventListener("click", () => {
-  if (report.verdict !== "검토 통과" && !confirm("검토에서 '수정 필요'로 나온 보고서예요. 그래도 승인할까요?")) return;
+  if (!approveOk(report)) return;
   reportCall("/admin/report/approve", "POST", { id: report.id });
 });
 
@@ -652,7 +735,7 @@ $("q").addEventListener("input", () => { clearTimeout(qTimer); qTimer = setTimeo
 $("reload").addEventListener("click", load);
 
 if (!sb) showGate("로그인 기능이 설정되지 않았어요. (config.js)");
-else load().then(() => { if (!$("dash").hidden) reportCall("/admin/report"); });   // 만들던 초안이 있으면 이어서 보기
+else load().then(() => { if (!$("dash").hidden) { autoCall("/admin/report/auto"); reportCall("/admin/report"); } });   // 만들던 초안이 있으면 이어서 보기
 </script>
 </body>
 </html>

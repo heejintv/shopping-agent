@@ -26,6 +26,7 @@
 """
 
 import hashlib
+import hmac
 import json
 import os
 import queue
@@ -1297,10 +1298,12 @@ def admin_stats_api():
 
 
 # ---------- 일일 운영 보고서 (admin 전용) ----------
+# 초안은 Supabase reports에도 저장 (source: manual·auto)
 # 만드는 데 몇 분 걸릴 수 있어 뒤에서 돌리고 화면이 GET으로 상태를 물어봄. 워커가 1개라 메모리에 하나만 둠
 
 REPORT_DIR = stats.LOG_DIR / "reports"   # 승인한 보고서 (Render 무료는 임시 디스크라 재시작하면 사라짐)
 _report_lock = threading.Lock()
+NO_DRAFT = "승인할 초안이 없거나 바뀌었어요. 다시 확인해 주세요."
 _report: dict = {"state": "none"}        # none | running | draft | approved | error
 
 
@@ -1312,24 +1315,42 @@ def _report_response(status: int = 200):
     return resp
 
 
-def _make_report(report_id: str, day=None) -> None:
-    """day: 집계할 날짜 (None이면 어제, 오늘이면 지금 시각까지)."""
-    global _report
+def _build_report(report_id: str, day=None) -> dict:
+    """집계 → Crew. day: 집계할 날짜 (None이면 어제, 오늘이면 지금 시각까지). 실패하면 state=error."""
     try:
         now = datetime.now(KST)
         start, end = daily_report.period(now, day)
         rows, truncated = members.usage_between(start, end)
         agg = daily_report.build(rows, daily_report.load_events(start, end), now, truncated, GEMINI_DAILY_LIMIT, day)
-        out = {"state": "draft", "id": report_id, "aggregates": agg, **report_crew.run(agg)}
+        return {"state": "draft", "id": report_id, "aggregates": agg, **report_crew.run(agg)}
     except members.MemberError as e:
         app.logger.warning("report failed: %s", e)
-        out = {"state": "error", "id": report_id, "error": MEMBER_DOWN}
+        return {"state": "error", "id": report_id, "error": MEMBER_DOWN}
     except EngineError as e:
         app.logger.warning("report failed: %s", e)
-        out = {"state": "error", "id": report_id, "error": str(e)}
+        return {"state": "error", "id": report_id, "error": str(e)}
     except Exception:
         app.logger.exception("report failed")
-        out = {"state": "error", "id": report_id, "error": "보고서를 만들지 못했어요. 서버 로그를 확인하세요."}
+        return {"state": "error", "id": report_id, "error": "보고서를 만들지 못했어요. 서버 로그를 확인하세요."}
+
+
+def _save_report(out: dict, source: str) -> int | None:
+    """초안을 Supabase reports에 저장 → None(성공) 또는 오류 코드(모르면 0)."""
+    body = {k: v for k, v in out.items() if k not in ("state", "id")}
+    try:
+        members.save_report(out["id"], out["aggregates"]["date"], source, body)
+    except members.MemberError as e:
+        app.logger.warning("report save failed: %s", e)
+        return e.code or 0
+    return None
+
+
+def _make_report(report_id: str, day=None, save: bool = False) -> None:
+    """관리자 화면·명령의 보고서. save: Supabase에도 저장 (실패해도 초안은 화면에 보임)."""
+    global _report
+    out = _build_report(report_id, day)
+    if save and out["state"] == "draft":
+        out["saved"] = _save_report(out, "manual") is None
     with _report_lock:
         _report = out
 
@@ -1356,20 +1377,21 @@ def admin_report_make():
     if not report_crew.available():   # 내 PC Python 3.14 등. 기록을 읽기 전에 안내
         return jsonify(error=report_crew.UNAVAILABLE), 503
     with _report_lock:
-        if _report["state"] == "running":
+        if "running" in (_report["state"], _cron["state"]):
             return jsonify(error="보고서를 만드는 중이에요. 잠시만 기다려 주세요."), 409
         report_id = secrets.token_hex(8)
         _report = {"state": "running", "id": report_id}
     if ASYNC_LOG:
-        threading.Thread(target=_make_report, args=(report_id, day), daemon=True).start()
+        threading.Thread(target=_make_report, args=(report_id, day, True), daemon=True).start()
     else:
-        _make_report(report_id, day)
+        _make_report(report_id, day, True)
     return _report_response(202)
 
 
 @app.post("/admin/report/approve")
 def admin_report_approve():
-    """{id}의 초안을 승인하고 logs/reports/report-날짜[-진행중-시각].json에 저장. 그 사이 다시 만들어졌으면 409."""
+    """{id}의 초안을 승인하고 logs/reports/report-날짜[-진행중-시각].json에 저장. 그 사이 다시 만들어졌으면 409.
+    메모리의 초안이 아니면 Supabase의 자동 보고서에서 찾아 승인."""
     global _report
     err = require_admin()
     if err:
@@ -1377,8 +1399,12 @@ def admin_report_approve():
     body = request.get_json(silent=True)
     report_id = body.get("id") if isinstance(body, dict) else None
     with _report_lock:
+        mine = _report["state"] == "draft" and report_id == _report["id"]
+    if not mine:
+        return _approve_auto(report_id)
+    with _report_lock:
         if _report["state"] != "draft" or report_id != _report["id"]:
-            return jsonify(error="승인할 초안이 없거나 바뀌었어요. 다시 확인해 주세요."), 409
+            return jsonify(error=NO_DRAFT), 409
         done = {**_report, "state": "approved", "approved_at": now_kst()}
         try:
             REPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -1392,7 +1418,126 @@ def admin_report_approve():
             app.logger.warning("report save failed: %s", e)
             return jsonify(error="보고서를 저장하지 못했어요."), 500
         _report = done
+    if done.get("saved"):
+        try:
+            members.approve_report(report_id, "manual", done["approved_at"])
+        except members.MemberError as e:
+            app.logger.warning("report approve save failed: %s", e)
     return _report_response()
+
+
+def _auto_view(row: dict) -> dict:
+    """reports 한 줄 → 화면이 쓰는 보고서 모양."""
+    return {**(row.get("report") or {}), "state": row["status"], "id": row["id"],
+            "created_at": row.get("created_at"), "approved_at": row.get("approved_at")}
+
+
+def _approve_auto(report_id):
+    row = None
+    if isinstance(report_id, str) and re.fullmatch(r"[0-9a-f]{16}", report_id):
+        try:
+            row = members.approve_report(report_id, "auto", now_kst())
+        except members.MemberError as e:
+            app.logger.warning("report approve failed: %s", e)
+            return jsonify(error=MEMBER_DOWN), 503
+    if not row:
+        return jsonify(error=NO_DRAFT), 409
+    resp = jsonify(_auto_view(row))
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.get("/admin/report/auto")
+def admin_report_auto():
+    """오늘 아침 자동 보고서 (어제 날짜, Supabase reports). 없으면 state=none."""
+    err = require_admin()
+    if err:
+        return err
+    day = daily_report.yesterday(datetime.now(KST))[0].date().isoformat()
+    try:
+        row = members.auto_report(day)
+    except members.MemberError as e:
+        app.logger.warning("auto report failed: %s", e)
+        return jsonify(error="자동 보고서를 불러오지 못했어요. (reports 테이블을 확인하세요)"), 503
+    resp = jsonify(_auto_view(row) if row else {"state": "none"})
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+# ---------- 매일 자동 보고서 (GitHub Actions → /admin/report/cron) ----------
+
+CRON_TOKEN_MIN = 32
+_cron: dict = {"state": "none"}   # none | running | done | error. 보고서 내용은 넣지 않음 (Actions 로그는 공개)
+
+
+def _cron_denied():
+    """X-Report-Cron-Token이 환경변수 REPORT_CRON_TOKEN과 같은지. 설정이 없거나 짧으면 기능을 끔."""
+    want = (os.environ.get("REPORT_CRON_TOKEN") or "").strip().encode()
+    if len(want) < CRON_TOKEN_MIN:
+        return jsonify(error="자동 보고서가 설정되지 않았어요."), 503
+    got = request.headers.get("X-Report-Cron-Token", "").strip().encode("utf-8", "replace")
+    if not hmac.compare_digest(got, want):
+        return jsonify(error="권한이 없어요."), 401
+    return None
+
+
+def _cron_response(body: dict, status: int = 200):
+    resp = jsonify(body)
+    resp.status_code = status
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+def _run_cron(day) -> None:
+    global _cron
+    state = "error"
+    try:
+        out = _build_report(secrets.token_hex(8), day)
+        if out["state"] == "draft" and _save_report(out, "auto") in (None, 409):   # 409: 이미 저장돼 있음
+            state = "done"
+    finally:
+        with _report_lock:
+            _cron = {"state": state, "date": day.isoformat()}
+
+
+@app.get("/admin/report/cron")
+def admin_report_cron_state():
+    """자동 보고서 진행 상태만 (내용 없음)."""
+    denied = _cron_denied()
+    if denied:
+        return denied
+    with _report_lock:
+        return _cron_response(dict(_cron))
+
+
+@app.post("/admin/report/cron")
+def admin_report_cron():
+    """어제 보고서를 뒤에서 만들어 Supabase에 저장. 이미 있으면 200, 만드는 중이면 202, 수동으로 만드는 중이면 409."""
+    global _cron
+    denied = _cron_denied()
+    if denied:
+        return denied
+    if not report_crew.available():
+        return jsonify(error=report_crew.UNAVAILABLE), 503
+    day = daily_report.yesterday(datetime.now(KST))[0].date()
+    try:
+        if members.auto_report(day.isoformat()):
+            return _cron_response({"state": "done", "date": day.isoformat()})
+    except members.MemberError as e:   # 저장할 곳이 없으면 Gemini를 쓰기 전에 멈춤
+        app.logger.warning("cron report failed: %s", e)
+        return jsonify(error=MEMBER_DOWN), 503
+    with _report_lock:
+        if _cron["state"] == "running":
+            return _cron_response(dict(_cron), 202)
+        if _report["state"] == "running":
+            return _cron_response({"state": "busy"}, 409)
+        _cron = {"state": "running", "date": day.isoformat()}
+    if ASYNC_LOG:
+        threading.Thread(target=_run_cron, args=(day,), daemon=True).start()
+    else:
+        _run_cron(day)
+    with _report_lock:
+        return _cron_response(dict(_cron), 202)
 
 
 if __name__ == "__main__":

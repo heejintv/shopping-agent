@@ -311,6 +311,8 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | `GET /health` | 서버 상태, 내 PC 직접 접속이면 `unlimited: true` (계정별 남은 횟수는 `/me`) |
 | `GET /me` | 🔒 로그인한 사람의 등급(`role`)과 오늘 남은 새 검색·상담 횟수, 서버 전체 남은 새 검색 |
 | `POST /admin/report` · `GET /admin/report` | 🔒👑 일일 운영 보고서 만들기(`{date}` 기본 어제, 오늘은 지금까지, 뒤에서 실행) · 상태와 초안 보기 |
+| `GET /admin/report/auto` | 🔒👑 오늘 아침 자동 보고서 (Supabase `reports`) |
+| `POST·GET /admin/report/cron` | GitHub Actions 전용: 어제 보고서 만들기·상태 (`X-Report-Cron-Token` 헤더, 내용은 돌려주지 않음) |
 | `POST /admin/report/approve` | 🔒👑 `{id}` 초안 승인 → `logs/reports/report-날짜.json` (오늘은 `report-날짜-진행중-시각.json`) 저장 (Render 무료는 재시작하면 사라짐) |
 | `GET /admin/stats?period=today\|7d\|30d&q=이메일` | 🔒👑 관리자 대시보드 데이터. admin이 아니면 403 |
 
@@ -366,6 +368,7 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Gemini 모델 이름 |
 | `DAILY_LIMIT` | `5` | 회원 한 명의 새 검색 하루 최대 횟수 |
 | `CHAT_DAILY_LIMIT` | `30` | 회원 한 명의 상담 하루 최대 횟수 |
+| `REPORT_CRON_TOKEN` | — | 매일 자동 보고서용 비밀 값 (32자 이상). GitHub Secrets와 Render에 같은 값. 없으면 자동 보고서 꺼짐 |
 | `GEMINI_DAILY_LIMIT` | — | 관리자 대시보드의 Gemini 하루 무료 호출 한도 (남은 양 막대) |
 | `GLOBAL_SEARCH_LIMIT` | `20` | 서버 전체(모든 회원 합계) 새 검색 하루 최대 횟수. admin·내 PC 제외 |
 | `SUPABASE_URL`, `SUPABASE_ANON_KEY` | — | 로그인 확인 |
@@ -539,7 +542,7 @@ admin 계정으로 로그인하면 헤더에 **🛠 관리자** 버튼이 보입
 python -m unittest discover -s tests -v
 ```
 
-Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니다. 현재 **296개** 통과 (crewai가 없는 Python 3.14에서는 Crew 테스트 22개를 건너뜀).
+Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니다. 현재 **323개** 통과 (crewai가 없는 Python 3.14에서는 Crew 테스트 24개를 건너뜀).
 
 | 파일 | 확인하는 것 |
 |---|---|
@@ -547,6 +550,7 @@ Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니
 | `tests/test_members.py` | Supabase REST 요청 모양 (키 헤더, 개수 세기, `exempt` 필터), 기록 실패해도 응답은 정상 |
 | `tests/test_modes.py` | 내 PC·Render 모드에서 실제 `is_local_request`를 거쳐 API 호출 |
 | `tests/test_admin.py` | `/admin/stats` 401·403·200, 대시보드 집계, Gemini 토큰 기록 |
+| `tests/test_report_cron.py` | 자동 보고서: 토큰 검사, 중복·실패, 저장·승인, 워크플로에 비밀 값·커밋 없음 |
 | `tests/test_report.py` | 일일 보고서 집계·마스킹·숫자 대조, Crew 호출 상한(가짜 Gemini), 권한·승인 |
 | `tests/test_actions.py` | ⚡ 입력값 검사, 그래프 흐름(interrupt/resume), 승인 카드, 중복 찜, 검색 확인, 여러 개 선택, 비교 창 열림 확인 (Gemini 가짜 응답) |
 | `tests/test_intent.py` | 자동 ⚡ 키워드, 조사, 선택지 맞추기 (`node`로 `intent.js` 실행) |

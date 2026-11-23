@@ -193,3 +193,26 @@ create unique index if not exists usage_logs_log_id on public.usage_logs (log_id
 
 -- 12) usage_logs.tools: ⚡ 명령 하나가 실제로 실행한 도구 이름 (예: {find_in_results,add_favorite}). 예전 기록은 비어 있음
 alter table public.usage_logs add column if not exists tools text[];
+
+
+-- =====================================================================
+-- 추가분 6: 일일 보고서 저장 (파일 전체를 다시 실행해도 됨)
+-- =====================================================================
+
+-- 13) reports: 일일 운영 보고서 (서버가 SERVICE 키로만 읽고 씀)
+create table if not exists public.reports (
+  id          text primary key,
+  date        date not null,                                                  -- 집계한 날짜 (한국 시간)
+  status      text not null default 'draft' check (status in ('draft', 'approved')),
+  source      text not null check (source in ('auto', 'manual')),             -- 만든 방식
+  report      jsonb not null,
+  created_at  timestamptz not null default now(),
+  approved_at timestamptz
+);
+-- 자동 보고서는 날짜마다 하나
+create unique index if not exists reports_auto_date on public.reports (date) where source = 'auto';
+
+-- 정책 없음 + 권한 회수 → 화면에서는 읽기·쓰기 모두 불가 (관리자도 서버 API로만 봄)
+alter table public.reports enable row level security;
+revoke all on public.reports from anon, authenticated;
+grant select, insert, update on public.reports to service_role;

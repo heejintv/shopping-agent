@@ -8,7 +8,7 @@ allowed-tools: Bash(.venv/bin/python make_report.py)
 1. 프로젝트 폴더에서 `.venv/bin/python make_report.py`를 한 번 실행한다 (제한 시간 10분, Gemini 최대 5번).
    - 끝 코드 2: 출력된 안내(Python 3.12 필요)를 그대로 전하고 **멈춘다**. 설치하거나 다른 방법으로 집계하지 않는다.
    - 끝 코드 1이나 그 밖의 오류: 출력의 `error`를 전하고 **멈춘다**. 다시 실행하지 않는다.
-2. `verdict`가 "수정 필요"면 `problems`를 한두 문장으로 요약해 5줄 보고 앞에 쓴다. "검토 통과"면 생략한다.
+2. `verdict`가 "수정 필요"거나 `problems`가 있으면 `verdict`와 이유를 한두 문장으로 요약해 5줄 보고 앞에 쓴다. "검토 통과"면 생략한다.
 3. 결과를 정확히 5줄로 보고한다.
    1. 검색 수·실패율: `search.total`, `search.fail_rate`
    2. 가장 많은 에러 종류: `search.fail_token`·`fail_limit`·`fail_timeout`·`fail_server`·`fail_db`·`fail_other` 중 가장 큰 것 (동점이면 모두, 전부 0이면 "에러 없음")

@@ -1,0 +1,73 @@
+name: daily-report
+# 매일 KST 오전 9시에 Render 서버를 깨워 "어제" 보고서를 만들게 한다.
+# 보고서 내용은 서버가 Supabase에만 저장한다. 이 저장소와 실행 로그는 공개라 상태(state)만 남긴다.
+
+on:
+  schedule:
+    - cron: "0 0 * * *"   # UTC 0시 = KST 9시
+  workflow_dispatch:
+
+permissions: {}   # 저장소를 읽거나 쓸 필요 없음
+
+concurrency:
+  group: daily-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: 어제 보고서 만들기
+        env:
+          BASE_URL: https://pickit-31qt.onrender.com
+          REPORT_CRON_TOKEN: ${{ secrets.REPORT_CRON_TOKEN }}
+          RETRY_SEC: "60"
+          POLL_SEC: "15"
+        run: |
+          set -uo pipefail
+          if [ -z "${REPORT_CRON_TOKEN:-}" ]; then
+            echo "::error::GitHub Secrets에 REPORT_CRON_TOKEN이 없어요."
+            exit 1
+          fi
+          body="$(mktemp)"
+
+          # 토큰은 표준 입력으로만 넘김 (명령줄·로그에 안 남게). 응답 코드만 출력
+          call() {
+            local data=()
+            [ "$1" = POST ] && data=(--data "")
+            printf 'X-Report-Cron-Token: %s\n' "$REPORT_CRON_TOKEN" |
+              curl -s -o "$body" -w '%{http_code}' --connect-timeout 30 --max-time 180 \
+                -X "$1" "${data[@]}" -H @- "$BASE_URL/admin/report/cron" || true
+          }
+          state() { jq -r '.state // "none"' "$body" 2>/dev/null | tr -cd 'a-z_' | head -c 20; }
+
+          for attempt in 1 2 3; do
+            [ "$attempt" -gt 1 ] && sleep "$RETRY_SEC"
+            echo "시도 $attempt/3: 서버 깨우기"
+            if ! curl -sf -o /dev/null --connect-timeout 30 --max-time 180 "$BASE_URL/health"; then
+              echo "서버가 응답하지 않아요."
+              continue
+            fi
+            code="$(call POST)"
+            echo "보고서 요청: $code"
+            case "$code" in
+              200) echo "보고서가 준비됐어요."; exit 0 ;;
+              202) ;;
+              401|403) echo "::error::토큰이 맞지 않아요. GitHub Secrets와 Render의 값을 확인하세요."; exit 1 ;;
+              *) continue ;;
+            esac
+            for _ in $(seq 1 40); do   # 최대 10분. 물어보는 동안 Render가 잠들지 않음
+              sleep "$POLL_SEC"
+              code="$(call GET)"
+              [ "$code" = 200 ] || continue
+              s="$(state)"
+              case "$s" in
+                done) echo "보고서를 만들었어요."; exit 0 ;;
+                running) ;;
+                *) echo "보고서 상태: $s"; break ;;
+              esac
+            done
+          done
+          echo "::error::3번 시도했지만 보고서를 만들지 못했어요. Render 로그를 확인하세요."
+          exit 1

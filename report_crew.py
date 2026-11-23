@@ -2,8 +2,9 @@
 
 흐름: 작성 → 검토 → (틀리면) 수정 → 검토 … 수정은 최대 2번
 검토: Python 대조(daily_report.check_numbers)에서 틀린 숫자가 있으면 바로 수정 요청 (Gemini를 아낌),
-      다 맞으면 검토 Agent가 숫자의 뜻(항목·문맥)까지 대조. 둘 다 통과해야 "검토 통과"
-호출 5번을 다 써서 마지막 수정본을 검토 Agent가 못 보면 "수정 필요"로 표시한다.
+      다 맞으면 검토 Agent가 숫자의 뜻(항목·문맥)까지 대조. 둘 다 통과하면 "검토 통과"
+"수정 필요"는 Python 숫자 대조가 하나라도 틀릴 때만. 숫자는 다 맞는데 검토 Agent가 마지막 본을 못 봤으면(호출 5번을 다 씀 등)
+"숫자 검증 통과 (AI 최종 검토 생략)", 숫자 말고 다른 지적이 남았으면 "숫자 검증 통과 (남은 지적 있음)".
 
 crewai는 무거워서(메모리 약 100MB) 처음 보고서를 만들 때만 불러온다.
 """
@@ -22,6 +23,7 @@ MAX_FIXES = 2
 TIMEOUT = 60   # 초. Gemini 호출 하나
 UNAVAILABLE = "이 환경에서는 보고서 기능을 쓸 수 없어요 (Python 3.12 필요)"
 PASS, NEEDS_FIX = "검토 통과", "수정 필요"
+PASS_NO_AI, PASS_NOTES = "숫자 검증 통과 (AI 최종 검토 생략)", "숫자 검증 통과 (남은 지적 있음)"
 
 RULES = """규칙:
 - 숫자는 아래 aggregates의 value만 쓴다. 새로 계산·반올림·추정하지 않는다.
@@ -165,7 +167,7 @@ def run(agg: dict) -> dict:
     llm = _make_llm(budget)
     agg_json = json.dumps({k: agg[k] for k in ("date", "label", "metrics", "anomalies", "notes")}, ensure_ascii=False)
     history = []   # 지금까지 받은 지적 전부 (수정할 때마다 같이 보냄)
-    draft, checks, problems, fixes, reviewed, verdict = None, [], [], 0, False, NEEDS_FIX
+    draft, checks, problems, fixes, reviewed, passed, skipped = None, [], [], 0, False, False, False
 
     while True:
         data, format_error = None, None
@@ -177,33 +179,36 @@ def run(agg: dict) -> dict:
             _check_stop(e, budget, draft)
             problems.append("수정본을 만들지 못해 이전 초안을 보여줌")
             break
-        reviewed = False
         try:
             if format_error:
                 raise format_error
             draft = daily_report.clean_draft(data)
+            reviewed = False
             checks = daily_report.check_numbers(draft, agg)
             problems = daily_report.bad_summary(draft, agg) + [f"{c['section']} {c['line']}번째 줄 {c['number'] or c['id']}: {c['reason']}"
                         for c in checks if not c["ok"]] + daily_report.missing_anomalies(draft, agg) + daily_report.bad_suggestions(draft)
         except (EngineError, ValueError) as e:
-            problems = [f"초안 형식이 잘못됨: {e}"]   # 앞선 초안이 있으면 그대로 둠
+            problems = [f"초안 형식이 잘못됨: {e}"] + (problems if draft else [])   # 앞선 초안이 있으면 그대로 둠
         if not problems:
             if budget["calls"] >= MAX_CALLS:
                 problems = [f"Gemini 호출 {MAX_CALLS}번을 다 써서 마지막 수정본은 Python 대조만 통과함 (검토 Agent 미확인)"]
+                skipped = True
                 break
             try:
                 found = _review(crewai, llm, budget, agg_json, draft)
             except Exception as e:
                 _check_stop(e, budget, draft)
                 problems = ["검토 Agent 호출에 실패해 Python 대조만 통과함"]
+                skipped = True
                 break
             if found is None:
                 problems = ["검토 Agent의 답을 읽을 수 없어 Python 대조만 통과함"]
+                skipped = True
                 break
             reviewed = True
             problems = found
             if not problems:
-                verdict = PASS
+                passed = True
                 break
         if fixes >= MAX_FIXES or budget["calls"] >= MAX_CALLS:
             break
@@ -212,6 +217,8 @@ def run(agg: dict) -> dict:
 
     if draft is None:
         raise EngineError("AI가 보고서 형식에 맞게 쓰지 못했어요. 다시 만들어 주세요.")
+    verdict = (PASS if passed else NEEDS_FIX if any(not c["ok"] for c in checks)
+               else PASS_NO_AI if skipped else PASS_NOTES)
     return {"draft": draft, "checks": checks, "verdict": verdict, "problems": problems, "fixes": fixes,
             "calls": budget["calls"], "tokens": budget["tokens"], "reviewed": reviewed}
 

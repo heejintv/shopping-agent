@@ -39,6 +39,8 @@ services:
         sync: false
       - key: CLAUDE_CODE_OAUTH_TOKEN   # 비밀: 내 PC에서 `claude setup-token`으로 발급해서 입력
         sync: false
+      - key: REPORT_CRON_TOKEN    # 비밀: 매일 자동 보고서(GitHub Actions)용. GitHub Secrets와 같은 값 (32자 이상)
+        sync: false
       - key: SUPABASE_URL         # 로그인 확인용 (대시보드에서 입력)
         sync: false
       - key: SUPABASE_ANON_KEY

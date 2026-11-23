@@ -23,7 +23,7 @@ _PATTERNS = [   # 앞에서부터 먼저 맞는 것
 ]
 
 _SECRET_ENV = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-               "GEMINI_API_KEY", "SUPABASE_SERVICE_KEY", "SUPABASE_SERVICE_ROLE_KEY")
+               "GEMINI_API_KEY", "REPORT_CRON_TOKEN", "SUPABASE_SERVICE_KEY", "SUPABASE_SERVICE_ROLE_KEY")
 _SECRET_RE = [
     re.compile(r"sk-ant-[A-Za-z0-9_\-]+"),
     re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._\-]+"),

@@ -218,6 +218,33 @@ def update_outcome(log_id: str, outcome: str, tools: list[str] | None = None) ->
         log.warning("outcome update failed: %s", e)
 
 
+# ---------- 일일 보고서 (reports) ----------
+
+def _rows(raw) -> list[dict]:
+    rows = json.loads(raw.decode("utf-8") or "[]")
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
+def save_report(report_id: str, day: str, source: str, report: dict) -> None:
+    """초안 저장. 같은 날짜의 자동 보고서가 이미 있으면 MemberError(code=409)."""
+    _request("POST", "reports", body={"id": report_id, "date": day, "source": source, "status": "draft", "report": report},
+             extra={"Prefer": "return=minimal"})
+
+
+def auto_report(day: str) -> dict | None:
+    """그 날짜의 자동 보고서 한 줄 (없으면 None)."""
+    _, raw = _request("GET", "reports", {"select": "id,date,status,report,created_at,approved_at",
+                                         "date": f"eq.{day}", "source": "eq.auto", "limit": "1"})
+    return next(iter(_rows(raw)), None)
+
+
+def approve_report(report_id: str, source: str, at: str) -> dict | None:
+    """초안을 승인으로. 초안이 없거나 이미 승인됐으면 None."""
+    _, raw = _request("PATCH", "reports", {"id": f"eq.{report_id}", "source": f"eq.{source}", "status": "eq.draft"},
+                      body={"status": "approved", "approved_at": at}, extra={"Prefer": "return=representation"})
+    return next(iter(_rows(raw)), None)
+
+
 # ---------- 한도 ----------
 
 GLOBAL = "*"   # 서버 전체 칸의 이름

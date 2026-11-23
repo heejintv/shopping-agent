@@ -416,8 +416,8 @@ class ChartTest(unittest.TestCase):
 
     def test_page_order(self):
         html = (ROOT / "admin.html").read_text(encoding="utf-8")
-        at = [html.index(s) for s in ("agg.cards.map", 'class="report-charts"', 'list("AI 요약"', 'list("이상 징후"',
-                                      'list("⚡ 개선 제안"', "<details><summary>숫자별 근거", "<details><summary>전체 집계")]
+        at = [html.index(s) for s in ("agg.cards.map", 'list("AI 요약"', 'class="report-charts"', 'list("이상 징후"',
+                                      'list("⚡ 개선 제안"', "<details open><summary>숫자별 근거", "<details><summary>전체 집계", "<details><summary>시간대별")]
         self.assertEqual(at, sorted(at))
 
 
@@ -559,7 +559,8 @@ class CrewTest(unittest.TestCase):
 
     def test_retry_stays_within_five_calls(self):
         out = self.run_crew([OK, REJECT, OK, REJECT, "글"])
-        self.assertEqual((out["verdict"], out["calls"]), ("수정 필요", 5))
+        self.assertEqual((out["verdict"], out["calls"]), (report_crew.PASS_NOTES, 5))   # 보여 주는 초안에 검토 지적이 남음
+        self.assertIn("항목이 다름", out["problems"])
 
     def test_ranked_suggestions_pass_whole_flow(self):
         agg_rows = [row("11-19 10:00", "chat", query="[실행] " + t, outcome=o)
@@ -612,7 +613,7 @@ class CrewTest(unittest.TestCase):
 
     def test_missing_anomaly_never_passes(self):
         out = self.run_crew([MISSING] * 3)
-        self.assertEqual(out["verdict"], "수정 필요")
+        self.assertEqual(out["verdict"], report_crew.PASS_NOTES)   # 숫자는 다 맞음
         self.assertIn("이상 징후 빠짐", out["problems"][0])
 
     def test_reviewer_rejects_then_pass(self):
@@ -625,7 +626,17 @@ class CrewTest(unittest.TestCase):
 
     def test_max_five_calls(self):
         out = self.run_crew([OK, REJECT, OK, REJECT, OK])
-        self.assertEqual((out["verdict"], out["calls"], out["fixes"], out["reviewed"]), ("수정 필요", 5, 2, False))
+        self.assertEqual((out["verdict"], out["calls"], out["fixes"], out["reviewed"]), (report_crew.PASS_NO_AI, 5, 2, False))
+        self.assertEqual(out["verdict"], "숫자 검증 통과 (AI 최종 검토 생략)")
+        self.assertTrue(all(c["ok"] for c in out["checks"]))
+
+    def test_wrong_number_in_last_draft_needs_fix(self):
+        out = self.run_crew([OK, REJECT, OK, REJECT, BAD])
+        self.assertEqual((out["verdict"], out["calls"]), ("수정 필요", 5))
+
+    def test_reviewer_rejects_to_the_end(self):
+        out = self.run_crew([OK, REJECT, BAD, OK, REJECT])
+        self.assertEqual((out["verdict"], out["reviewed"]), (report_crew.PASS_NOTES, True))   # "생략"이라고 하지 않음
 
     def test_rate_limit_not_retried(self):
         err = gemini.EngineError("한도를 초과했어요 429 rate limit", 429)
@@ -636,10 +647,10 @@ class CrewTest(unittest.TestCase):
 
     def test_review_call_failure_is_not_pass(self):
         out = self.run_crew([OK, gemini.EngineError("x", 503)])
-        self.assertEqual((out["verdict"], out["calls"]), ("수정 필요", 2))
+        self.assertEqual((out["verdict"], out["calls"]), (report_crew.PASS_NO_AI, 2))
 
     def test_unreadable_review_is_not_pass(self):
-        self.assertEqual(self.run_crew([OK, "좋아요", "좋아요"])["verdict"], "수정 필요")
+        self.assertEqual(self.run_crew([OK, "좋아요", "좋아요"])["verdict"], report_crew.PASS_NO_AI)
 
     def test_never_valid(self):
         with self.assertRaises(gemini.EngineError):
@@ -717,6 +728,8 @@ class ApiTest(unittest.TestCase):
               mock.patch.object(members, "usage_between", return_value=([], False)),
               mock.patch.object(report_crew, "run", side_effect=lambda agg: dict(self.result)),
               mock.patch.object(report_crew, "available", return_value=True),
+              mock.patch.object(members, "save_report"),
+              mock.patch.object(members, "approve_report", return_value=None),
               mock.patch.object(server, "ASYNC_LOG", False),
               mock.patch.object(server, "_report", {"state": "none"}),
               mock.patch.object(server, "REPORT_DIR", Path(self.dir.name))]
