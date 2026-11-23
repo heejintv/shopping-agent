@@ -97,15 +97,46 @@ ALLOWED_ORIGIN = "https://heejintv.github.io"
 PUBLIC_URL = (os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("PUBLIC_URL") or "").rstrip("/")
 
 
+KST = admin_stats.KST
+
+
+def now_kst() -> str:
+    """검색 시각: 시간대를 붙인 한국 시간 ("2026-11-23T10:00:00+09:00").
+    Render 서버는 UTC라서, 시간대 없이 "%Y-%m-%d %H:%M:%S"로 쓰면 브라우저(KST)가 9시간 이른 시각으로 읽었음."""
+    return datetime.now(KST).isoformat(timespec="seconds")
+
+
+def parse_time(s, naive_tz=None) -> datetime | None:
+    """저장된 시각 → aware datetime. 예전 시간대 없는 값은 naive_tz(기본: 이 서버의 현지 시간)로 봄."""
+    try:
+        t = datetime.fromisoformat(str(s or "").strip().replace(" ", "T"))
+    except ValueError:
+        return None
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=naive_tz) if naive_tz else t.astimezone()
+    return t
+
+
+def kst_text(s, naive_tz=None) -> str | None:
+    t = parse_time(s, naive_tz)
+    return t.astimezone(KST).isoformat(timespec="seconds") if t else None
+
+
 def seed_cache_from_demo() -> int:
-    """demo/의 검색 결과를 캐시에 없을 때만 복사한다 (Render는 재시작하면 캐시가 비므로 기본 결과를 채움)."""
+    """demo/의 검색 결과를 캐시에 없을 때만 복사한다 (Render는 재시작하면 캐시가 비므로 기본 결과를 채움).
+    demo는 내 PC(한국 시간)에서 만들었으므로 시간대 없는 searched_at은 KST로 고쳐서 넣음."""
     copied = 0
     for f in (BASE_DIR / "demo").glob("*.json"):
         if f.name == "index.json":
             continue
         target = CACHE_DIR / f.name
         if not target.exists():
-            target.write_bytes(f.read_bytes())
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                data["searched_at"] = kst_text(data.get("searched_at"), KST) or data.get("searched_at")
+                target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            except (OSError, ValueError):
+                target.write_bytes(f.read_bytes())
             copied += 1
     return copied
 
@@ -529,12 +560,23 @@ def perform_search(q: str, c: str, path: Path, engine: str, step=None, job: Job 
         data["engine_model"] = gemini_model()
     data["query"] = q
     data["condition"] = c or None
-    data["searched_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    data["searched_at"] = now_kst()
     data["elapsed_sec"] = round(time.time() - started, 1)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     data.pop("cost_usd", None)
     timings["finalize"] = (time.time() - t) * 1000
     return data
+
+
+def touch_recent(path: Path, data: dict) -> None:
+    """저장된 결과로 다시 검색함: 최근 검색 순서를 맨 앞으로 (recent_at). 검색 시각(searched_at)은 그대로."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["recent_at"] = now_kst()
+        path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+        data["recent_at"] = raw["recent_at"]
+    except (OSError, ValueError):
+        app.logger.warning("recent_at update failed: %s", path.name)
 
 
 def read_query():
@@ -635,14 +677,20 @@ def history():
             continue
         if not data["products"] and not data.get("condition"):
             continue
+        searched = kst_text(data.get("searched_at"))
+        recent = kst_text(data.get("recent_at")) or searched   # 저장된 결과로 다시 검색한 시각 (없으면 처음 검색 시각)
         items.append({
             "query": data["query"],
             "condition": data.get("condition"),
             "file": f.name,
-            "searched_at": data.get("searched_at"),
+            "searched_at": searched,
+            "recent_at": recent,
             "count": len(data["products"]),
+            "order": parse_time(recent).timestamp() if recent else 0,
         })
-    items.sort(key=lambda m: m["searched_at"] or "", reverse=True)
+    items.sort(key=lambda m: m["order"], reverse=True)
+    for m in items:
+        m.pop("order")
     return jsonify(items[:30])
 
 
@@ -703,6 +751,7 @@ def search():
         timings["cache"] = (time.time() - t0) * 1000
         if path.exists():  # 캐시된 결과는 횟수 차감 없음
             data = polish_result(json.loads(path.read_text(encoding="utf-8")))   # 예전 캐시의 "~있음" 같은 끝맺음 다듬기
+            touch_recent(path, data)
             data.pop("cost_usd", None)
             data.update(cached=True, **quota_info(unlimited, "search", None))
             record(cached=True)
@@ -788,6 +837,7 @@ def search_stream():
                 step("cache", "캐시 확인")
                 if path.exists():
                     data = polish_result(json.loads(path.read_text(encoding="utf-8")))
+                    touch_recent(path, data)   # 최근 검색 맨 앞으로
                     data.pop("cost_usd", None)
                     data.update(cached=True, **quota_info(unlimited, "search", None))
                     record(cached=True)

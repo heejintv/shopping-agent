@@ -18,9 +18,14 @@
     "목록\\s*(보여|열어|봐)",
   ].join("|"));
 
+  // 비교 명령은 물음표가 있어도 ⚡ (예: "버즈 비교해줘", "버즈 프로 vs 버즈 FE", "둘 중 뭐가 나아?")
+  const COMPARE = /비교|(^|[^a-z])vs\.?([^a-z]|$)|뭐가\s*(더\s*)?(나아|낫|좋을지)/i;
+
   function isActionCommand(text) {
     const t = String(text || "").trim();
-    if (!t || QUESTION.test(t)) return false;
+    if (!t) return false;
+    if (COMPARE.test(t)) return true;
+    if (QUESTION.test(t)) return false;
     return ACTION.test(t);
   }
 

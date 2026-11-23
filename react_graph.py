@@ -221,19 +221,70 @@ def get_favorites(state) -> dict:
     return {"count": len(favs), "favorites": items, "note": "최근에 찜한 순서예요. 1번이 방금(가장 최근에) 찜한 상품이에요."}
 
 
-def compare_favorites(state, condition: str) -> tuple[dict, list]:
-    picked, total = actions.match_favorites(state.get("favorites") or [], condition)
-    cmp = chat.clean_compare({"products": picked}) if len(picked) == 2 else None
+MAX_CHOICES = 6   # 비교할 2개를 고르는 버튼 수
+
+
+def compare_items(state, condition: str) -> list[dict]:
+    """짧은 조건(예: "버즈")에 맞는 비교 후보를 코드로: 찜 목록(최근순) 먼저, 그다음 지금 검색 결과. ID(key)로 중복 제거.
+    조건 단어가 모두 이름(찜은 브랜드·모델·검색어)에 들어 있어야 함 (띄어쓰기 달라도). 조건이 비면 찜 목록 전체."""
+    words = _norm(condition).split()
+
+    def ok(hay):
+        t = _norm(hay)
+        return all(w in t or w in t.replace(" ", "") for w in words)
+
+    out, seen = [], set()
+    for w in state.get("favorites") or []:
+        if ok(f"{w['brand']} {w['model']} {w['query'] or ''}") and w["key"] not in seen:
+            seen.add(w["key"])
+            out.append({"key": w["key"], "brand": w["brand"], "model": w["model"], "name": _fav_name(w),
+                        "price": w["price"], "currency": w["currency"], "store": w["store"], "rating": w["rating"],
+                        "review_count": w["review_count"], "pros": w["pros"], "cons": w["cons"], "query": w["query"],
+                        "source": "favorite"})
+    if words:
+        for c in state.get("candidates") or []:
+            if ok(c["name"]) and c["key"] not in seen:
+                seen.add(c["key"])
+                out.append({"key": c["key"], "brand": "", "model": c["name"], "name": c["name"], "price": c["price"],
+                            "currency": c["currency"], "store": c["store"], "rating": c["rating"],
+                            "review_count": c["review_count"], "pros": c["features"], "cons": c["cons"],
+                            "query": state.get("query") or None, "source": "results"})
+    return out
+
+
+def run_compare(items: list[dict]) -> tuple[dict, list]:
+    """두 상품을 기존 1:1 비교(chat.answer 비교 모드, 숫자는 compare.py 검증)로 추천 → (Gemini에 줄 결과, 화면 effects)."""
+    cmp = chat.clean_compare({"products": items})
     if cmp is None:
-        return {"error": actions.NEED_TWO, "matched": total}, []
+        return {"error": actions.NEED_TWO, "matched": len(items)}, []
     ans = compare_answer("두 상품을 비교해서 더 나은 하나를 추천해줘", cmp, [], True)
-    names = [_fav_name(p) for p in picked]
+    names = [i["name"] for i in items]
     pick = ans.get("pick_id")
     resp = {"ok": True, "compared": names, "recommended": names[pick] if isinstance(pick, int) and 0 <= pick < 2 else None,
-            "matched": total, "analysis": ans["answer"],
+            "analysis": ans["answer"],
             "note": "화면에 AI 비교 창이 열렸어요. analysis(숫자 확인된 비교)를 보고 추천 상품과 이유를 2~3문장으로 전해 주세요."}
-    effect = {"type": "compare", "keys": [p["key"] for p in picked], "answer": ans["answer"], "pick_id": pick, "matched": total}
+    shown = [{k: i[k] for k in ("key", "brand", "model", "price", "currency", "store", "rating", "review_count", "pros",
+                                "cons", "query", "source")} for i in items]
+    effect = {"type": "compare", "keys": [i["key"] for i in items], "items": shown, "answer": ans["answer"], "pick_id": pick}
     return resp, [effect]
+
+
+def compare_favorites(state, condition: str) -> tuple[dict | None, list, dict | None, list]:
+    """→ (결과, effects, 기다릴 일, 후보). 맞는 상품이 정확히 2개면 바로 비교, 3개 이상이면 2개 고르는 선택 버튼(choose),
+    1개 이하면 "비교할 상품이 부족해요"."""
+    items = compare_items(state, condition)
+    if len(items) < 2:
+        return {"error": actions.NEED_TWO, "matched": len(items)}, [], None, items
+    if len(items) == 2:
+        resp, effects = run_compare(items)
+        return {**resp, "matched": 2}, effects, None, items
+    shown = items[:MAX_CHOICES]
+    pending = {"kind": "choose", "pick": 2, "matched": len(items),
+               "call": {"name": "compare_favorites", "args": {"condition": condition}},
+               "question": f"“{condition or '찜한 상품'}”에 맞는 상품이 {len(items)}개예요. 비교할 2개를 골라 주세요.",
+               "options": [{"key": i["key"], "name": i["name"], "price": i["price"], "currency": i["currency"],
+                            "source": i["source"]} for i in shown]}
+    return None, [], pending, shown
 
 
 def resolve_add(state, args) -> tuple[dict | None, str | None]:
@@ -317,7 +368,10 @@ def server_tool(state: State) -> dict:
     elif name == "get_favorites":
         resp = get_favorites(state)
     elif name == "compare_favorites":
-        resp, effects = compare_favorites(state, args.get("condition") or "")
+        resp, effects, pending, items = compare_favorites(state, args.get("condition") or "")
+        _log("compare_favorites %s → %s", args, [(i["name"], i["source"]) for i in items])
+        if pending:   # 3개 이상: 화면에서 2개 고르기 (wait_client)
+            return {"call": {**call, "items": items}, "pending": pending, "trail": ["server_tool"]}
     else:   # add_favorite: 대상 찾기 + 중복 찜 확인 → 승인으로
         product, err = resolve_add(state, args)
         if err:
@@ -349,6 +403,15 @@ def wait_client(state: State) -> dict:
     v = value if isinstance(value, dict) else {}
     if v.get("cancelled"):   # ask_user 대기 중 새 명령 등: 이 명령은 끝
         return {"final": "", "cancelled": True, "call": None, "pending": None, "trail": ["wait_client"]}
+    if state["pending"].get("kind") == "choose":   # 비교할 2개를 고름 → 여기서 바로 비교
+        items = state["call"].get("items") or []
+        chosen = (v.get("response") or {}).get("chosen")
+        picked = [next(i for i in items if i["key"] == k) for k in chosen
+                  if isinstance(k, str) and any(i["key"] == k for i in items)] if isinstance(chosen, list) else []
+        picked = list({i["key"]: i for i in picked}.values())
+        resp, effects = run_compare(picked) if len(picked) == 2 else ({"error": "비교할 2개를 골라 주세요."}, [])
+        return {"messages": _respond(state, "compare_favorites", resp), "effects": effects, "call": None,
+                "pending": None, "trail": ["wait_client"]}
     upd = {"messages": _respond(state, state["call"]["name"], v.get("response") or {}), "call": None, "pending": None,
            "trail": ["wait_client"]}
     if "candidates" in v:
@@ -374,7 +437,10 @@ def after_validate(state: State) -> str:
 
 
 def after_server_tool(state: State) -> str:
-    return "approve" if state.get("call") else "agent"
+    call = state.get("call")
+    if not call:
+        return "agent"
+    return "approve" if call["name"] == "add_favorite" else "wait_client"   # 찜은 승인, 비교 후보 3개 이상은 고르기
 
 
 def after_approve(state: State) -> str:
@@ -395,7 +461,7 @@ def build(checkpointer=None):
     g.add_edge(START, "agent")
     g.add_conditional_edges("agent", after_agent, ["validate", END])
     g.add_conditional_edges("validate", after_validate, ["agent", "server_tool", "wait_client"])
-    g.add_conditional_edges("server_tool", after_server_tool, ["approve", "agent"])
+    g.add_conditional_edges("server_tool", after_server_tool, ["approve", "wait_client", "agent"])
     g.add_conditional_edges("approve", after_approve, ["wait_client", END])
     g.add_conditional_edges("wait_client", after_wait, ["agent", END])
     return g.compile(checkpointer=checkpointer or MemorySaver())

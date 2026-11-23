@@ -20,7 +20,7 @@ MAX_RESPONSE = 6000      # functionResponse JSON 글자 수
 MAX_FAVORITES = 100
 TIMEOUT = 30             # 초
 FAIL_MESSAGE = "문장으로 실행하지 못했어요. 버튼으로 해 주세요."
-NEED_TWO = "비교하려면 찜한 상품이 2개 이상 필요해요."
+NEED_TWO = "비교할 상품이 부족해요. 2개 이상 있어야 비교할 수 있어요."
 TOO_MANY = f"단계가 너무 많아서 멈췄어요 (명령 하나에 최대 {MAX_CALLS}번). 버튼으로 해 주세요."
 CMD_EXPIRED = "명령이 만료됐어요. 다시 말해 주세요."
 MAX_RECENT = 5           # 새 명령에 함께 보내는 직전 ⚡ 명령 요약 수
@@ -74,9 +74,11 @@ TOOLS = {
         "찜 목록 창을 화면에 연다. 사용자가 \"찜 목록 열어줘/보여줘\"처럼 창을 보여 달라고 할 때만 쓴다.",
         None, True),
     "compare_favorites": (
-        "찜 목록에서 condition(검색어·브랜드, 예: 에어팟)에 맞는 상품 2개를 1:1로 비교해서 하나 추천한다. "
-        "화면에 AI 비교 창이 열리고 추천이 보인다 (찜 목록 창은 열지 않음).",
-        {"type": "object", "properties": {"condition": {**_STR, "description": "조건. 없으면 빈 문자열"}}}, True),
+        "두 상품을 1:1로 비교해서 하나 추천한다. condition은 짧은 이름이면 충분하다 (예: 버즈, 에어팟, 로지텍). "
+        "서버가 찜 목록과 지금 검색 결과에서 맞는 상품을 찾아: 정확히 2개면 바로 비교, 3개 이상이면 화면에 2개 고르는 선택 버튼, "
+        "1개 이하면 \"비교할 상품이 부족해요\". 화면에 AI 비교 창이 열리고 추천이 보인다 (찜 목록 창은 열지 않음). "
+        "사용자에게 긴 상품명을 다시 입력하라고 하지 말고 이 함수를 바로 써라.",
+        {"type": "object", "properties": {"condition": {**_STR, "description": "짧은 조건 (예: 버즈). 없으면 빈 문자열 = 찜 목록 전체"}}}, True),
     "ask_user": (
         "사용자에게 되묻는다. 값이 빠졌거나 후보가 여러 개인데 고를 기준이 없을 때 쓴다. options는 버튼으로 보인다.",
         {"type": "object", "properties": {"question": _STR, "options": {"type": "array", "items": _STR, "maxItems": 6}},
@@ -105,6 +107,8 @@ SYSTEM = f"""너는 쇼핑 사이트 Pickit의 실행 도우미야. 사용자 �
   예: 방금 찜 취소한 상품을 "다시 찜해줘" → 그 상품을 add_favorite (결과에 있으면 number, 없으면 name).
 - 찜 목록 창(open_favorites)은 사용자가 찜 목록을 열어/보여 달라고 할 때만 열어. 찜 정보가 필요하면 get_favorites로 데이터만 봐.
 - "방금/최근에/마지막으로 찜한" 상품은 get_favorites 결과에서 saved_at이 가장 최근인 상품(찜 번호 1)이야.
+- "○○ 비교해줘/○○ vs ○○/뭐가 나아" 같은 비교 명령은 바로 compare_favorites(condition="짧은 이름")를 써.
+  상품명을 길게 다시 입력해 달라고 하지 마 (후보가 여럿이면 서버가 선택 버튼을 보여 줌).
 - 찜한 상품 비교는 compare_favorites 하나로 끝내. 그 전에 찜 목록 창(open_favorites)을 열거나 search를 하지 마.
 - 함수 결과에 error가 있으면 그 이유를 보고 다른 방법을 쓰거나 ask_user로 물어보거나, 못 하면 이유를 말하고 끝내.
 - 명령 하나에 함수는 최대 {MAX_CALLS - 1}번까지만. 상담 질문(뭐가 좋아? 등)이면 find_in_results로 후보를 본 뒤 짧게 답해.
@@ -284,26 +288,3 @@ def search_confirm_reason(query: str, daily_limit: int) -> str:
     """확인 없이 search를 부르면 Gemini에 돌려줄 거부 사유 (다음에 ask_user로 물어보게)."""
     return (f"사용자가 검색을 직접 말하지 않았어요. 먼저 ask_user로 확인하세요: "
             f"question=\"{eul_reul(query or '이 상품')} 새로 검색할까요? (하루 검색 {daily_limit}회 중 1회 사용)\", options=[\"검색\", \"취소\"]")
-
-
-# ---------- compare_favorites (찜 목록 조건 매칭) ----------
-
-def _norm(s) -> str:
-    return " ".join(str(s or "").split()).lower()
-
-
-def match_favorites(favorites, condition: str) -> tuple[list[dict], int]:
-    """찜 목록(화면이 보낸 최신순)에서 조건 단어가 모두 브랜드·모델·검색어에 들어 있는 상품.
-    (앞의 2개, 맞는 개수). 조건이 비면 전체. 1:1 비교라서 많으면 최근에 찜한 2개만."""
-    if not isinstance(favorites, list):
-        return [], 0
-    words = _norm(condition).split()
-    found = []
-    for f in favorites[:MAX_FAVORITES]:
-        if not isinstance(f, dict) or not isinstance(f.get("model"), str):
-            continue
-        hay = _norm(f"{f.get('brand') or ''} {f.get('model')} {f.get('query') or ''}")
-        hay_tight = hay.replace(" ", "")
-        if all(w in hay or w in hay_tight for w in words):
-            found.append(f)
-    return found[:2], len(found)

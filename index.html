@@ -362,6 +362,7 @@
   .act-opts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .act-opts .act-ask { margin-top: 0; }
   .act-ask:disabled { opacity: .5; cursor: default; }
+  .act-ask[aria-pressed="true"] { background: var(--accent); color: #fff; }   /* 비교할 2개 고르기에서 고른 것 */
   .msg .act-ask { display: block; margin-top: 8px; padding: 5px 11px; font-size: 13px; border-radius: 99px; border: 1px solid var(--accent); background: var(--card); color: var(--accent); }
   #chatCount { padding: 0 14px 8px; font-size: 12px; color: var(--muted); text-align: right; }
   .pick-link { color: inherit; font-weight: 700; text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px; }
@@ -1010,7 +1011,10 @@ function saveHidden() {
   storeSet(loadedScope, "hiddenRecent", hiddenRecent);
 }
 
+// 서버는 시간대를 붙여 보냄 ("2026-11-23T10:00:00+09:00"). 예전 값처럼 시간대가 없으면 브라우저 현지 시간으로 읽힘
 const tsOf = s => { const t = Date.parse(String(s || "").replace(" ", "T")); return Number.isNaN(t) ? 0 : t; };
+const recentTs = d => tsOf(d.recent_at || d.searched_at);   // 최근 검색 순서: 다시 검색한 시각 우선
+const fmtTime = s => String(s || "").replace("T", " ").replace(/(:\d{2})(\.\d+)?([+-]\d{2}:\d{2}|Z)$/, "$1");   // 화면 표시용
 const shortDate = s => (s || "").slice(5, 10).replace("-", "/");   // "2026-11-17 ..." → "11/17"
 
 function groupRecent(list) {
@@ -1021,11 +1025,11 @@ function groupRecent(list) {
     if (!map.has(key)) map.set(key, { key, query: d.query, items: [], latest: -1 });
     const g = map.get(key);
     g.items.push({ ...d, i });
-    const t = tsOf(d.searched_at);
+    const t = recentTs(d);
     if (t > g.latest) { g.latest = t; g.query = d.query; }
   });
   const groups = [...map.values()];
-  for (const g of groups) g.items.sort((a, b) => tsOf(b.searched_at) - tsOf(a.searched_at));
+  for (const g of groups) g.items.sort((a, b) => recentTs(b) - recentTs(a));
   return groups.sort((a, b) => b.latest - a.latest);
 }
 
@@ -1036,7 +1040,8 @@ function chipHtml(g) {
   const n = g.items.length;
   const one = n === 1 ? g.items[0] : null;
   const extra = one?.condition ? `<span class="cond">· ${esc(one.condition)}</span>` : n > 1 ? `<span class="cnt">조건 ${n}</span>` : "";
-  const date = g.items[0].searched_at ? `<small>${esc(shortDate(g.items[0].searched_at))}</small>` : "";
+  const last = g.items[0].recent_at || g.items[0].searched_at;   // 마지막으로 검색한 날
+  const date = last ? `<small>${esc(shortDate(last))}</small>` : "";
   const open = openGroup === g.key;
   return `<span class="chip-wrap${open ? " open" : ""}"><button type="button" class="chip" data-key="${esc(g.key)}"${n > 1 ? ` aria-expanded="${open}"` : ""}
     title="${n > 1 ? "조건별로 저장된 결과 보기" : "저장된 결과 보기"}">${esc(g.query)}${extra}${date}</button><button type="button" class="chip-x" data-key="${esc(g.key)}"
@@ -1280,7 +1285,8 @@ async function submitSearch() {
     let data;
     try {
       data = await fetchSearch(q, c, ctl);
-      if (!data.cached) { loadRecent(); refreshUsage(); }  // 새로 저장된 검색어를 목록에 반영, 헤더 남은 횟수 갱신
+      loadRecent();                          // 새 검색·저장된 결과로 다시 검색 모두 최근 검색 맨 앞으로 (검색창·⚡ search 같은 경로)
+      if (!data.cached) refreshUsage();      // 헤더 남은 횟수 갱신
     } catch (err) {
       if (!(err instanceof TypeError)) throw err;  // TypeError = 서버 연결 자체가 안 됨
       setStatus("");
@@ -1462,7 +1468,7 @@ function render(d) {
   $("reqCond").innerHTML = cond ? `요청한 조건: <b>${esc(cond)}</b>` : "";
   $("reqCond").style.display = cond ? "block" : "none";
   $("meta").textContent = [
-    d.cached ? `저장된 결과 (검색 시각 ${d.searched_at})` : `방금 검색함 (${d.elapsed_sec}초)`,
+    d.cached ? `저장된 결과 (검색 시각 ${fmtTime(d.searched_at)})` : `방금 검색함 (${d.elapsed_sec}초)`,
     d.notes, "가격은 수시로 바뀌니 구매 전 링크에서 다시 확인하세요.",
   ].filter(Boolean).join(" · ");
 
@@ -1800,7 +1806,7 @@ $("chatForm").addEventListener("submit", async e => {
   if (pendingAsk) {
     // 선택지 버튼과 맞는 입력이면 답 (선택지 없는 질문이면 입력 자체가 답). 아니면 기다리던 명령을 취소하고 새 명령으로
     const opts = pendingAsk.options || [];
-    const pick = opts.length ? window.matchOption?.(text, opts) : text.trim();
+    const pick = pendingAsk.noTyping ? null : opts.length ? window.matchOption?.(text, opts) : text.trim();
     if (pick) return answerAsk(pick, text);
     $("chatIn").value = "";
     cancelAsk();
@@ -1930,11 +1936,57 @@ const q = w => `“${w}”`;   // 따옴표 안 이름에 조사를 붙일 때: 
 // 서버가 "화면에서 하라"고 한 일 (effects): AI 비교 창 열기 — 비교 버튼과 같은 compareWithAI
 function applyEffect(e) {
   if (e?.type !== "compare") return null;
-  const cmp = (e.keys || []).map(k => wishList.find(w => w.key === k));
+  // 찜한 상품은 찜 목록 그대로, 검색 결과에만 있는 상품은 서버가 보낸 값(+ 화면 결과의 링크)으로
+  const fromResult = it => {
+    const p = (shownResult?.products || []).find(x => wishKey(x) === it.key);
+    return { ...it, brand: it.brand || p?.brand || "", model: p?.model || it.model, url: p ? productUrl(p) : null };
+  };
+  const cmp = (e.keys || []).map((k, n) => wishList.find(w => w.key === k) || (e.items?.[n] ? fromResult(e.items[n]) : null));
   if (!cmp.every(Boolean) || cmp.length !== 2) return null;
   const i = Number.isInteger(e.pick_id) && cmp[e.pick_id] ? e.pick_id : null;
   compareWithAI(cmp, async () => ({ text: e.answer, pick: i })).catch(() => {});
   return { pid: i ?? 0, onPick: k => openCompare(cmp, k), label: "👉 비교 화면에서 보기" };
+}
+
+// 비교할 2개 고르기 (compare_favorites 후보가 3개 이상일 때) → {chosen: [key, key]} | {cancelled}
+function chooseTwo(p) {
+  return new Promise(resolve => {
+    const div = chatAdd("bot", p.question || "비교할 2개를 골라 주세요.");
+    const box = document.createElement("div");
+    box.className = "act-opts";
+    const picked = new Set();
+    const go = document.createElement("button");
+    go.type = "button"; go.className = "act-ask"; go.textContent = "⚖️ 비교하기"; go.disabled = true;
+    const cancel = document.createElement("button");
+    cancel.type = "button"; cancel.className = "act-ask"; cancel.textContent = "취소";
+    for (const o of p.options || []) {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "act-ask";
+      b.setAttribute("aria-pressed", "false");
+      b.textContent = o.name + (o.price != null ? ` · ${fmtPrice(o.price, o.currency)}` : "") + (o.source === "favorite" ? " ♥" : "");
+      b.addEventListener("click", () => {
+        if (picked.has(o.key)) picked.delete(o.key);
+        else if (picked.size < 2) picked.add(o.key);
+        b.setAttribute("aria-pressed", String(picked.has(o.key)));
+        go.disabled = picked.size !== 2;
+      });
+      box.appendChild(b);
+    }
+    box.append(go, cancel);
+    div.appendChild(box);
+    const finish = v => {
+      pendingAsk = null;
+      for (const b of box.querySelectorAll("button")) b.disabled = true;
+      resolve(v);
+      chatSetEnabled();
+    };
+    go.addEventListener("click", () => finish({ chosen: [...picked] }));
+    cancel.addEventListener("click", () => finish({ cancelled: true, byButton: true }));
+    pendingAsk = v => finish(v);   // 새 문장이 오면 취소 (cancelAsk)
+    pendingAsk.options = [];
+    pendingAsk.noTyping = true;    // 2개 고르기는 버튼으로만
+    chatSetEnabled();
+  });
 }
 
 // 승인 카드: 상품명·가격·"내 찜 목록"에 저장 [저장/취소] → {approved} | {cancelled}
@@ -2084,6 +2136,11 @@ async function runAct(sentence, opts = {}) {
       if (p.kind === "approve") {
         const a = await approveCard(p.product || {});
         r = { resume: a, summary: a.cancelled ? "취소됨" : a.approved ? "저장 승인" : "저장 취소" };
+      } else if (p.kind === "choose") {   // 비교할 2개 고르기
+        const c = await chooseTwo(p);
+        if (c.byButton) chatAdd("info", "비교를 취소했어요.");
+        r = c.cancelled ? { resume: { cancelled: true }, summary: "취소됨" }
+          : { resume: { response: { chosen: c.chosen } }, summary: `2개 선택` };
       } else {
         r = await runClientTool(p, text => show(`${callLabel(p.call?.name, p.call?.args)} → ${text}`));
       }

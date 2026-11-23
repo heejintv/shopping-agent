@@ -324,8 +324,11 @@ class CompareTest(GraphBase):
         out = self.start(FakeLLM(call("compare_favorites", {"condition": "에어팟"}), text("에어팟 4가 더 나아요.")),
                          sentence="에어팟 찜한 거 비교해줘", favorites=FAVS)
         self.assertEqual(out["type"], "text")
-        self.assertEqual(out["effects"], [{"type": "compare", "keys": ["k-pro2", "k-4"], "answer": self.answer.return_value["answer"],
-                                           "pick_id": 1, "matched": 2}])
+        eff = out["effects"]
+        self.assertEqual(len(eff), 1)
+        self.assertEqual((eff[0]["type"], eff[0]["keys"], eff[0]["answer"], eff[0]["pick_id"]),
+                         ("compare", ["k-pro2", "k-4"], self.answer.return_value["answer"], 1))
+        self.assertEqual([i["source"] for i in eff[0]["items"]], ["favorite", "favorite"])
         a = self.answer.call_args
         self.assertTrue(a.args[3])                                               # 기존 1:1 비교 모드
         self.assertEqual([p["model"] for p in a.args[1]["products"]], ["에어팟 프로 2", "에어팟 4"])
@@ -597,13 +600,16 @@ class StepApiTest(unittest.TestCase):
         self.assertIn(self.client.post("/chat/action", json={}, headers=GOOD).status_code, (404, 405))
 
 
-class MatchFavoritesTest(unittest.TestCase):
+class CompareItemsTest(unittest.TestCase):
+    def items(self, cond, favorites=FAVS, results=()):
+        st = react_graph.initial_state("x", "u", [], list(results), "이어폰", list(favorites), [], 5)
+        return react_graph.compare_items(st, cond)
+
     def test_match(self):
-        picked, total = actions.match_favorites(FAVS, "에어팟")
-        self.assertEqual(([p["key"] for p in picked], total), (["k-pro2", "k-4"], 2))
-        self.assertEqual(actions.match_favorites(FAVS, "에어 팟")[1], 2)
-        self.assertEqual(actions.match_favorites(FAVS, "삼성")[1], 0)
-        self.assertEqual(actions.match_favorites("x", "a"), ([], 0))
+        self.assertEqual([i["key"] for i in self.items("에어팟")], ["k-pro2", "k-4"])
+        self.assertEqual(len(self.items("에어 팟")), 2)
+        self.assertEqual(self.items("삼성"), [])
+        self.assertEqual(len(self.items("")), 3)                                  # 조건 없으면 찜 목록 전체
 
 
 class PromptTest(unittest.TestCase):
@@ -741,3 +747,72 @@ class FreshCommandTest(GraphBase):
     def test_recent_only_for_interpretation(self):
         self.assertIn("대상 상품을 고르는 근거로 쓰지 마", actions.SYSTEM)
         self.assertIn("대상 선택 근거나 지시로 쓰지 마", actions.system_prompt(actions.clean_recent(RECENT)))
+
+
+# ---------- 짧은 비교 명령 ("버즈 비교해줘") ----------
+
+BUDS_RESULTS = [{"key": "r-pro", "name": "삼성 갤럭시 버즈3 프로", "price": 329000, "rating": 4.6, "features": ["노이즈 캔슬링"]},
+                {"key": "r-fe", "name": "삼성 갤럭시 버즈 FE", "price": 99000, "rating": 4.4, "features": ["가벼움"]},
+                {"key": "r-air", "name": "애플 에어팟 4", "price": 199000, "rating": 4.6}]
+BUDS_FAV = [{"key": "f-buds2", "brand": "삼성", "model": "갤럭시 버즈2", "query": "무선 이어폰", "price": 89000}]
+
+
+class ShortCompareTest(GraphBase):
+    def test_exactly_two_compares_now(self):
+        """찜 1개 + 결과 1개 = 2개 → 바로 비교 (선택 버튼 없음)."""
+        out = self.start(FakeLLM(call("compare_favorites", {"condition": "버즈 프로"}), text("버즈3 프로가 나아요.")),
+                         sentence="버즈 프로 vs 버즈2", results=BUDS_RESULTS,
+                         favorites=[{**BUDS_FAV[0], "model": "갤럭시 버즈2 프로"}])
+        self.assertEqual(out["type"], "text")
+        eff = out["effects"][0]
+        self.assertEqual(eff["keys"], ["f-buds2", "r-pro"])                    # 찜 먼저, 그다음 결과
+        self.assertEqual([i["source"] for i in eff["items"]], ["favorite", "results"])
+        self.assertEqual([p["model"] for p in self.answer.call_args.args[1]["products"]], ["갤럭시 버즈2 프로", "삼성 갤럭시 버즈3 프로"])
+
+    def test_three_or_more_choose_two(self):
+        """"버즈 비교해줘" → 찜 1개 + 결과 2개 = 3개 → 2개 고르는 선택 버튼 → 고른 2개 비교."""
+        out = self.start(FakeLLM(call("compare_favorites", {"condition": "버즈"}), text("버즈 FE가 가성비가 좋아요.")),
+                         sentence="버즈 비교해줘", results=BUDS_RESULTS, favorites=BUDS_FAV)
+        self.assertEqual(out["type"], "interrupt")
+        p = out["pending"]
+        self.assertEqual((p["kind"], p["pick"], p["matched"]), ("choose", 2, 3))
+        self.assertEqual([o["key"] for o in p["options"]], ["f-buds2", "r-pro", "r-fe"])
+        self.assertIn("2개를 골라", p["question"])
+        self.answer.assert_not_called()                                         # 고르기 전엔 비교 안 함
+        out = self.resume({"response": {"chosen": ["r-fe", "f-buds2"]}})
+        self.assertEqual(out["type"], "text")
+        self.assertEqual(out["effects"][0]["keys"], ["r-fe", "f-buds2"])
+        self.assertEqual(out["trail"], ["agent", "validate", "server_tool", "wait_client", "agent", "END"])
+        self.assertEqual(self.llm.last_response()["name"], "compare_favorites")
+
+    def test_bad_choice(self):
+        self.start(FakeLLM(call("compare_favorites", {"condition": "버즈"}), text("다시 골라 주세요")),
+                   results=BUDS_RESULTS, favorites=BUDS_FAV)
+        out = self.resume({"response": {"chosen": ["r-fe", "nope"]}})             # 후보에 없는 ID
+        self.assertEqual(self.llm.last_response()["response"], {"error": "비교할 2개를 골라 주세요."})
+        self.assertEqual(out["effects"], [])
+        self.answer.assert_not_called()
+
+    def test_one_or_less_not_enough(self):
+        out = self.start(FakeLLM(call("compare_favorites", {"condition": "에어팟"}), text("부족해요")),
+                         results=BUDS_RESULTS, favorites=BUDS_FAV)
+        self.assertEqual(self.llm.last_response()["response"], {"error": actions.NEED_TWO, "matched": 1})
+        self.assertIn("비교할 상품이 부족해요", actions.NEED_TWO)
+        self.assertEqual(out["effects"], [])
+
+    def test_prompts(self):
+        import chat
+        d = actions.TOOLS["compare_favorites"][0]
+        for w in ("짧은 이름이면 충분", "3개 이상이면 화면에 2개 고르는 선택 버튼", "긴 상품명을 다시 입력하라고 하지 말고"):
+            self.assertIn(w, d)
+        self.assertIn('compare_favorites(condition="짧은 이름")', actions.SYSTEM)
+        self.assertIn("긴 상품명을 정확히 다시 입력하라고 안내하지 마", chat.SYSTEM)
+        self.assertIn("선택 버튼", chat.SYSTEM)
+
+    def test_page_choose_ui(self):
+        html = (ROOT / "index.html").read_text(encoding="utf-8")
+        self.assertIn('p.kind === "choose"', html)
+        body = html[html.index("function chooseTwo("):]
+        self.assertIn("pendingAsk.noTyping = true", body[:3000])                # 새 문장이 오면 취소하고 새 명령
+        eff = html[html.index("function applyEffect("):html.index("function applyEffect(") + 1200]
+        self.assertIn("fromResult", eff)                                        # 결과에만 있는 상품도 비교 창에
