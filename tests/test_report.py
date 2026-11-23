@@ -296,6 +296,29 @@ class CheckTest(unittest.TestCase):
                      "검색 9명[search.total]", "아이폰 16", "검색 세 번 실패", "9회[search.total] 중 10%"):
             self.assertTrue(self.bad(line), line)
 
+    def test_key_exposed(self):
+        for line, n in (("action.bad_top1 명령이 문제", 1), ("search.total은 9회[search.total]", 1), ("Action.Failed_top3 확인", 1)):
+            bad = [c for c in dr.check_numbers(draft(line), self.agg) if not c["ok"]]
+            self.assertEqual(len(bad), n, bad)                       # 키 속 숫자는 따로 세지 않음
+            self.assertIn("내부 키 노출", bad[0]["reason"])
+            self.assertEqual(bad[0]["number"], "")
+        self.assertEqual(self.bad("검색 9회[search.total], naver.com 확인"), [])   # 근거 안의 키·일반 주소는 괜찮음
+
+    def test_key_in_quoted_user_text_ok(self):
+        agg = dr.build([row("11-19 10:00", query="search.total 2")], [], NOW)
+        self.assertEqual([c for c in dr.check_numbers(draft('"search.total 2" 1회[query.top1]'), agg)
+                          if not c["ok"] and c["section"] == "summary" and c["line"] == 1], [])
+
+    def test_two_keys_in_one_bracket(self):
+        reasons = self.bad("9회[search.total, search.ok]")
+        self.assertIn("근거 형식이 잘못됨", reasons[0])
+
+    def test_suggestion_format(self):
+        ok = ["찜 요청이 취소됨 → 비슷한 결과 먼저 보여주기", "제안 없음"]
+        self.assertEqual(dr.bad_suggestions({"suggestions": ok}), [])
+        for s in ("문구를 바꾸기", "현상 →", "→ 할 일", "가 → 나 → 다"):
+            self.assertEqual(len(dr.bad_suggestions({"suggestions": [s]})), 1, s)
+
     def test_null_metric(self):
         agg = dr.build([], [], NOW)
         self.assertFalse(dr.check_numbers(draft("평균 0초[search.avg_sec]"), agg)[0]["ok"])
@@ -354,6 +377,25 @@ class CrewTest(unittest.TestCase):
         out = self.run_crew([BAD, OK, PASS])
         self.assertEqual((out["verdict"], out["calls"], out["fixes"]), ("검토 통과", 3, 1))
         self.assertIn("aggregates 값은 9", self.prompts[1])
+
+    def test_prompt_examples(self):
+        self.run_crew([OK, PASS])
+        for s in ("내부 키", "나쁜 예: action.bad_top1", "현상 → 할 일"):
+            self.assertIn(s, self.prompts[0])
+
+    def test_review_comments_passed_verbatim_and_kept(self):
+        key = json.dumps(draft("action.bad_top1이 문제", HITS), ensure_ascii=False)
+        out = self.run_crew([OK, REJECT, key, OK, PASS])
+        self.assertEqual((out["verdict"], out["fixes"]), ("검토 통과", 2))
+        self.assertIn("1차 검토: 항목이 다름", self.prompts[2])          # 검토 Agent의 문장 그대로
+        self.assertIn("1차 검토: 항목이 다름", self.prompts[3])          # 두 번째 수정에도 앞선 지적을 함께
+        self.assertIn("2차 검토: summary 1번째 줄 action.bad_top1: 내부 키 노출", self.prompts[3])
+
+    def test_bad_suggestion_sent_back(self):
+        d = {**draft(extra=HITS), "suggestions": ["문구를 바꾸기"]}
+        out = self.run_crew([json.dumps(d, ensure_ascii=False), OK, PASS])
+        self.assertEqual((out["verdict"], out["fixes"]), ("검토 통과", 1))
+        self.assertIn("형식이 아님", self.prompts[1])
 
     def test_missing_anomaly_fixed(self):
         out = self.run_crew([MISSING, OK, PASS])

@@ -246,6 +246,9 @@ def clean_draft(data: dict) -> dict:
 
 
 _TOKEN = re.compile(r"\[([a-z]+\.[a-z0-9_]+)\]|(\d[\d,]*(?:\.\d+)?)")
+# 내부 키(aggregates id 모양). 바른 근거 "[search.total]"는 첫 갈래에서 건너뜀
+_KEY = re.compile(r"\[[a-z]+\.[a-z0-9_]+\]|(\[[^\[\]]*\])|"
+                  r"((?<![A-Za-z0-9_.])(?:search|chat|action|query|users|gemini|rule)(?:\.[a-z0-9_]+)+)", re.I)
 _GAP = re.compile(r"[^\d\[\]\n]{0,4}")   # 숫자와 근거 사이에는 단위("회", "초", " %")만
 # 숫자로 쓰지 않고 한글로 쓴 수는 대조할 수 없으므로 틀린 것으로 봄
 _HANGUL_NUM = re.compile(r"(?<![가-힣])(?:한|두|세|네|다섯|여섯|일곱|여덟|아홉|열|스무|수십|수백)\s?(?:번|건|회|명|개|배)")
@@ -255,6 +258,15 @@ def missing_anomalies(draft: dict, agg: dict) -> list[str]:
     """판정된 이상 징후 중 초안의 anomalies에 (실제값·기준값 근거를 한 줄에 같이) 안 쓴 것."""
     return [f"이상 징후 빠짐: {a['text']}" for a in agg.get("anomalies") or [] if a["triggered"]
             and not any(f"[{a['metric']}]" in line and f"[{a['id']}]" in line for line in draft["anomalies"])]
+
+
+NO_SUGGESTION = "제안 없음"
+
+
+def bad_suggestions(draft: dict) -> list[str]:
+    """"현상 → 할 일" 형식이 아닌 개선 제안."""
+    return [f"suggestions {i}번째 줄: '현상 → 할 일' 형식이 아님" for i, line in enumerate(draft["suggestions"], 1)
+            if line.rstrip(". ") != NO_SUGGESTION and not re.fullmatch(r"\s*[^→\s][^→]*→\s*[^→\s][^→]*", line)]
 
 
 def check_numbers(draft: dict, agg: dict) -> list[dict]:
@@ -270,14 +282,23 @@ def check_numbers(draft: dict, agg: dict) -> list[dict]:
             for t in texts:   # 따옴표로 인용한 검색어·명령 문장 속 숫자("아이폰 16")는 집계 숫자가 아님
                 for a, b in ('""', "''", "“”", "‘’", "「」"):
                     text = text.replace(a + t + b, "인용")
-            tokens = list(_TOKEN.finditer(text))
-
             def add(number, mid, reason):
                 m = known.get(mid)
                 out.append({"section": section, "line": i, "number": number, "id": mid,
                             "label": m["label"] if m else None, "expected": m["value"] if m else None,
                             "source": m["source"] if m else None, "ok": not reason, "reason": reason})
 
+            def key(m):
+                """대괄호 밖의 키는 숫자로 세지 않고 따로 지적."""
+                if m.group(2):
+                    add("", m.group(2), "내부 키 노출 (문장에는 한국어 이름만, 키는 대괄호 근거 안에만)")
+                    return "키"
+                if m.group(1) and _KEY.search(m.group(1)[1:-1]):   # "[search.ok, search.total]"
+                    add("", m.group(1)[:60], "근거 형식이 잘못됨 (대괄호 하나에 키 하나)")
+                    return "키"
+                return m.group(0)
+
+            tokens = list(_TOKEN.finditer(text := _KEY.sub(key, text)))
             for j, tok in enumerate(tokens):
                 if tok.group(1):
                     if tok.group(1) not in known:
