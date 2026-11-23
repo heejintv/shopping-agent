@@ -333,6 +333,59 @@ def triggered(agg):
 
 
 HITS = triggered(dr.build(ROWS, EVENTS, NOW))   # 이 날의 이상 징후: 초안에 꼭 있어야 함
+class RankTest(unittest.TestCase):
+    """"N위"는 같은 줄의 근거 키 순위와 맞으면 통과. (SUGGESTIONS는 만든 예시. 실제 초안 아님)"""
+
+    COMMANDS = (("에어팟 찜해줘", "search_cancelled", 3), ("2번 빼줘", "rejected", 2), ("배송 언제 와", "cannot", 1))
+    SUGGESTIONS = [
+        '잘 안 된 명령 1위 "에어팟 찜해줘" 3회[action.bad_top1]가 검색 확인에서 취소됨 → 비슷한 결과를 먼저 보여주기 검토',
+        '2위 "2번 빼줘" 2회[action.bad_top2]가 검사에서 거부됨 → 찜 번호 안내 문구 추가',
+        '3위인 "배송 언제 와" 1회[action.bad_top3]에 할 수 없다고 답함 → 지원 범위 안내 추가',
+    ]
+
+    def setUp(self):
+        rows = [row("11-19 10:00", "chat", query="[실행] " + t, outcome=o) for t, o, n in self.COMMANDS for _ in range(n)]
+        self.agg = dr.build(rows, [], NOW)
+
+    def checks(self, *lines):
+        return dr.check_numbers({"summary": [], "anomalies": [], "suggestions": list(lines)}, self.agg)
+
+    def bad(self, line):
+        return [c for c in self.checks(line) if not c["ok"]]
+
+    def test_three_suggestions_pass(self):
+        checks = self.checks(*self.SUGGESTIONS)
+        self.assertTrue(all(c["ok"] for c in checks), checks)
+        self.assertEqual([c["number"] for c in checks if c["label"] == "순위"], ["1위", "2위", "3위"])
+        self.assertEqual(dr.bad_suggestions({"suggestions": self.SUGGESTIONS}), [])
+
+    def test_rank_right_before_key(self):
+        self.assertEqual(self.bad("1위[action.bad_top1]"), [])
+
+    def test_wrong_rank(self):
+        for line in ("2위 3회[action.bad_top1]", "1위 명령", "1위 9회[action.bad_top9]", "2위[action.bad_top1]",
+                     "1위와 2위 3회[action.bad_top1]", "1위 6회[action.bad]"):
+            self.assertTrue(self.bad(line), line)
+
+    def test_not_a_rank(self):
+        self.assertTrue(self.bad("1 위치 3회[action.bad_top1]"))
+
+    def test_value_still_checked(self):
+        self.assertTrue(self.bad("1위 4회[action.bad_top1]"))
+
+    def test_json_mime_type(self):
+        seen = []
+        types = mock.Mock()
+        types.GenerateContentConfig = lambda **kw: seen.append(kw)
+        client = mock.Mock()
+        client.models.generate_content.return_value = mock.Mock(text="{}", usage_metadata=None)
+        with mock.patch.object(gemini, "_client", return_value=(client, types)):
+            gemini.chat_gemini("s", "p", 5, json_mode=True)
+            gemini.chat_gemini("s", "p", 5)
+        self.assertEqual(seen[0]["response_mime_type"], "application/json")
+        self.assertNotIn("response_mime_type", seen[1])   # 상담 챗봇은 그대로
+
+
 OK = json.dumps(draft(extra=HITS), ensure_ascii=False)
 BAD = json.dumps(draft("검색은 8회[search.total]", HITS), ensure_ascii=False)
 MISSING = json.dumps(draft(), ensure_ascii=False)
@@ -345,7 +398,8 @@ class CrewTest(unittest.TestCase):
         self.prompts = []
         it = iter(answers)
 
-        def fake(system, prompt, timeout, usage=None):
+        def fake(system, prompt, timeout, usage=None, json_mode=False):
+            self.assertTrue(json_mode)   # 보고서는 항상 JSON 형식 강제
             self.prompts.append(system + prompt)
             a = next(it)
             if isinstance(a, Exception):
@@ -377,6 +431,35 @@ class CrewTest(unittest.TestCase):
         out = self.run_crew([BAD, OK, PASS])
         self.assertEqual((out["verdict"], out["calls"], out["fixes"]), ("검토 통과", 3, 1))
         self.assertIn("aggregates 값은 9", self.prompts[1])
+
+    def test_bad_json_retried_once_not_a_fix(self):
+        out = self.run_crew(["{깨진", OK, PASS])
+        self.assertEqual((out["verdict"], out["calls"], out["fixes"]), ("검토 통과", 3, 0))
+        self.assertEqual(self.prompts[0], self.prompts[1])   # 같은 요청
+
+    def test_review_json_retried_once(self):
+        out = self.run_crew([OK, "{깨진", PASS])
+        self.assertEqual((out["verdict"], out["calls"], out["fixes"]), ("검토 통과", 3, 0))
+        self.assertEqual(self.prompts[1], self.prompts[2])
+
+    def test_twice_broken_then_counts_as_fix(self):
+        out = self.run_crew(["글", "글", OK, PASS])
+        self.assertEqual((out["verdict"], out["calls"], out["fixes"]), ("검토 통과", 4, 1))
+
+    def test_retry_stays_within_five_calls(self):
+        out = self.run_crew([OK, REJECT, OK, REJECT, "글"])
+        self.assertEqual((out["verdict"], out["calls"]), ("수정 필요", 5))
+
+    def test_ranked_suggestions_pass_whole_flow(self):
+        agg_rows = [row("11-19 10:00", "chat", query="[실행] " + t, outcome=o)
+                    for t, o, n in RankTest.COMMANDS for _ in range(n)]
+        agg = dr.build(agg_rows, [], NOW)
+        d = {"summary": ["잘 안 된 명령 6회[action.bad]", "가", "나"], "anomalies": ["특이 사항 없음"],
+             "suggestions": RankTest.SUGGESTIONS}
+        with mock.patch.object(gemini, "chat_gemini", side_effect=[json.dumps(d, ensure_ascii=False), PASS]), \
+                mock.patch.object(stats, "record_engine"):
+            out = report_crew.run(agg)
+        self.assertEqual((out["verdict"], out["calls"]), ("검토 통과", 2), out["problems"])
 
     def test_prompt_examples(self):
         self.run_crew([OK, PASS])
@@ -432,11 +515,12 @@ class CrewTest(unittest.TestCase):
         self.assertEqual((out["verdict"], out["calls"]), ("수정 필요", 2))
 
     def test_unreadable_review_is_not_pass(self):
-        self.assertEqual(self.run_crew([OK, "좋아요"])["verdict"], "수정 필요")
+        self.assertEqual(self.run_crew([OK, "좋아요", "좋아요"])["verdict"], "수정 필요")
 
     def test_never_valid(self):
         with self.assertRaises(gemini.EngineError):
-            self.run_crew(["글", "글", "글"])
+            self.run_crew(["글"] * 5)
+        self.assertEqual(len(self.prompts), 5)
 
 
 class NoCrewaiTest(unittest.TestCase):

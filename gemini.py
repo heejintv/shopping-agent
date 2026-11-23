@@ -144,11 +144,13 @@ def _client(timeout: int):
     return genai.Client(api_key=key, http_options=types.HttpOptions(timeout=timeout * 1000)), types
 
 
-def chat_gemini(system: str, prompt: str, timeout: int, usage: dict | None = None) -> str:
+def chat_gemini(system: str, prompt: str, timeout: int, usage: dict | None = None, json_mode: bool = False) -> str:
     """도구 없이(웹 검색 안 함) 답변 텍스트만 받는다. 실패하면 EngineError(code 포함).
-    usage에 dict를 넘기면 사용 토큰 수를 usage["tokens"]에 넣어 준다 (응답에 있을 때만)."""
+    usage에 dict를 넘기면 사용 토큰 수를 usage["tokens"]에 넣어 준다 (응답에 있을 때만).
+    json_mode: 응답을 JSON 형식으로 강제 (response_mime_type)."""
     client, types = _client(timeout)
-    config = types.GenerateContentConfig(system_instruction=system, temperature=0.4)
+    config = types.GenerateContentConfig(system_instruction=system, temperature=0.4,
+                                         **({"response_mime_type": "application/json"} if json_mode else {}))
     try:
         resp = client.models.generate_content(model=model_name(), contents=prompt, config=config)
     except Exception as e:

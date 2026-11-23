@@ -249,6 +249,7 @@ _TOKEN = re.compile(r"\[([a-z]+\.[a-z0-9_]+)\]|(\d[\d,]*(?:\.\d+)?)")
 # 내부 키(aggregates id 모양). 바른 근거 "[search.total]"는 첫 갈래에서 건너뜀
 _KEY = re.compile(r"\[[a-z]+\.[a-z0-9_]+\]|(\[[^\[\]]*\])|"
                   r"((?<![A-Za-z0-9_.])(?:search|chat|action|query|users|gemini|rule)(?:\.[a-z0-9_]+)+)", re.I)
+_RANK = re.compile(r"\s?위(?![해치험한원])")   # "1위", "1위는" ("3 위치"는 아님)
 _GAP = re.compile(r"[^\d\[\]\n]{0,4}")   # 숫자와 근거 사이에는 단위("회", "초", " %")만
 # 숫자로 쓰지 않고 한글로 쓴 수는 대조할 수 없으므로 틀린 것으로 봄
 _HANGUL_NUM = re.compile(r"(?<![가-힣])(?:한|두|세|네|다섯|여섯|일곱|여덟|아홉|열|스무|수십|수백)\s?(?:번|건|회|명|개|배)")
@@ -305,6 +306,13 @@ def check_numbers(draft: dict, agg: dict) -> list[dict]:
                         add("", tok.group(1), "aggregates에 없는 근거")
                     continue
                 number = tok.group(2)
+                if _RANK.match(text, tok.end()):   # "1위": 같은 줄의 근거 키 순위(action.bad_top1 등)와 맞는지
+                    key_id = next((t.group(1) for t in tokens if t.group(1) in known
+                                   and re.search(r"top0*" + re.escape(number) + "$", t.group(1))), None)
+                    if key_id:
+                        out.append({"section": section, "line": i, "number": f"{number}위", "id": None, "label": "순위",
+                                    "expected": number, "source": f"같은 줄의 근거 [{key_id}]", "ok": True, "reason": None})
+                        continue
                 nxt = tokens[j + 1] if j + 1 < len(tokens) else None
                 if not (nxt and nxt.group(1) and _GAP.fullmatch(text[tok.end():nxt.start()])):
                     add(number, None, "근거 표시가 없음")
