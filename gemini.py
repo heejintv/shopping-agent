@@ -184,3 +184,28 @@ def call_gemini(prompt: str, schema: dict, timeout: int) -> dict:
     data["cost_usd"] = None  # 토큰 단가가 모델마다 달라 계산하지 않음 (토큰 수만 기록)
     data["tokens"] = getattr(usage, "total_token_count", None) if usage else None
     return data
+
+
+def pick_tool(system: str, prompt: str, tools: dict, timeout: int, usage: dict | None = None):
+    """함수 호출로 도구 하나만 고르게 한다 (실행은 안 함). tools = {이름: (설명, JSON 스키마 또는 None)}.
+    (고른 이름, 입력값 dict) 또는 고르지 않았으면 (None, {}). 실패하면 EngineError."""
+    client, types = _client(timeout)
+    decls = [types.FunctionDeclaration(name=n, description=d, parameters_json_schema=s) if s
+             else types.FunctionDeclaration(name=n, description=d) for n, (d, s) in tools.items()]
+    config = types.GenerateContentConfig(
+        system_instruction=system, temperature=0,
+        tools=[types.Tool(function_declarations=decls)],
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        tool_config=types.ToolConfig(function_calling_config=types.FunctionCallingConfig(mode="AUTO")),
+    )
+    try:
+        resp = client.models.generate_content(model=model_name(), contents=prompt, config=config)
+    except Exception as e:
+        raise _friendly_error(e) from e
+    if usage is not None:
+        meta = getattr(resp, "usage_metadata", None)
+        usage["tokens"] = getattr(meta, "total_token_count", None) if meta else None
+    calls = getattr(resp, "function_calls", None) or []
+    if not calls:
+        return None, {}
+    return calls[0].name, dict(calls[0].args or {})

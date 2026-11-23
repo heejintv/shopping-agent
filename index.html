@@ -353,6 +353,12 @@
   #chatIn { flex: 1; min-width: 0; padding: 10px 12px; font-size: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--text); }
   #chatSend { padding: 0 16px; border: 0; border-radius: 10px; background: var(--accent); color: #fff; font-weight: 600; }
   #chatSend:disabled, #chatEx button:disabled { opacity: .5; cursor: default; }
+  #actMode { flex: none; width: 40px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--muted); font-size: 16px; }
+  #actMode[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+  #actMode:disabled { opacity: .5; cursor: default; }
+  #actLog { padding: 0 14px 10px; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #chatBox.guest #actLog { display: none; }
+  .msg .act-ask { display: block; margin-top: 8px; padding: 5px 11px; font-size: 13px; border-radius: 99px; border: 1px solid var(--accent); background: var(--card); color: var(--accent); }
   #chatCount { padding: 0 14px 8px; font-size: 12px; color: var(--muted); text-align: right; }
   .pick-link { color: inherit; font-weight: 700; text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px; }
   .msg.bot .see { display: inline-block; margin-top: 6px; font-weight: 600; color: var(--accent); }
@@ -844,9 +850,11 @@
   </div>
   <div id="chatCount"></div>
   <form id="chatForm">
+    <button type="button" id="actMode" aria-pressed="false" title="문장으로 실행 (찜하기·찜 빼기·찜 목록·검색)">⚡</button>
     <input id="chatIn" maxlength="300" placeholder="예산, 용도, 취향을 말해 주세요" autocomplete="off">
     <button id="chatSend">보내기</button>
   </form>
+  <div id="actLog" hidden></div>
 </div>
 <button type="button" id="chatFab" aria-label="상담 챗봇 열기">💬</button>
 
@@ -1575,10 +1583,11 @@ function chatAdd(cls, text) {
 }
 
 function chatSetEnabled() {
-  const off = chatBusy || !chatResult || demoMode || !authUser;
+  const off = chatBusy || (!chatResult && !actMode) || demoMode || !authUser;   // 문장 실행은 검색 결과 없이도 됨 (검색 명령)
   $("cmpAsk").disabled = chatBusy || demoMode;   // 로그인 안 했으면 누를 때 로그인 창을 띄움
   $("chatSend").disabled = off;
-  $("chatIn").disabled = !chatResult || demoMode || !authUser;
+  $("chatIn").disabled = (!chatResult && !actMode) || demoMode || !authUser;
+  $("actMode").disabled = chatBusy || demoMode || !authUser;
   for (const b of $("chatEx").querySelectorAll("button")) b.disabled = off;
 }
 
@@ -1756,7 +1765,135 @@ $("chatFab").addEventListener("click", () => {
   if (open && !$("chatIn").disabled) $("chatIn").focus();
 });
 $("chatClose").addEventListener("click", () => $("chatBox").classList.remove("open", "peek"));
-$("chatForm").addEventListener("submit", e => { e.preventDefault(); chatAsk($("chatIn").value); });
+$("chatForm").addEventListener("submit", e => { e.preventDefault(); actMode ? chatAct($("chatIn").value) : chatAsk($("chatIn").value); });
+
+// ---------- 문장으로 실행 (함수 호출) ----------
+// 서버(/chat/action)는 Gemini가 고른 도구·입력값만 돌려줌. 실행은 여기서 기존 찜(toggleWish)·검색(#f 제출)을 그대로 부름
+
+let actMode = false;
+$("actMode").addEventListener("click", () => {
+  actMode = !actMode;
+  $("actMode").setAttribute("aria-pressed", String(actMode));
+  $("chatIn").placeholder = actMode ? "예: 저소음 키보드 찜해줘 · 찜 목록 보여줘" : "예산, 용도, 취향을 말해 주세요";
+  chatSetEnabled();
+  if (!$("chatIn").disabled) $("chatIn").focus();
+});
+
+const productLabel = p => `${p.brand || ""} ${p.model || ""}`.trim();
+
+// 상품명 → 지금 화면 검색 결과(또는 list)에서 가장 많이 겹치는 상품. 단어 절반 이상 맞아야 인정
+function findProduct(name, list) {
+  const want = norm(name).split(" ").filter(Boolean);
+  if (!want.length) return null;
+  let best = null, bestScore = 0;
+  for (const p of list || []) {
+    const label = norm(productLabel(p));
+    if (label === want.join(" ")) return p;
+    const hit = want.filter(w => label.includes(w)).length;
+    const score = hit / want.length + (label.includes(want.join(" ")) ? 1 : 0);
+    if (hit * 2 >= want.length && score > bestScore) { best = p; bestScore = score; }
+  }
+  return best;
+}
+
+function actLogLine(text) {
+  $("actLog").hidden = false;
+  $("actLog").textContent = text;
+  $("actLog").title = text;
+}
+
+function runSearch(q) {
+  $("q").value = q;
+  $("f").requestSubmit();   // 검색창 제출과 똑같이 (로그인·한도 검사도 그대로)
+}
+
+// 상품을 못 찾았을 때: "먼저 검색할까요?" 버튼
+function askSearchFirst(name) {
+  const div = chatAdd("bot", `지금 검색 결과에서 “${name}”을(를) 찾지 못했어요.`);
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "act-ask";
+  b.textContent = `🔍 “${name}” 먼저 검색할까요?`;
+  b.addEventListener("click", () => { b.disabled = true; runSearch(name); actLogLine(`search · ${name}`); });
+  div.appendChild(b);
+}
+
+function runAction(tool, args) {
+  const products = shownResult?.products || [];
+  const before = wishList.length;
+  if (tool === "show_favorites") {
+    renderWishSheet(); openSheet("wishSheet");
+    chatAdd("bot", `찜 목록을 열었어요 (${wishList.length}개).`);
+    return actLogLine(`show_favorites · 찜 ${wishList.length}개`);
+  }
+  if (tool === "search") {
+    chatAdd("bot", `“${args.query}”을(를) 검색할게요.`);
+    runSearch(args.query);
+    return actLogLine(`search · ${args.query}`);
+  }
+  const name = args.name;
+  if (tool === "add_favorite") {
+    const p = findProduct(name, products);
+    if (!p) { actLogLine(`add_favorite · ${name} · 결과에 없음`); return askSearchFirst(name); }
+    if (isWished(wishKey(p))) {
+      chatAdd("bot", `“${productLabel(p)}”은(는) 이미 찜했어요.`);
+      return actLogLine(`add_favorite · ${productLabel(p)} · 이미 찜 (${before}개)`);
+    }
+    toggleWish(p, shownResult);   // 하트 버튼과 같은 함수
+    chatAdd("bot", `♥ “${productLabel(p)}”을(를) 찜했어요.`);
+    return actLogLine(`add_favorite · ${productLabel(p)} · 찜 ${before}→${wishList.length}`);
+  }
+  if (tool === "remove_favorite") {
+    // 검색 결과에 있으면 그 상품, 아니면 찜 목록에서 찾음
+    const p = [findProduct(name, products), findProduct(name, wishList)].find(x => x && isWished(wishKey(x)));
+    if (!p) {
+      if (findProduct(name, products)) {
+        chatAdd("bot", `“${name}”은(는) 찜 목록에 없어요.`);
+        return actLogLine(`remove_favorite · ${name} · 찜에 없음 (${before}개)`);
+      }
+      actLogLine(`remove_favorite · ${name} · 결과에 없음`);
+      return askSearchFirst(name);
+    }
+    toggleWish(p, shownResult);
+    chatAdd("bot", `♡ “${productLabel(p)}”을(를) 찜에서 뺐어요.`);
+    return actLogLine(`remove_favorite · ${productLabel(p)} · 찜 ${before}→${wishList.length}`);
+  }
+}
+
+async function chatAct(sentence) {
+  sentence = sentence.trim().split(/\s+/).join(" ");
+  if (!sentence || chatBusy || demoMode) return;
+  if (!authUser) return openAuth("login", "로그인하면 문장으로 실행할 수 있어요.");
+  const token = await authToken();
+  if (!token) return openAuth("login", "로그인이 만료됐어요. 다시 로그인해 주세요.");
+  if (sentence.length > 200) return chatAdd("err", "문장은 200자까지 쓸 수 있어요.");
+  const who = authUser.id;
+  chatAdd("user", "⚡ " + sentence);
+  $("chatIn").value = "";
+  chatBusy = true; chatSetEnabled();
+  const wait = chatAdd("bot wait", "실행할 동작을 고르는 중...");
+  try {
+    const res = await fetch(API_BASE + "/chat/action", {
+      method: "POST",
+      headers: { ...API_HEADERS, "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ sentence, names: (shownResult?.products || []).slice(0, 10).map(productLabel) }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (who !== authUser?.id) return;
+    wait.remove();
+    if (data.unlimited === false && data.remaining != null) $("chatCount").textContent = `오늘 남은 상담 ${data.remaining}회`;
+    if (res.status === 401 && data.login_required) { loginExpired(res, data); throw new Error(data.error || "다시 로그인해 주세요."); }
+    if (!res.ok) throw new Error(data.error || "문장으로 실행하지 못했어요. 버튼으로 해 주세요.");
+    if (!data.tool) { chatAdd("info", data.message || "어떤 동작인지 알아듣지 못했어요. 버튼으로 해 주세요."); return actLogLine("선택 안 됨 · 버튼으로 해 주세요"); }
+    runAction(data.tool, data.args || {});
+  } catch (err) {
+    if (who !== authUser?.id) return;
+    wait.remove();
+    chatAdd("err", err instanceof TypeError ? "서버에 연결할 수 없어요. 버튼으로 해 주세요." : err.message);
+  } finally {
+    chatBusy = false; chatSetEnabled();
+  }
+}
 $("chatEx").addEventListener("click", e => { if (e.target.tagName === "BUTTON") chatAsk(e.target.textContent); });
 
 // ---------- 로그인 (Supabase) ----------

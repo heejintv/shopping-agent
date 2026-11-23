@@ -17,6 +17,7 @@
 - CORS는 GitHub Pages 주소(ALLOWED_ORIGIN)만 허용
 - /search/stream: 새 검색의 진행 단계를 실시간으로 보냄 (Server-Sent Events). 취소하면 claude를 멈추고 횟수에서 빼지 않음
 - /me: 로그인한 사람의 등급과 오늘 남은 횟수
+- /chat/action: 챗봇 "문장으로 실행". Gemini 함수 호출로 도구·입력값만 골라 줌 (실행은 화면, 상담 한도 1회)
 - /admin/stats: 관리자 대시보드 (admin.html). 토큰 확인 + profiles.role=admin일 때만, 아니면 403
 - /admin/claude-check: admin 전용. claude --version + 짧은 claude -p로 토큰이 살아 있는지 (성공/실패·원인 종류만)
 - Render 배포(환경변수 RENDER=true): 모든 요청을 외부로 보고 하루 제한 적용, 처음 켜질 때 demo/ 결과를 캐시로 불러옴
@@ -39,6 +40,7 @@ from pathlib import Path
 
 from flask import Flask, Response, g, jsonify, request, send_from_directory
 
+import actions
 import admin_stats
 import auth
 import chat
@@ -936,6 +938,58 @@ def chat_api():
     record()
     finish(user, kind, "ok", t0, query=topic, engine=out.get("engine") or chat.chat_engine(),
            ticket=ticket, exempt=unlimited, tokens=out.get("tokens"))
+    return jsonify(**out, **info)
+
+
+@app.post("/chat/action")
+def chat_action():
+    """챗봇 "문장으로 실행": Gemini 함수 호출로 도구와 입력값만 골라 JSON으로 돌려줌 (실행은 화면이 함).
+    /chat과 같은 검사(출처·로그인·상담 하루 한도)를 거치고, 사용 기록은 상담(chat) 한 번으로 남김."""
+    origin = request.headers.get("Origin")
+    if origin and origin not in LOCAL_ORIGINS:
+        return jsonify(error="허용되지 않은 출처예요."), 403
+    user, err = login_user()
+    if err:
+        return err
+    if not request.is_json:
+        return jsonify(error="JSON으로 보내 주세요."), 415
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify(error="요청 형식이 잘못됐어요."), 400
+    sentence = " ".join(str(body.get("sentence") or "").split())
+    if not sentence:
+        return jsonify(error="문장을 입력하세요."), 400
+    if len(sentence) > actions.MAX_SENTENCE:
+        return jsonify(error=f"문장이 너무 길어요 ({actions.MAX_SENTENCE}자 이하)."), 400
+    names = actions.clean_names(body.get("names"))
+
+    t0 = time.time()
+    record = lambda **kw: stats.record_request("chat", (time.time() - t0) * 1000, **kw)  # noqa: E731
+    topic = "[실행] " + sentence
+    try:
+        unlimited = is_unlimited(user)
+    except members.MemberError as e:
+        app.logger.warning("role check failed: %s", e)
+        return jsonify(error=MEMBER_DOWN), 503
+    ticket, err = reserve(user, "chat", unlimited)
+    if err:
+        if err[1] == 429:
+            record(limited=True)
+            finish(user, "chat", "limited", t0, query=topic, exempt=unlimited)
+        return err
+    info = quota_info(unlimited, "chat", ticket.remaining if ticket else None)
+    try:
+        out = actions.choose(sentence, names)
+    except Exception as e:   # Gemini 실패(한도·키·시간 초과 등)는 모두 "버튼으로 해 주세요"
+        app.logger.warning("chat action failed: %s (%s)", e, e.__cause__)
+        record(ok=False, code=getattr(e, "code", None))
+        finish(user, "chat", "error", t0, query=topic, engine="gemini", ticket=ticket, exempt=unlimited)
+        return jsonify(error=actions.FAIL_MESSAGE, **info), 502
+    record()
+    finish(user, "chat", "ok", t0, query=topic, engine="gemini", ticket=ticket, exempt=unlimited,
+           tokens=out.pop("tokens", None))
+    if out["tool"] is None:
+        out["message"] = actions.UNKNOWN_MESSAGE
     return jsonify(**out, **info)
 
 
