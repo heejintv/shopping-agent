@@ -1325,13 +1325,24 @@ def _build_report(report_id: str, day=None) -> dict:
         return {"state": "draft", "id": report_id, "aggregates": agg, **report_crew.run(agg)}
     except members.MemberError as e:
         app.logger.warning("report failed: %s", e)
-        return {"state": "error", "id": report_id, "error": MEMBER_DOWN}
+        return {"state": "error", "id": report_id, "error": MEMBER_DOWN, "reason": "db"}
     except EngineError as e:
         app.logger.warning("report failed: %s", e)
-        return {"state": "error", "id": report_id, "error": str(e)}
+        reason = ("crewai" if str(e) == report_crew.UNAVAILABLE else "other" if "report-rules.md" in str(e)
+                  else "gemini_key" if e.code in (401, 403) or "GEMINI_API_KEY" in str(e) else "gemini")
+        return {"state": "error", "id": report_id, "error": str(e), "reason": reason}
     except Exception:
         app.logger.exception("report failed")
-        return {"state": "error", "id": report_id, "error": "보고서를 만들지 못했어요. 서버 로그를 확인하세요."}
+        return {"state": "error", "id": report_id, "error": "보고서를 만들지 못했어요. 서버 로그를 확인하세요.",
+                "reason": "other"}
+
+
+def _no_data(out: dict) -> str | None:
+    return "no_data" if out["aggregates"].get("no_usage") else None
+
+
+def _run_day(day=None) -> str:
+    return (day or daily_report.yesterday(datetime.now(KST))[0].date()).isoformat()
 
 
 def _save_report(out: dict, source: str) -> int | None:
@@ -1349,8 +1360,12 @@ def _make_report(report_id: str, day=None, save: bool = False) -> None:
     """관리자 화면·명령의 보고서. save: Supabase에도 저장 (실패해도 초안은 화면에 보임)."""
     global _report
     out = _build_report(report_id, day)
+    reason = out.pop("reason", None)
     if save and out["state"] == "draft":
         out["saved"] = _save_report(out, "manual") is None
+        reason = "save" if not out["saved"] else _no_data(out)
+    if save:   # 관리자 화면에서 만든 것만 실행 로그에 (명령으로 만든 것은 저장하지 않으므로 뺌)
+        members.log_run("manual", "ok" if out["state"] == "draft" else "failed", reason, _run_day(day))
     with _report_lock:
         _report = out
 
@@ -1375,9 +1390,15 @@ def admin_report_make():
     except ValueError as e:
         return jsonify(error=str(e)), 400
     if not report_crew.available():   # 내 PC Python 3.14 등. 기록을 읽기 전에 안내
+        members.log_run("manual", "failed", "crewai", _run_day(day))
         return jsonify(error=report_crew.UNAVAILABLE), 503
     with _report_lock:
-        if "running" in (_report["state"], _cron["state"]):
+        busy = "running" in (_report["state"], _cron["state"])
+    if busy:
+        members.log_run("manual", "skipped", "busy", _run_day(day))
+        return jsonify(error="보고서를 만드는 중이에요. 잠시만 기다려 주세요."), 409
+    with _report_lock:
+        if "running" in (_report["state"], _cron["state"]):   # 그사이 시작됨
             return jsonify(error="보고서를 만드는 중이에요. 잠시만 기다려 주세요."), 409
         report_id = secrets.token_hex(8)
         _report = {"state": "running", "id": report_id}
@@ -1449,19 +1470,65 @@ def _approve_auto(report_id):
 
 @app.get("/admin/report/auto")
 def admin_report_auto():
-    """오늘 아침 자동 보고서 (어제 날짜, Supabase reports). 없으면 state=none."""
+    """오늘 아침 자동 보고서 (어제 날짜, Supabase reports). 없으면 마지막 성공본(stale), 그것도 없으면 state=none."""
     err = require_admin()
     if err:
         return err
     day = daily_report.yesterday(datetime.now(KST))[0].date().isoformat()
     try:
         row = members.auto_report(day)
+        stale = row is None
+        row = row or members.latest_auto_report()   # 오늘 것이 없으면 마지막 성공본
     except members.MemberError as e:
         app.logger.warning("auto report failed: %s", e)
         return jsonify(error="자동 보고서를 불러오지 못했어요. (reports 테이블을 확인하세요)"), 503
-    resp = jsonify(_auto_view(row) if row else {"state": "none"})
+    resp = jsonify({**_auto_view(row), "stale": stale} if row else {"state": "none"})
     resp.headers["Cache-Control"] = "no-store"
     return resp
+
+
+@app.get("/admin/report/runs")
+def admin_report_runs():
+    """가장 최근 실행 표시 {auto: {text, warn}, manual: {text, warn}} (report_runs)."""
+    err = require_admin()
+    if err:
+        return err
+    now, out = datetime.now(KST), {}
+    try:
+        for source in ("auto", "manual"):
+            latest = members.last_run(source)
+            ok = latest if latest and latest.get("status") == "ok" else members.last_run(source, "ok") if latest else None
+            out[source] = daily_report.run_summary(latest, ok, now, below=source == "auto")
+    except members.MemberError as e:
+        app.logger.warning("report runs failed: %s", e)
+        return jsonify(error="실행 기록을 불러오지 못했어요. (report_runs 테이블을 확인하세요)"), 503
+    return _cron_response(out)
+
+
+@app.post("/admin/report/evidence")
+def admin_report_evidence():
+    """{date, key, until?, text?} 근거 숫자를 만든 usage_logs 기록 최대 10건 (개인정보 가림).
+    검색어가 접속 로그에 남지 않게 POST 본문으로 받음."""
+    err = require_admin()
+    if err:
+        return err
+    body = request.get_json(silent=True)
+    body = body if isinstance(body, dict) else {}
+    key, text = body.get("key"), body.get("text")
+    try:
+        day = daily_report.parse_day(body.get("date"))
+        if day is None or not isinstance(key, str) or not (text is None or isinstance(text, str)):
+            raise ValueError("요청 형식이 잘못됐어요.")
+        start, end = daily_report.evidence_period(day, body.get("until"), datetime.now(KST))
+        if daily_report._evidence_filter(key, text) is None:
+            return _cron_response({"error": "이 숫자는 원본 기록이 없어요 (설정값)."}, 404)
+        rows, truncated = members.usage_between(start, end)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    except members.MemberError as e:
+        app.logger.warning("report evidence failed: %s", e)
+        return jsonify(error=MEMBER_DOWN), 503
+    return _cron_response({**daily_report.evidence(rows, key, start, end, text), "truncated": truncated})
 
 
 # ---------- 매일 자동 보고서 (GitHub Actions → /admin/report/cron) ----------
@@ -1488,14 +1555,34 @@ def _cron_response(body: dict, status: int = 200):
     return resp
 
 
+DENIED_LOG_SEC = 600   # 틀린 토큰 기록은 10분에 한 번만 (아무나 부를 수 있는 주소라 기록이 쌓이지 않게)
+_denied_at = float("-inf")
+
+
+def _log_denied() -> None:
+    global _denied_at
+    with _report_lock:
+        if time.monotonic() - _denied_at < DENIED_LOG_SEC:
+            return
+        _denied_at = time.monotonic()
+    members.log_run("auto", "failed", "token", _run_day())
+
+
 def _run_cron(day) -> None:
     global _cron
-    state = "error"
+    state, run = "error", ("failed", "other")
     try:
         out = _build_report(secrets.token_hex(8), day)
-        if out["state"] == "draft" and _save_report(out, "auto") in (None, 409):   # 409: 이미 저장돼 있음
-            state = "done"
+        if out["state"] != "draft":
+            run = ("failed", out["reason"])
+        else:
+            code = _save_report(out, "auto")
+            if code in (None, 409):   # 409: 이미 저장돼 있음
+                state, run = "done", ("ok", _no_data(out)) if code is None else ("skipped", "exists")
+            else:
+                run = ("failed", "save")
     finally:
+        members.log_run("auto", *run, day.isoformat())
         with _report_lock:
             _cron = {"state": state, "date": day.isoformat()}
 
@@ -1516,22 +1603,28 @@ def admin_report_cron():
     global _cron
     denied = _cron_denied()
     if denied:
+        _log_denied()
         return denied
     if not report_crew.available():
+        members.log_run("auto", "failed", "crewai", _run_day())
         return jsonify(error=report_crew.UNAVAILABLE), 503
     day = daily_report.yesterday(datetime.now(KST))[0].date()
     try:
         if members.auto_report(day.isoformat()):
+            members.log_run("auto", "skipped", "exists", day.isoformat())
             return _cron_response({"state": "done", "date": day.isoformat()})
     except members.MemberError as e:   # 저장할 곳이 없으면 Gemini를 쓰기 전에 멈춤
         app.logger.warning("cron report failed: %s", e)
+        members.log_run("auto", "failed", "db", day.isoformat())
         return jsonify(error=MEMBER_DOWN), 503
     with _report_lock:
-        if _cron["state"] == "running":
-            return _cron_response(dict(_cron), 202)
-        if _report["state"] == "running":
-            return _cron_response({"state": "busy"}, 409)
-        _cron = {"state": "running", "date": day.isoformat()}
+        busy = "cron" if _cron["state"] == "running" else "manual" if _report["state"] == "running" else None
+        if not busy:
+            _cron = {"state": "running", "date": day.isoformat()}
+    if busy:
+        members.log_run("auto", "skipped", "busy", day.isoformat())
+        return _cron_response({"state": "running", "date": day.isoformat()}, 202) if busy == "cron" \
+            else _cron_response({"state": "busy"}, 409)
     if ASYNC_LOG:
         threading.Thread(target=_run_cron, args=(day,), daemon=True).start()
     else:

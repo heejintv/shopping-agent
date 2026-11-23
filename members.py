@@ -245,6 +245,31 @@ def approve_report(report_id: str, source: str, at: str) -> dict | None:
     return next(iter(_rows(raw)), None)
 
 
+def latest_auto_report() -> dict | None:
+    """가장 최근 날짜의 자동 보고서 (어제 것이 없을 때 대신 보여 줌)."""
+    _, raw = _request("GET", "reports", {"select": "id,date,status,report,created_at,approved_at",
+                                         "source": "eq.auto", "order": "date.desc", "limit": "1"})
+    return next(iter(_rows(raw)), None)
+
+
+def log_run(source: str, status: str, reason: str | None = None, day: str | None = None) -> None:
+    """보고서 실행 시도 한 줄 (report_runs). 실패해도 보고서는 그대로."""
+    try:
+        _request("POST", "report_runs", body={"source": source, "status": status, "reason": reason, "report_date": day},
+                 extra={"Prefer": "return=minimal"})
+    except MemberError as e:
+        log.warning("report run log failed: %s", e)
+
+
+def last_run(source: str, status: str | None = None) -> dict | None:
+    """가장 최근 실행 시도 (status를 주면 그 결과 중 최근)."""
+    params = {"select": "id,at,source,status,reason,report_date", "source": f"eq.{source}", "order": "id.desc", "limit": "1"}
+    if status:
+        params["status"] = f"eq.{status}"
+    _, raw = _request("GET", "report_runs", params)
+    return next(iter(_rows(raw)), None)
+
+
 # ---------- 한도 ----------
 
 GLOBAL = "*"   # 서버 전체 칸의 이름

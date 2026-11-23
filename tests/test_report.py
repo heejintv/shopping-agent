@@ -817,6 +817,7 @@ class ApiTest(unittest.TestCase):
               mock.patch.object(report_crew, "available", return_value=True),
               mock.patch.object(members, "save_report"),
               mock.patch.object(members, "approve_report", return_value=None),
+              mock.patch.object(members, "log_run"),
               mock.patch.object(server, "ASYNC_LOG", False),
               mock.patch.object(server, "_report", {"state": "none"}),
               mock.patch.object(server, "REPORT_DIR", Path(self.dir.name))]

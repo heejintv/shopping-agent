@@ -98,6 +98,10 @@
   .cite:hover::after, .cite:focus::after { content: attr(data-tip); position: absolute; left: 0; bottom: calc(100% + 4px); z-index: 5;
     width: max-content; max-width: min(260px, 70vw); padding: 5px 9px; border-radius: 8px; background: var(--text); color: var(--card);
     font-size: 12px; font-weight: 500; line-height: 1.4; white-space: normal; }
+  .run-note { font-size: 13px; color: var(--muted); }
+  .run-note.warn { padding: 3px 10px; border-radius: 99px; background: var(--warn-soft); color: var(--warn); font-weight: 600; }
+  .ev { border: 0; padding: 0; background: none; color: var(--accent); text-decoration: underline dotted; font-variant-numeric: tabular-nums; }
+  tr.ev-row > td { background: var(--soft); }
   .report-tabs { margin-top: 14px; flex-wrap: wrap; }
   .report-tabs button[aria-selected="true"] { background: var(--card); color: var(--accent); box-shadow: var(--shadow); }
   .report-actions { display: flex; gap: 8px; margin-top: 16px; }
@@ -192,6 +196,7 @@
       <div class="panel-head"><h2>오늘 아침 자동 보고서</h2><span class="na">매일 오전 9시쯤 · 어제 집계</span></div>
       <div class="check-row">
         <span id="autoVerdict" class="check-res" hidden></span>
+        <span id="autoRun" class="run-note" hidden></span>
         <span id="autoMsg" class="check-detail" aria-live="polite">불러오는 중…</span>
       </div>
       <div class="report-body" id="autoBody" hidden></div>
@@ -249,6 +254,7 @@
         <input class="ghost" id="reportDate" type="date" aria-label="보고서 날짜 선택">
         <button type="button" class="ghost" id="reportMake">보고서 만들기</button>
         <span id="reportVerdict" class="check-res" hidden></span>
+        <span id="manualRun" class="run-note" hidden></span>
         <span id="reportMsg" class="check-detail" aria-live="polite"></span>
       </div>
       <div class="report-body" id="reportBody" hidden></div>
@@ -520,7 +526,9 @@ async function reportCall(path, method = "GET", body) {
     if (res.status === 401) return showGate("로그인이 만료됐어요. Pickit에서 다시 로그인해 주세요.");
     if (res.status === 403) return showGate("이 계정은 관리자 권한이 없어요.");
     if (!res.ok) throw new Error(d.error || `서버 오류 (${res.status})`);
+    const wasRunning = report?.state === "running";
     showReport(d);
+    if (d.state !== "running" && (wasRunning || method === "POST")) loadRuns();
   } catch (e) {
     $("reportMsg").textContent = e instanceof TypeError ? "서버에 연결할 수 없어요" : "⚠️ " + e.message;
     if (report?.state === "running") reportTimer = setTimeout(() => reportCall("/admin/report"), 5000);
@@ -575,6 +583,9 @@ function citeHtml(text, labels) {
 
 // 보고서 하나를 탭으로: 요약(기본) · 그래프 · 이상·제안 · 근거. 긴 표는 근거 탭에만
 function mountReport(root, d) {
+  const evBtn = (id, html) => id && id !== "gemini.limit" && Object.hasOwn(labels, id)
+    ? `<button type="button" class="ev" data-ev="${esc(id)}" aria-expanded="false" title="원본 기록 보기">${html}</button>` : html;
+  root.evidence = d;
   const labels = Object.fromEntries(d.aggregates.metrics.map(m => [m.id, m.label + (m.text ? `: “${m.text}”` : "")]));
   const named = t => String(t ?? "").replace(/\[([a-z]+\.[a-z0-9_]+)\]/g, (_, k) => `“${Object.hasOwn(labels, k) ? labels[k] : "?"}”`);
   const list = (title, lines) => `<h3>${title}</h3><ul>${lines.map(x => `<li>${citeHtml(x, labels)}</li>`).join("") || "<li>없음</li>"}</ul>`;
@@ -603,13 +614,13 @@ function mountReport(root, d) {
     ["근거", (d.problems.length ? list("검토 지적", d.problems) : "")
     + `<details open><summary>숫자별 근거 (${d.checks.length}개)</summary>`
     + table(`<th>위치</th><th class="num">초안</th><th class="num">집계값</th><th>항목</th><th>출처</th><th>결과</th>`,
-      d.checks.map(c => `<tr class="${c.ok ? "" : "row-bad"}"><td>${where[c.section]} ${c.line}번째 줄</td><td class="num">${esc(c.number)}</td>
+      d.checks.map(c => `<tr class="${c.ok ? "" : "row-bad"}"><td>${where[c.section]} ${c.line}번째 줄</td><td class="num">${evBtn(c.id, esc(c.number || "보기"))}</td>
       <td class="num">${c.id in unit ? val(c.expected, unit[c.id]) : "-"}</td><td class="text">${esc(c.label || c.id || "-")}</td>
       <td class="text">${esc(named(c.source) || "-")}</td><td>${c.ok ? "✅" : "❌ " + esc(c.reason)}</td></tr>`).join(""))
     + `</details><details><summary>전체 집계 (${agg.metrics.length}개)</summary>`
     + table(`<th>항목</th><th class="num">값</th><th>출처</th>`,
       agg.metrics.map(m => `<tr><td class="text">${esc(m.label)}${m.text ? `: “${esc(m.text)}”` : ""}</td>
-      <td class="num">${val(m.value, m.unit)}</td><td class="text">${esc(m.source)}</td></tr>`).join(""))
+      <td class="num">${evBtn(m.id, val(m.value, m.unit))}</td><td class="text">${esc(m.source)}</td></tr>`).join(""))
     + `${list("참고", agg.notes)}</details><details><summary>시간대별·그래프 표</summary>`
     + Object.values(charts).map(c => `<h3>${esc(c.title)} <span class="na">${esc(c.source)}</span></h3>${chartTable(c)}`).join("") + "</details>"],
   ];
@@ -638,6 +649,57 @@ function mountReport(root, d) {
   select(0);
 }
 
+// ---------- 근거에서 원본 열기: 숫자를 누르면 그 아래 줄에 usage_logs 기록 최대 10건 (서버가 개인정보를 가림) ----------
+async function openEvidence(root, btn) {
+  const tr = btn.closest("tr"), next = tr.nextElementSibling;
+  if (next?.classList.contains("ev-row")) {   // 다시 누르면 닫기
+    next.remove(); btn.setAttribute("aria-expanded", "false");
+    return;
+  }
+  const row = document.createElement("tr"), td = document.createElement("td");
+  row.className = "ev-row"; td.colSpan = tr.children.length; td.textContent = "불러오는 중…";
+  row.append(td); tr.after(row); btn.setAttribute("aria-expanded", "true");
+  const agg = root.evidence.aggregates, key = btn.dataset.ev;
+  try {
+    const t = await token();
+    if (!t) return showGate("관리자 계정으로 Pickit에 로그인한 뒤 다시 열어 주세요.");
+    const res = await fetch(base + "/admin/report/evidence", { method: "POST", cache: "no-store",
+      headers: { ...baseHeaders, "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+      body: JSON.stringify({ date: agg.date, key, until: agg.label ? agg.generated_at : null,
+        text: agg.metrics.find(m => m.id === key)?.text ?? null }) });
+    const d = await res.json().catch(() => ({}));
+    if (res.status === 401) return showGate("로그인이 만료됐어요. Pickit에서 다시 로그인해 주세요.");
+    if (res.status === 403) return showGate("이 계정은 관리자 권한이 없어요.");
+    if (!res.ok) throw new Error(d.error || `서버 오류 (${res.status})`);
+    td.innerHTML = d.rows.length ? `<div class="na">전체 ${num(d.total)}건 중 최근 ${num(d.rows.length)}건</div><table>
+      <thead><tr><th>시각</th><th>종류</th><th>상태</th><th>검색어·명령</th></tr></thead><tbody>`
+      + d.rows.map(r => `<tr><td class="when">${fmtTime(r.time)}</td><td>${esc(r.kind)}</td>
+        <td>${esc(STATUS[r.status] || r.status)}${r.detail ? ` · ${esc(r.detail)}` : ""}</td><td class="text">${esc(r.text) || "-"}</td></tr>`).join("")
+      + "</tbody></table>" : "해당하는 기록이 없어요.";
+  } catch (e) {
+    td.textContent = e instanceof TypeError ? "서버에 연결할 수 없어요" : "⚠️ " + e.message;
+  }
+}
+for (const id of ["autoBody", "reportBody"]) {
+  $(id).addEventListener("click", e => { const b = e.target.closest("[data-ev]"); if (b) openEvidence($(id), b); });
+}
+
+// ---------- 가장 최근 실행 (report_runs). 마지막 성공과 다르면 경고 색 ----------
+async function loadRuns() {
+  try {
+    const t = await token();
+    if (!t || base === null) return;
+    const res = await fetch(base + "/admin/report/runs", { headers: { ...baseHeaders, Authorization: `Bearer ${t}` }, cache: "no-store" });
+    const d = await res.json().catch(() => ({}));
+    for (const k of ["auto", "manual"]) {
+      const el = $(k + "Run");
+      el.hidden = false;
+      el.className = "run-note" + (res.ok && d[k].warn ? " warn" : "");
+      el.textContent = res.ok ? `가장 최근 실행: ${d[k].warn ? "⚠️ " : ""}${d[k].text}` : d.error || "실행 기록을 불러오지 못했어요.";
+    }
+  } catch (_) { /* 표시만 생략 */ }
+}
+
 // ---------- 오늘 아침 자동 보고서 (GitHub Actions가 만들고 Supabase에 저장된 것) ----------
 let autoReport = null;
 async function autoCall(path, method = "GET", body) {
@@ -657,7 +719,7 @@ async function autoCall(path, method = "GET", body) {
     const has = d.state === "draft" || d.state === "approved";
     $("autoBody").hidden = $("autoVerdict").hidden = !has;
     $("autoActions").hidden = d.state !== "draft";
-    $("autoMsg").textContent = has ? `${reportMeta(d)} · 만든 시각 ${fmtTime(d.created_at)}` : "아직 자동 보고서가 없어요.";
+    $("autoMsg").textContent = has ? `${d.stale ? "오늘 자동 보고서가 아직 없어 마지막 성공본이에요 · " : ""}${reportMeta(d)} · 만든 시각 ${fmtTime(d.created_at)}` : "아직 자동 보고서가 없어요.";
     if (has) { showVerdict($("autoVerdict"), d); mountReport($("autoBody"), d); }
   } catch (e) {
     $("autoMsg").textContent = e instanceof TypeError ? "서버에 연결할 수 없어요" : "⚠️ " + e.message;
@@ -757,7 +819,7 @@ $("q").addEventListener("input", () => { clearTimeout(qTimer); qTimer = setTimeo
 $("reload").addEventListener("click", load);
 
 if (!sb) showGate("로그인 기능이 설정되지 않았어요. (config.js)");
-else load().then(() => { if (!$("dash").hidden) { autoCall("/admin/report/auto"); reportCall("/admin/report"); } });   // 만들던 초안이 있으면 이어서 보기
+else load().then(() => { if (!$("dash").hidden) { autoCall("/admin/report/auto"); reportCall("/admin/report"); loadRuns(); } });   // 만들던 초안이 있으면 이어서 보기
 </script>
 </body>
 </html>

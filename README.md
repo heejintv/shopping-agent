@@ -311,6 +311,8 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | `GET /health` | 서버 상태, 내 PC 직접 접속이면 `unlimited: true` (계정별 남은 횟수는 `/me`) |
 | `GET /me` | 🔒 로그인한 사람의 등급(`role`)과 오늘 남은 새 검색·상담 횟수, 서버 전체 남은 새 검색 |
 | `POST /admin/report` · `GET /admin/report` | 🔒👑 일일 운영 보고서 만들기(`{date}` 기본 어제, 오늘은 지금까지, 뒤에서 실행) · 상태와 초안 보기 |
+| `GET /admin/report/runs` | 🔒👑 가장 최근 실행 (Supabase `report_runs`) |
+| `POST /admin/report/evidence` | 🔒👑 근거 숫자를 만든 기록 최대 10건 (개인정보 가림) |
 | `GET /admin/report/auto` | 🔒👑 오늘 아침 자동 보고서 (Supabase `reports`) |
 | `POST·GET /admin/report/cron` | GitHub Actions 전용: 어제 보고서 만들기·상태 (`X-Report-Cron-Token` 헤더, 내용은 돌려주지 않음) |
 | `POST /admin/report/approve` | 🔒👑 `{id}` 초안 승인 → `logs/reports/report-날짜.json` (오늘은 `report-날짜-진행중-시각.json`) 저장 (Render 무료는 재시작하면 사라짐) |
@@ -332,6 +334,7 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | `admin_stats.py` | 관리자 대시보드 집계 (숫자 카드, Gemini 사용량, 순위, 최근 기록, 7일 그래프) |
 | `daily_report.py` | 일일 보고서 집계(어제 KST, 출처 포함, 개인정보 가림)와 숫자 대조. AI 없음 |
 | `report_crew.py` | CrewAI 작성·검토 Agent (Gemini만, 보고서 하나에 최대 5번, 수정 최대 2번). Python 3.13 이하 필요 |
+| `report-rules.md` | 일일 보고서 작성·검토 규칙. 작성·검토 Agent와 `/daily-report`가 함께 읽음 |
 | `make_report.py` | 일일 보고서를 명령으로 만들기 (Claude Code `/daily-report`에서 사용) |
 | `admin.html` | 관리자 대시보드 화면 (데이터는 `/admin/stats`에서만 받음) |
 | `supabase/schema.sql` | Supabase 표 3개·가입 트리거·RLS 규칙. SQL Editor에서 실행 |
@@ -542,7 +545,7 @@ admin 계정으로 로그인하면 헤더에 **🛠 관리자** 버튼이 보입
 python -m unittest discover -s tests -v
 ```
 
-Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니다. 현재 **334개** 통과 (crewai가 없는 Python 3.14에서는 Crew 테스트 27개를 건너뜀).
+Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니다. 현재 **366개** 통과 (crewai가 없는 Python 3.14에서는 Crew 테스트 28개를 건너뜀).
 
 | 파일 | 확인하는 것 |
 |---|---|
@@ -550,6 +553,7 @@ Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니
 | `tests/test_members.py` | Supabase REST 요청 모양 (키 헤더, 개수 세기, `exempt` 필터), 기록 실패해도 응답은 정상 |
 | `tests/test_modes.py` | 내 PC·Render 모드에서 실제 `is_local_request`를 거쳐 API 호출 |
 | `tests/test_admin.py` | `/admin/stats` 401·403·200, 대시보드 집계, Gemini 토큰 기록 |
+| `tests/test_report_extra.py` | 실행 로그, 근거에서 원본 열기(개인정보 가림·관리자만), `report-rules.md`를 Agent가 읽는지 |
 | `tests/test_report_cron.py` | 자동 보고서: 토큰 검사, 중복·실패, 저장·승인, 워크플로에 비밀 값·커밋 없음 |
 | `tests/test_report.py` | 일일 보고서 집계·마스킹·숫자 대조, Crew 호출 상한(가짜 Gemini), 권한·승인 |
 | `tests/test_actions.py` | ⚡ 입력값 검사, 그래프 흐름(interrupt/resume), 승인 카드, 중복 찜, 검색 확인, 여러 개 선택, 비교 창 열림 확인 (Gemini 가짜 응답) |

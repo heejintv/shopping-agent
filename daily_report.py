@@ -263,6 +263,128 @@ def build(rows: list[dict], events: list[dict], now: datetime, truncated: bool =
             "charts": build_charts(rows, searches, chats, cmds, metrics, end.hour if label else 23)}
 
 
+# ---------- 근거에서 원본 열기 ----------
+
+EVIDENCE_MAX = 10
+EVIDENCE_TEXT = 30
+_ACTION_NAMES = {"search": "검색", "chat": "상담", "compare": "비교"}
+
+
+def _is_cmd(r: dict) -> bool:
+    return r.get("action") in CHAT_ACTIONS and str(r.get("query") or "").startswith(ACTION_PREFIX)
+
+
+def _cmd_result(r: dict):
+    return "error" if r.get("status") in FAILED else r.get("outcome")
+
+
+def _cmd_text(r: dict) -> str:
+    return mask_text(str(r.get("query") or "")[len(ACTION_PREFIX):])
+
+
+def _evidence_filter(key: str, text: str | None):
+    """근거 키 → 그 숫자에 들어간 기록인지 보는 함수. 원본 기록이 없는 키(설정값 등)면 None."""
+    key = next((r[2] for r in RULES if r[0] == key), key)   # 기준값(rule.*)은 그 규칙이 본 값의 기록
+    search = lambda r: r.get("action") == "search"   # noqa: E731
+    st = lambda r, *s: r.get("status") in s   # noqa: E731
+    cmd, chat = _is_cmd, lambda r: r.get("action") in CHAT_ACTIONS and not _is_cmd(r)
+    gem = lambda r: r.get("engine") == "gemini" and st(r, *GEMINI_CALLED)   # noqa: E731
+    kind = lambda r: "timeout" if st(r, "timeout") else r.get("error_kind") if r.get("error_kind") in FAIL_KINDS else None   # noqa: E731
+    table = {
+        "search.total": search, "search.ok": lambda r: search(r) and st(r, "ok"),
+        "search.cached": lambda r: search(r) and st(r, "cached"), "search.failed": lambda r: search(r) and st(r, *FAILED),
+        "search.limited": lambda r: search(r) and st(r, "limited"),
+        "search.cancelled": lambda r: search(r) and st(r, "cancelled"),
+        "search.fail_rate": lambda r: search(r) and st(r, "ok", *FAILED),
+        "search.other_rate": lambda r: search(r) and st(r, *FAILED),
+        "search.avg_sec": lambda r: search(r) and st(r, "ok") and isinstance(r.get("duration_ms"), (int, float)),
+        "chat.total": chat, "chat.failed": lambda r: chat(r) and st(r, *FAILED),
+        "action.total": cmd, "action.failed": lambda r: cmd(r) and st(r, *FAILED),
+        "action.bad": lambda r: cmd(r) and _cmd_result(r) in BAD_OUTCOMES,
+        "action.unfinished": lambda r: cmd(r) and _cmd_result(r) == "waiting",
+        "users.limited": lambda r: st(r, "limited") and bool(r.get("user_id")),
+        "gemini.calls": gem, "gemini.tokens": gem, "gemini.usage_rate": gem,
+    }
+    for k in FAIL_KINDS:   # 종류를 모르는 예전 기록은 기타에서 보여 줌
+        table[f"search.fail_{k}"] = lambda r, k=k: search(r) and st(r, *FAILED) and (kind(r) or "other") == k
+    for k in BAD_OUTCOMES:
+        table[f"action.bad_{k}"] = lambda r, k=k: cmd(r) and _cmd_result(r) == k
+    if key in table:
+        return table[key]
+    if not text:
+        return None
+    if re.fullmatch(r"action\.failed_top[1-5]", key):
+        return lambda r: cmd(r) and st(r, *FAILED) and _cmd_text(r) == text
+    if re.fullmatch(r"action\.bad_top[1-5]", key):
+        return lambda r: cmd(r) and _cmd_result(r) in BAD_OUTCOMES and _cmd_text(r) == text
+    if re.fullmatch(r"query\.top[1-5]", key):
+        return lambda r: search(r) and st(r, "ok", "cached") and mask_text(str(r.get("query") or "").lower()) == text
+    return None
+
+
+def evidence(rows: list[dict], key: str, start: datetime, end: datetime, text: str | None = None) -> dict | None:
+    """숫자를 만든 원본 기록 최대 10건 (최신순, 개인정보 없음). 원본이 없는 키면 None."""
+    match = _evidence_filter(key, text)
+    if match is None:
+        return None
+    hit = sorted(((w, r) for r in rows if (w := _when(r)) is not None and start <= w < end and match(r)),
+                 key=lambda x: x[0], reverse=True)
+
+    def view(w, r):
+        shown = _cmd_text(r) if _is_cmd(r) else mask_text(r.get("query"))   # 가린 다음 자름
+        return {"time": w.isoformat(timespec="seconds"), "kind": "⚡ 명령" if _is_cmd(r) else _ACTION_NAMES.get(r.get("action"), "기타"),
+                "status": r.get("status"), "detail": FAIL_KINDS.get(r.get("error_kind")) or BAD_OUTCOMES.get(r.get("outcome")),
+                "text": shown[:EVIDENCE_TEXT]}
+    return {"total": len(hit), "rows": [view(w, r) for w, r in hit[:EVIDENCE_MAX]]}
+
+
+def evidence_period(day: date, until: str | None, now: datetime) -> tuple[datetime, datetime]:
+    """보고서가 집계한 기간. until: 진행 중 보고서를 만든 시각(그날 안이어야 함). 틀리면 ValueError."""
+    start, end = period(now, day)
+    if until:
+        try:
+            u = datetime.fromisoformat(str(until))
+        except ValueError:
+            raise ValueError("기준 시각 형식이 잘못됐어요.") from None
+        if u.tzinfo is None or not start <= u <= end:
+            raise ValueError("기준 시각이 보고서 날짜와 맞지 않아요.")
+        end = min(end, u + timedelta(seconds=1))   # 초 아래는 잘려서 저장됨
+    return start, end
+
+
+# ---------- 실행 로그 (report_runs) ----------
+
+RUN_REASONS = {"no_data": "자료 없음", "gemini": "Gemini 오류", "gemini_key": "Gemini 키 오류", "token": "토큰 오류",
+               "exists": "이미 있음", "busy": "다른 보고서를 만드는 중", "db": "Supabase 오류", "save": "저장 실패",
+               "crewai": "CrewAI 없음", "other": "기타 오류"}
+RUN_STATUS = {"ok": "성공", "failed": "실패", "skipped": "건너뜀"}
+
+
+def run_summary(latest: dict | None, last_ok: dict | None, now: datetime, below: bool = True) -> dict:
+    """"가장 최근 실행" 표시 {text, warn}. 최근 시도가 마지막 성공과 다르면 warn (이미 있어서 건너뛴 것은 정상).
+    below: 카드 아래에 마지막 성공본이 보이는지 (자동 보고서만)."""
+    def when(run):
+        try:
+            w = datetime.fromisoformat(str(run.get("at")).replace("Z", "+00:00")).astimezone(KST)
+        except ValueError:
+            return "시각 모름", "이전"
+        ago = (now.astimezone(KST).date() - w.date()).days
+        name = {0: "오늘", 1: "어제"}.get(ago, f"{w.month}월 {w.day}일")
+        return (f"{w:%H:%M}" if ago == 0 else f"{name} {w:%H:%M}"), name
+
+    if not latest:
+        return {"text": "실행 기록이 없어요", "warn": False}
+    text = f"{when(latest)[0]} {RUN_STATUS.get(latest.get('status'), '알 수 없음')}"
+    if latest.get("reason"):
+        text += f" · {RUN_REASONS.get(latest['reason'], RUN_REASONS['other'])}"
+    same = bool(last_ok) and last_ok.get("id") == latest.get("id")
+    warn = not same and not (latest.get("status") == "skipped" and latest.get("reason") == "exists")
+    if warn:
+        day = when(last_ok)[1] if last_ok else None
+        text += (f" → 아래는 {day} 성공본" if below else f" → 마지막 성공은 {day}") if day else " → 성공한 보고서 없음"
+    return {"text": text, "warn": warn}
+
+
 # ---------- 초안 정리·숫자 대조 ----------
 
 SECTIONS = {"summary": 3, "anomalies": 6, "suggestions": 6}   # 이름: 최대 줄 수

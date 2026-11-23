@@ -216,3 +216,23 @@ create unique index if not exists reports_auto_date on public.reports (date) whe
 alter table public.reports enable row level security;
 revoke all on public.reports from anon, authenticated;
 grant select, insert, update on public.reports to service_role;
+
+
+-- =====================================================================
+-- 추가분 7: 일일 보고서 실행 로그 (파일 전체를 다시 실행해도 됨)
+-- =====================================================================
+
+-- 14) report_runs: 보고서 실행 시도 (서버가 SERVICE 키로만 읽고 씀)
+create table if not exists public.report_runs (
+  id          bigint generated always as identity primary key,
+  at          timestamptz not null default now(),
+  source      text not null check (source in ('auto', 'manual')),
+  status      text not null check (status in ('ok', 'failed', 'skipped')),
+  reason      text,                     -- no_data · gemini · gemini_key · token · exists · busy · db · save · crewai · other
+  report_date date                      -- 집계하려던 날짜 (한국 시간)
+);
+create index if not exists report_runs_latest on public.report_runs (source, id desc);
+
+alter table public.report_runs enable row level security;
+revoke all on public.report_runs from anon, authenticated;
+grant select, insert, update on public.report_runs to service_role;

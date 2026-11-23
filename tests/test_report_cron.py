@@ -70,6 +70,11 @@ class Base(unittest.TestCase):
         self.save = start(mock.patch.object(members, "save_report", side_effect=save))
         self.auto = start(mock.patch.object(members, "auto_report", side_effect=auto))
         start(mock.patch.object(members, "approve_report", side_effect=approve))
+        self.latest = start(mock.patch.object(members, "latest_auto_report", side_effect=lambda: max(
+            (r for r in self.db.values() if r["source"] == "auto"), key=lambda r: r["date"], default=None)))
+        self.runs = []
+        start(mock.patch.object(members, "log_run", side_effect=lambda *a: self.runs.append(a)))
+        start(mock.patch.object(server, "_denied_at", float("-inf")))
         start(mock.patch.object(report_crew, "available", return_value=True))
         self.crew = start(mock.patch.object(report_crew, "run", side_effect=lambda agg: dict(CREW)))
         start(mock.patch.object(server, "ASYNC_LOG", False))
