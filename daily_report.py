@@ -271,6 +271,7 @@ def build(rows: list[dict], events: list[dict], now: datetime, truncated: bool =
 
 EVIDENCE_MAX = 10
 EVIDENCE_TEXT = 30
+TIME_KEYS = ("search.avg_sec", "rule.avg_sec")   # 걸린 시간 칸을 보여 줄 숫자
 _ACTION_NAMES = {"search": "검색", "chat": "상담", "compare": "비교"}
 
 
@@ -334,12 +335,14 @@ def evidence(rows: list[dict], key: str, start: datetime, end: datetime, text: s
     hit = sorted(((w, r) for r in rows if (w := _when(r)) is not None and start <= w < end and match(r)),
                  key=lambda x: x[0], reverse=True)
 
+    timed = key in TIME_KEYS
+
     def view(w, r):
         shown = _cmd_text(r) if _is_cmd(r) else mask_text(r.get("query"))   # 가린 다음 자름
         return {"time": w.isoformat(timespec="seconds"), "kind": "⚡ 명령" if _is_cmd(r) else _ACTION_NAMES.get(r.get("action"), "기타"),
                 "status": r.get("status"), "detail": FAIL_KINDS.get(r.get("error_kind")) or BAD_OUTCOMES.get(r.get("outcome")),
-                "text": shown[:EVIDENCE_TEXT]}
-    return {"total": len(hit), "rows": [view(w, r) for w, r in hit[:EVIDENCE_MAX]]}
+                "text": shown[:EVIDENCE_TEXT], **({"sec": round(r["duration_ms"] / 1000, 1)} if timed else {})}
+    return {"total": len(hit), "timed": timed, "rows": [view(w, r) for w, r in hit[:EVIDENCE_MAX]]}
 
 
 def evidence_period(day: date, until: str | None, now: datetime) -> tuple[datetime, datetime]:

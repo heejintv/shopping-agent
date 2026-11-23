@@ -672,9 +672,9 @@ async function openEvidence(root, btn) {
     if (res.status === 403) return showGate("이 계정은 관리자 권한이 없어요.");
     if (!res.ok) throw new Error(d.error || `서버 오류 (${res.status})`);
     td.innerHTML = d.rows.length ? `<div class="na">전체 ${num(d.total)}건 중 최근 ${num(d.rows.length)}건</div><table>
-      <thead><tr><th>시각</th><th>종류</th><th>상태</th><th>검색어·명령</th></tr></thead><tbody>`
+      <thead><tr><th>시각</th><th>종류</th><th>상태</th><th>검색어·명령</th>${d.timed ? '<th class="num">걸린 시간(초)</th>' : ""}</tr></thead><tbody>`
       + d.rows.map(r => `<tr><td class="when">${fmtTime(r.time)}</td><td>${esc(r.kind)}</td>
-        <td>${esc(STATUS[r.status] || r.status)}${r.detail ? ` · ${esc(r.detail)}` : ""}</td><td class="text">${esc(r.text) || "-"}</td></tr>`).join("")
+        <td>${esc(STATUS[r.status] || r.status)}${r.detail ? ` · ${esc(r.detail)}` : ""}</td><td class="text">${esc(r.text) || "-"}</td>${d.timed ? `<td class="num">${num(r.sec)}</td>` : ""}</tr>`).join("")
       + "</tbody></table>" : "해당하는 기록이 없어요.";
   } catch (e) {
     td.textContent = e instanceof TypeError ? "서버에 연결할 수 없어요" : "⚠️ " + e.message;

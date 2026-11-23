@@ -186,6 +186,16 @@ class EvidenceTest(unittest.TestCase):
         self.assertEqual(self.ev("search.avg_sec")["total"], 2)
         self.assertEqual(self.ev("users.limited")["total"], 2)
 
+    def test_seconds_only_for_time_numbers(self):
+        for key in ("search.avg_sec", "rule.avg_sec"):
+            e = self.ev(key)
+            self.assertTrue(e["timed"])
+            self.assertEqual([r["sec"] for r in e["rows"]], [4.0, 2.0])   # 23:59, 00:00
+        for key in ("search.total", "search.fail_rate", "gemini.calls"):
+            e = self.ev(key)
+            self.assertFalse(e["timed"])
+            self.assertFalse(any("sec" in r for r in e["rows"]))
+
     def test_no_source(self):
         for key in ("gemini.limit", "nope", "query.top1", "query.top9", "search.__class__"):
             self.assertIsNone(self.ev(key), key)
