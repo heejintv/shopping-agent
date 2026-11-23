@@ -1,4 +1,4 @@
-"""일일 운영 보고서: 어제(KST) 집계(aggregates)와 숫자 대조. Python만, AI 없음. (AI 부분은 report_crew.py)
+"""일일 운영 보고서: 하루(KST, 기본 어제) 집계(aggregates)와 숫자 대조. Python만, AI 없음. (AI 부분은 report_crew.py)
 
 - 데이터: Supabase usage_logs(members.usage_between) + 서버 모니터링 로그(logs/stats-*.json)
 - aggregates = {"date", "metrics": [{"id", "label", "value", "unit", "source", "text"?}], "notes"}
@@ -9,7 +9,7 @@
 import json
 import re
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import claude_errors
 import stats
@@ -49,6 +49,29 @@ def yesterday(now: datetime) -> tuple[datetime, datetime]:
     return end - timedelta(days=1), end
 
 
+def period(now: datetime, day: date | None = None) -> tuple[datetime, datetime]:
+    """day의 0시 ~ 다음 날 0시 (KST, 기본 어제). 오늘이면 지금 시각까지. 미래 날짜면 ValueError."""
+    now = now.astimezone(KST)
+    if day is None:
+        return yesterday(now)
+    if day > now.date():
+        raise ValueError("미래 날짜는 고를 수 없어요.")
+    start = datetime(day.year, day.month, day.day, tzinfo=KST)
+    return start, now if day == now.date() else start + timedelta(days=1)
+
+
+def parse_day(text) -> date | None:
+    """"2026-11-19" → date, 비었으면 None(어제). 형식이 틀리면 ValueError."""
+    if text is None or text == "":
+        return None
+    if not isinstance(text, str) or not re.fullmatch(r"20[0-9]{2}-[0-9]{2}-[0-9]{2}", text):
+        raise ValueError("날짜는 2026-11-19 모양으로 보내 주세요.")
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        raise ValueError("없는 날짜예요.") from None
+
+
 def load_events(start: datetime, end: datetime) -> list[dict]:
     """모니터링 로그에서 start~end 사이의 요청. 파일 날짜는 서버 시간대(Render는 UTC)라서 앞뒤 날짜도 읽음."""
     out = []
@@ -79,8 +102,10 @@ def _failure_kinds(failed: list[dict], events: list[dict]) -> dict:
     return out
 
 
-def build(rows: list[dict], events: list[dict], now: datetime, truncated: bool = False, gemini_limit: int = 0) -> dict:
-    start, end = yesterday(now)
+def build(rows: list[dict], events: list[dict], now: datetime, truncated: bool = False, gemini_limit: int = 0,
+          day: date | None = None) -> dict:
+    start, end = period(now, day)
+    label = f"오늘 {end.hour}시 기준 (진행 중)" if start.date() == now.astimezone(KST).date() else None
     rows = [r for r in rows if (w := _when(r)) is not None and start <= w < end]
     searches = [r for r in rows if r.get("action") == "search"]
     talk = [r for r in rows if r.get("action") in CHAT_ACTIONS]
@@ -136,11 +161,13 @@ def build(rows: list[dict], events: list[dict], now: datetime, truncated: bool =
         add("gemini.limit", "Gemini 하루 한도", gemini_limit, "회", "환경변수 GEMINI_DAILY_LIMIT")
 
     notes = ["⚡ 명령 하나는 Gemini를 여러 번 불러도 사용 요청 한 건으로 집계됨"]
+    if label:
+        notes.append("하루가 끝나지 않아 지금 시각까지만 집계됨 (다른 날과 바로 비교할 수 없음)")
     if truncated:
         notes.append("기록이 너무 많아 일부만 집계됨")
     if failed and not events:
         notes.append("모니터링 로그가 없어(서버 재시작 등) 시간 초과 외 실패 원인은 기타로 집계됨")
-    return {"date": start.date().isoformat(), "generated_at": now.astimezone(KST).isoformat(timespec="seconds"),
+    return {"date": start.date().isoformat(), "label": label, "generated_at": now.astimezone(KST).isoformat(timespec="seconds"),
             "metrics": metrics, "notes": notes}
 
 
@@ -175,6 +202,8 @@ def check_numbers(draft: dict, agg: dict) -> list[dict]:
     for section in SECTIONS:
         for i, line in enumerate(draft[section], 1):
             text = line.replace(agg["date"], "날짜")
+            if agg.get("label"):   # "오늘 15시 기준 (진행 중)"의 시각은 집계 숫자가 아님
+                text = text.replace(agg["label"], "기준 시각")
             for t in texts:   # 따옴표로 인용한 검색어·명령 문장 속 숫자("아이폰 16")는 집계 숫자가 아님
                 for a, b in ('""', "''", "“”", "‘’", "「」"):
                     text = text.replace(a + t + b, "인용")

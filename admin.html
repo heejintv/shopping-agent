@@ -212,8 +212,13 @@
     </section>
 
     <section class="panel" id="reportPanel">
-      <div class="panel-head"><h2>일일 운영 보고서</h2><span class="na">어제(한국 시간) 집계 · AI 초안은 승인 전에 확인하세요</span></div>
+      <div class="panel-head"><h2>일일 운영 보고서</h2><span class="na">한국 시간 하루 집계 · AI 초안은 승인 전에 확인하세요</span></div>
       <div class="check-row">
+        <div class="seg" id="reportDay" role="group" aria-label="보고서 날짜">
+          <button type="button" data-d="1" aria-pressed="true">어제</button>
+          <button type="button" data-d="0" aria-pressed="false">오늘</button>
+        </div>
+        <input class="ghost" id="reportDate" type="date" aria-label="보고서 날짜 선택">
         <button type="button" class="ghost" id="reportMake">보고서 만들기</button>
         <span id="reportVerdict" class="check-res" hidden></span>
         <span id="reportMsg" class="check-detail" aria-live="polite"></span>
@@ -500,7 +505,6 @@ async function reportCall(path, method = "GET", body) {
 function showReport(d) {
   report = d;
   const has = d.state === "draft" || d.state === "approved";
-  $("reportMake").hidden = has;
   $("reportMake").textContent = d.state === "running" ? "만드는 중…" : "보고서 만들기";
   $("reportBody").hidden = $("reportActions").hidden = $("reportVerdict").hidden = !has;
   if (!has) {
@@ -512,7 +516,7 @@ function showReport(d) {
   const pass = d.verdict === "검토 통과";
   $("reportVerdict").className = "check-res " + (pass ? "ok" : "fail");
   $("reportVerdict").textContent = (pass ? "✅ " : "⚠️ ") + d.verdict;
-  $("reportMsg").textContent = `${d.aggregates.date} · 수정 ${d.fixes}번 · Gemini ${d.calls}번 · 토큰 ${num(d.tokens)}개`
+  $("reportMsg").textContent = `${d.aggregates.date}${d.aggregates.label ? ` · ${d.aggregates.label}` : ""} · 수정 ${d.fixes}번 · Gemini ${d.calls}번 · 토큰 ${num(d.tokens)}개`
     + (d.state === "approved" ? ` · 승인됨 ${fmtTime(d.approved_at)}` : "");
   $("reportApprove").hidden = d.state === "approved";
   const list = (title, lines) => `<h3>${title}</h3><ul>${lines.map(x => `<li>${esc(x)}</li>`).join("") || "<li>없음</li>"}</ul>`;
@@ -533,9 +537,24 @@ function showReport(d) {
       <td class="num">${val(m.value, m.unit)}</td><td class="text">${esc(m.source)}</td></tr>`).join("")
     + `</tbody></table></div>${list("참고", d.aggregates.notes)}</details>`;
 }
-const makeReport = () => reportCall("/admin/report", "POST");
-$("reportMake").addEventListener("click", makeReport);
-$("reportRedo").addEventListener("click", makeReport);
+// 날짜: 어제(기본)·오늘은 누르는 순간의 한국 날짜, 직접 고르면 그 날짜. 다시 만들기는 지금 초안의 날짜
+let reportAgo = 1;   // 1 어제, 0 오늘, null 직접 선택
+const kstDay = ago => new Date(Date.now() + 9 * 3600e3 - ago * 86400e3).toISOString().slice(0, 10);
+function setReportDay(ago) {
+  reportAgo = ago;
+  $("reportDate").max = kstDay(0);
+  if (ago !== null) $("reportDate").value = kstDay(ago);
+  for (const b of $("reportDay").children) b.setAttribute("aria-pressed", String(b.dataset.d === String(ago)));
+}
+setReportDay(1);
+$("reportDay").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setReportDay(Number(b.dataset.d)); });
+$("reportDate").addEventListener("change", () => {
+  const v = $("reportDate").value;
+  setReportDay(!v || v === kstDay(1) ? 1 : v === kstDay(0) ? 0 : null);
+});
+const makeReport = date => reportCall("/admin/report", "POST", { date });
+$("reportMake").addEventListener("click", () => { if (reportAgo !== null) setReportDay(reportAgo); makeReport($("reportDate").value); });
+$("reportRedo").addEventListener("click", () => makeReport(report.aggregates.date));
 $("reportApprove").addEventListener("click", () => {
   if (report.verdict !== "검토 통과" && !confirm("검토에서 '수정 필요'로 나온 보고서예요. 그래도 승인할까요?")) return;
   reportCall("/admin/report/approve", "POST", { id: report.id });

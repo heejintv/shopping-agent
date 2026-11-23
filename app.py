@@ -1269,13 +1269,14 @@ def _report_response(status: int = 200):
     return resp
 
 
-def _make_report(report_id: str) -> None:
+def _make_report(report_id: str, day=None) -> None:
+    """day: 집계할 날짜 (None이면 어제, 오늘이면 지금 시각까지)."""
     global _report
     try:
         now = datetime.now(KST)
-        start, end = daily_report.yesterday(now)
+        start, end = daily_report.period(now, day)
         rows, truncated = members.usage_between(start, end)
-        agg = daily_report.build(rows, daily_report.load_events(start, end), now, truncated, GEMINI_DAILY_LIMIT)
+        agg = daily_report.build(rows, daily_report.load_events(start, end), now, truncated, GEMINI_DAILY_LIMIT, day)
         out = {"state": "draft", "id": report_id, "aggregates": agg, **report_crew.run(agg)}
     except members.MemberError as e:
         app.logger.warning("report failed: %s", e)
@@ -1298,11 +1299,17 @@ def admin_report_get():
 
 @app.post("/admin/report")
 def admin_report_make():
-    """보고서 만들기·다시 만들기. 만드는 중이면 409, crewai가 없으면 503."""
+    """{date?} 보고서 만들기·다시 만들기 (date 기본 어제). 만드는 중이면 409, crewai가 없으면 503."""
     global _report
     err = require_admin()
     if err:
         return err
+    body = request.get_json(silent=True)
+    try:
+        day = daily_report.parse_day(body.get("date") if isinstance(body, dict) else None)
+        daily_report.period(datetime.now(KST), day)   # 미래 날짜 거르기
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
     if not report_crew.available():   # 내 PC Python 3.14 등. 기록을 읽기 전에 안내
         return jsonify(error=report_crew.UNAVAILABLE), 503
     with _report_lock:
@@ -1311,15 +1318,15 @@ def admin_report_make():
         report_id = secrets.token_hex(8)
         _report = {"state": "running", "id": report_id}
     if ASYNC_LOG:
-        threading.Thread(target=_make_report, args=(report_id,), daemon=True).start()
+        threading.Thread(target=_make_report, args=(report_id, day), daemon=True).start()
     else:
-        _make_report(report_id)
+        _make_report(report_id, day)
     return _report_response(202)
 
 
 @app.post("/admin/report/approve")
 def admin_report_approve():
-    """{id}의 초안을 승인하고 logs/reports/report-날짜.json에 저장. 그 사이 다시 만들어졌으면 409."""
+    """{id}의 초안을 승인하고 logs/reports/report-날짜[-진행중-시각].json에 저장. 그 사이 다시 만들어졌으면 409."""
     global _report
     err = require_admin()
     if err:
@@ -1332,7 +1339,9 @@ def admin_report_approve():
         done = {**_report, "state": "approved", "approved_at": now_kst()}
         try:
             REPORT_DIR.mkdir(parents=True, exist_ok=True)
-            path = REPORT_DIR / f"report-{done['aggregates']['date']}.json"
+            agg = done["aggregates"]   # 진행 중(오늘) 보고서는 시각도 붙여 하루 전체 보고서와 섞이지 않게
+            at = f"-진행중-{agg['generated_at'][11:16].replace(':', '')}" if agg["label"] else ""
+            path = REPORT_DIR / f"report-{agg['date']}{at}.json"
             tmp = path.with_suffix(".tmp")
             tmp.write_text(json.dumps(done, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp.replace(path)

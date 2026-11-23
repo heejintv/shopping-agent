@@ -97,7 +97,7 @@ REVIEWER = {"role": "숫자 검토자", "goal": "보고서의 모든 숫자를 a
 
 
 def _write(crewai, llm, agg_json: str, draft=None, problems=None) -> str:
-    text = f"""어제 운영 보고서를 써라.
+    text = f"""aggregates의 date 하루치 운영 보고서를 써라. label이 있으면 아직 진행 중인 날이니 기준 시각을 label 그대로만 쓰고 하루 전체로 단정하지 마라.
 - summary: 요약 정확히 3줄
 - anomalies: 이상 징후 (없으면 "특이 사항 없음" 한 줄)
 - suggestions: ⚡ 명령 개선 제안 (⚡ 실패 문장을 근거로, 없으면 "제안 없음" 한 줄)
@@ -140,7 +140,7 @@ def run(agg: dict) -> dict:
     crewai = _load_crewai()
     budget = {"calls": 0, "tokens": 0, "error": None}
     llm = _make_llm(budget)
-    agg_json = json.dumps({k: agg[k] for k in ("date", "metrics", "notes")}, ensure_ascii=False)
+    agg_json = json.dumps({k: agg[k] for k in ("date", "label", "metrics", "notes")}, ensure_ascii=False)
     draft, checks, problems, fixes, reviewed, verdict = None, [], [], 0, False, NEEDS_FIX
 
     while True:

@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -114,6 +114,47 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(p["and"], '(created_at.gte."2026-11-19T00:00:00+09:00",created_at.lt."2026-11-20T00:00:00+09:00")')
 
 
+class DayTest(unittest.TestCase):
+    TODAY = date(2026, 11, 20)
+
+    def test_period(self):
+        self.assertEqual(dr.period(NOW), dr.yesterday(NOW))
+        self.assertEqual(dr.period(NOW, date(2026, 11, 19)), dr.yesterday(NOW))
+        self.assertEqual(dr.period(NOW, self.TODAY), (datetime(2026, 11, 20, tzinfo=KST), NOW))   # 지금까지만
+        with self.assertRaises(ValueError):
+            dr.period(NOW, date(2026, 11, 21))
+
+    def test_kst_date_from_utc_now(self):
+        """Render(UTC)에서 전날 저녁이어도 한국 날짜가 기준."""
+        now = datetime.fromisoformat("2026-11-19T20:00:00+00:00")   # KST 11-20 05:00
+        self.assertEqual(dr.build([], [], now, day=self.TODAY)["label"], "오늘 5시 기준 (진행 중)")
+
+    def test_today_build(self):
+        rows = ROWS + [row("11-20 08:59"), row("11-20 09:01")]
+        agg = dr.build(rows, [], NOW, day=self.TODAY)
+        self.assertEqual((agg["date"], agg["label"]), ("2026-11-20", "오늘 9시 기준 (진행 중)"))
+        self.assertEqual(values(agg)["search.total"], 2)   # 00:00, 08:59 (지금 이후는 제외)
+
+    def test_past_day_has_no_label(self):
+        agg = dr.build(ROWS, [], NOW, day=date(2026, 11, 18))
+        self.assertEqual((agg["date"], agg["label"], values(agg)["search.total"]), ("2026-11-18", None, 1))
+        self.assertIsNone(dr.build(ROWS, [], NOW)["label"])
+
+    def test_label_hour_is_not_a_metric(self):
+        agg = dr.build([], [], NOW, day=self.TODAY)
+        ok = dr.check_numbers(draft("오늘 9시 기준 (진행 중) 검색 0회[search.total]"), agg)
+        self.assertEqual([c["number"] for c in ok if c["line"] == 1 and c["section"] == "summary"], ["0"])
+        bad = dr.check_numbers(draft("오늘 8시 기준 (진행 중)"), agg)
+        self.assertFalse(bad[0]["ok"])
+
+    def test_parse_day(self):
+        self.assertIsNone(dr.parse_day(None))
+        self.assertEqual(dr.parse_day("2026-11-19"), date(2026, 11, 19))
+        for bad in ("2026-13-01", "20261119", "../../x", 5, ["2026-11-19"]):
+            with self.assertRaises(ValueError):
+                dr.parse_day(bad)
+
+
 def draft(line="검색은 9회[search.total]예요"):
     return {"summary": [line, "실패 4회[search.failed]", "평균 3초[search.avg_sec]"],
             "anomalies": ['2026-11-19 "아이폰 16" 1회[query.top2]'], "suggestions": ["제안 없음"]}
@@ -174,6 +215,15 @@ class CrewTest(unittest.TestCase):
         self.assertEqual((out["verdict"], out["calls"], out["fixes"], out["tokens"]), ("검토 통과", 2, 0, 20))
         self.assertIn('"search.total"', self.prompts[0])      # 집계값이 AI에 전달됨
         self.assertNotIn("secret@example.com", "".join(self.prompts))
+
+    def test_today_label_sent_to_ai(self):
+        agg = dr.build(ROWS, EVENTS, NOW, day=date(2026, 11, 20))
+        line = f'{agg["label"]} 검색 1회[search.total]'
+        text = json.dumps({"summary": [line, "a", "b"], "anomalies": [], "suggestions": []}, ensure_ascii=False)
+        with mock.patch.object(gemini, "chat_gemini", side_effect=[text, PASS]) as chat, mock.patch.object(stats, "record_engine"):
+            out = report_crew.run(agg)
+        self.assertEqual(out["verdict"], "검토 통과")
+        self.assertIn(agg["label"], chat.call_args_list[0][0][1])
 
     def test_wrong_number_fixed(self):
         out = self.run_crew([BAD, OK, PASS])
@@ -310,6 +360,24 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(d["state"], "approved")
         self.assertEqual(len(list(Path(self.dir.name).glob("report-*.json"))), 1)
         self.assertEqual(self.call("post", "/approve", json={"id": d["id"]}).status_code, 409)
+
+    def test_date_choice_and_file_names(self):
+        today = datetime.now(KST).date()
+        for day, partial in ((today - timedelta(days=5), False), (today, True)):
+            d = self.call("post", json={"date": day.isoformat()}).get_json()
+            self.assertEqual((d["aggregates"]["date"], bool(d["aggregates"]["label"])), (day.isoformat(), partial))
+            self.call("post", "/approve", json={"id": d["id"]})
+        names = sorted(p.name for p in Path(self.dir.name).iterdir())
+        self.assertIn(f"report-{today - timedelta(days=5)}.json", names)
+        self.assertRegex(names[-1], rf"^report-{today}-진행중-\d{{4}}\.json$")
+        # 날짜를 안 보내면 어제
+        self.assertEqual(self.call("post").get_json()["aggregates"]["date"], (today - timedelta(days=1)).isoformat())
+
+    def test_bad_date_400(self):
+        future = (datetime.now(KST).date() + timedelta(days=1)).isoformat()
+        for bad in (future, "어제", 3):
+            self.assertEqual(self.call("post", json={"date": bad}).status_code, 400)
+        self.usage.assert_not_called()
 
     def test_redo_changes_id(self):
         a = self.call("post").get_json()["id"]

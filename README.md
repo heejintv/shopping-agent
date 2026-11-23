@@ -310,8 +310,8 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | `GET /stats` | 모니터링 요약 (가동 시간, 오늘 요청 수, 응답 시간, 엔진별 성공·실패, 캐시 적중률, 인기 검색어, 사이트별 링크 확인 `danawa 0/5`, 상태) |
 | `GET /health` | 서버 상태, 내 PC 직접 접속이면 `unlimited: true` (계정별 남은 횟수는 `/me`) |
 | `GET /me` | 🔒 로그인한 사람의 등급(`role`)과 오늘 남은 새 검색·상담 횟수, 서버 전체 남은 새 검색 |
-| `POST /admin/report` · `GET /admin/report` | 🔒👑 일일 운영 보고서 만들기(뒤에서 실행) · 상태와 초안 보기 |
-| `POST /admin/report/approve` | 🔒👑 `{id}` 초안 승인 → `logs/reports/report-날짜.json` 저장 (Render 무료는 재시작하면 사라짐) |
+| `POST /admin/report` · `GET /admin/report` | 🔒👑 일일 운영 보고서 만들기(`{date}` 기본 어제, 오늘은 지금까지, 뒤에서 실행) · 상태와 초안 보기 |
+| `POST /admin/report/approve` | 🔒👑 `{id}` 초안 승인 → `logs/reports/report-날짜.json` (오늘은 `report-날짜-진행중-시각.json`) 저장 (Render 무료는 재시작하면 사라짐) |
 | `GET /admin/stats?period=today\|7d\|30d&q=이메일` | 🔒👑 관리자 대시보드 데이터. admin이 아니면 403 |
 
 🔒 = `Authorization: Bearer <Supabase 로그인 토큰>` 필요 (없거나 틀리면 401, AI 호출 전에 막음). 👑 = `profiles.role = 'admin'`만.
@@ -539,7 +539,7 @@ admin 계정으로 로그인하면 헤더에 **🛠 관리자** 버튼이 보입
 python -m unittest discover -s tests -v
 ```
 
-Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니다. 현재 **223개** 통과 (crewai가 없는 Python 3.14에서는 Crew 테스트 9개를 건너뜀).
+Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니다. 현재 **232개** 통과 (crewai가 없는 Python 3.14에서는 Crew 테스트 10개를 건너뜀).
 
 | 파일 | 확인하는 것 |
 |---|---|
