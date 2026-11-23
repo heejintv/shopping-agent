@@ -538,7 +538,7 @@ admin 계정으로 로그인하면 헤더에 **🛠 관리자** 버튼이 보입
 python -m unittest discover -s tests -v
 ```
 
-Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니다. 현재 **217개** 통과 (crewai가 없는 Python 3.14에서는 Crew 테스트 9개를 건너뜀).
+Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니다. 현재 **221개** 통과 (crewai가 없는 Python 3.14에서는 Crew 테스트 9개를 건너뜀).
 
 | 파일 | 확인하는 것 |
 |---|---|

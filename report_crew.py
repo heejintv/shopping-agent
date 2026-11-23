@@ -8,6 +8,7 @@
 crewai는 무거워서(메모리 약 100MB) 처음 보고서를 만들 때만 불러온다.
 """
 
+import importlib.util
 import json
 import os
 
@@ -19,6 +20,7 @@ from gemini import EngineError
 MAX_CALLS = 5
 MAX_FIXES = 2
 TIMEOUT = 60   # 초. Gemini 호출 하나
+UNAVAILABLE = "이 환경에서는 보고서 기능을 쓸 수 없어요 (Python 3.12 필요)"
 PASS, NEEDS_FIX = "검토 통과", "수정 필요"
 
 RULES = """규칙:
@@ -33,6 +35,11 @@ class Stop(Exception):
     """Gemini 호출 한도를 다 썼거나 호출이 실패해서 멈춤."""
 
 
+def available() -> bool:
+    """crewai가 설치돼 있는지 (불러오지는 않음)."""
+    return importlib.util.find_spec("crewai") is not None
+
+
 def _load_crewai():
     os.environ.update({"CREWAI_DISABLE_TELEMETRY": "true", "CREWAI_DISABLE_TRACKING": "true",
                        "OTEL_SDK_DISABLED": "true", "CREWAI_TRACING_ENABLED": "false",
@@ -41,7 +48,7 @@ def _load_crewai():
     try:
         import crewai
     except ImportError:
-        raise EngineError("crewai가 설치되지 않았어요. Python 3.12에서 pip install -r requirements.txt 를 실행하세요.") from None
+        raise EngineError(UNAVAILABLE) from None
     return crewai
 
 

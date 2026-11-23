@@ -1298,11 +1298,13 @@ def admin_report_get():
 
 @app.post("/admin/report")
 def admin_report_make():
-    """보고서 만들기·다시 만들기. 만드는 중이면 409."""
+    """보고서 만들기·다시 만들기. 만드는 중이면 409, crewai가 없으면 503."""
     global _report
     err = require_admin()
     if err:
         return err
+    if not report_crew.available():   # 내 PC Python 3.14 등. 기록을 읽기 전에 안내
+        return jsonify(error=report_crew.UNAVAILABLE), 503
     with _report_lock:
         if _report["state"] == "running":
             return jsonify(error="보고서를 만드는 중이에요. 잠시만 기다려 주세요."), 409

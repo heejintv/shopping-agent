@@ -7,6 +7,7 @@ Crew 테스트는 crewai가 있을 때만 (Python 3.14에는 설치되지 않음
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -207,6 +208,34 @@ class CrewTest(unittest.TestCase):
             self.run_crew(["글", "글", "글"])
 
 
+class NoCrewaiTest(unittest.TestCase):
+    """crewai가 없는 환경 (sys.modules에 None을 넣으면 import가 ImportError)."""
+
+    def test_unavailable_message(self):
+        with mock.patch.dict(sys.modules, {"crewai": None}), mock.patch.dict(os.environ), \
+                mock.patch.object(gemini, "chat_gemini") as chat:
+            self.assertFalse(report_crew.available())
+            with self.assertRaises(gemini.EngineError) as cm:
+                report_crew.run(dr.build([], [], NOW))
+        self.assertEqual(str(cm.exception), "이 환경에서는 보고서 기능을 쓸 수 없어요 (Python 3.12 필요)")
+        chat.assert_not_called()
+
+    def run_server(self, before, after):
+        """새 파이썬에서 앱을 불러와 /health까지 확인."""
+        code = (f"import sys\n{before}\nimport app\n"
+                f"assert app.app.test_client().get('/health').status_code == 200\n{after}")
+        with tempfile.TemporaryDirectory() as d:
+            p = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=60,
+                               env={**os.environ, "DATA_DIR": d, "RENDER": "true"})
+        self.assertEqual(p.returncode, 0, p.stderr)
+
+    def test_server_starts_without_crewai(self):
+        self.run_server("sys.modules['crewai'] = None", "")
+
+    def test_crewai_not_loaded_at_start(self):
+        self.run_server("", "assert 'crewai' not in sys.modules")
+
+
 class ApiTest(unittest.TestCase):
     def setUp(self):
         self.client = server.app.test_client()
@@ -225,6 +254,7 @@ class ApiTest(unittest.TestCase):
               mock.patch.object(members, "get_role", side_effect=lambda uid, fresh=False: "admin" if uid == "u-admin" else "user"),
               mock.patch.object(members, "usage_between", return_value=([], False)),
               mock.patch.object(report_crew, "run", side_effect=lambda agg: dict(self.result)),
+              mock.patch.object(report_crew, "available", return_value=True),
               mock.patch.object(server, "ASYNC_LOG", False),
               mock.patch.object(server, "_report", {"state": "none"}),
               mock.patch.object(server, "REPORT_DIR", Path(self.dir.name))]
@@ -263,6 +293,15 @@ class ApiTest(unittest.TestCase):
     def test_running_409(self):
         server._report = {"state": "running", "id": "x"}
         self.assertEqual(self.call("post").status_code, 409)
+
+    def test_no_crewai_503(self):
+        with mock.patch.object(report_crew, "available", return_value=False):
+            res = self.call("post")
+            self.assertEqual(self.call("post", token="user-token").status_code, 403)   # 권한 검사가 먼저
+        self.assertEqual((res.status_code, res.get_json()), (503, {"error": report_crew.UNAVAILABLE}))
+        self.usage.assert_not_called()
+        self.run_crew.assert_not_called()
+        self.assertEqual(self.call("get").get_json(), {"state": "none"})
 
     def test_errors_shown(self):
         self.usage.side_effect = members.MemberError("down")
