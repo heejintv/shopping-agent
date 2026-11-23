@@ -985,6 +985,7 @@ def chat_action_step():
     t0 = time.time()
     record = lambda **kw: stats.record_request("chat", (time.time() - t0) * 1000, **kw)  # noqa: E731
     ticket, info, unlimited = None, {}, False
+    recent = actions.clean_recent(body.get("recent")) if first else actions.commands.recent(cmd)
     if first:
         try:
             unlimited = is_unlimited(user)
@@ -1004,7 +1005,7 @@ def chat_action_step():
             return jsonify(error=why, stop=True), 429 if why == actions.TOO_MANY else 403
     usage = {}
     try:
-        out = gemini_step(actions.SYSTEM, contents, actions.TOOLS, actions.TIMEOUT, usage)
+        out = gemini_step(actions.system_prompt(recent), contents, actions.TOOLS, actions.TIMEOUT, usage)
     except Exception as e:
         app.logger.warning("chat action step failed: %s (%s)", e, getattr(e, "__cause__", None))
         if first:
@@ -1017,11 +1018,13 @@ def chat_action_step():
         record()
         finish(user, "chat", "ok", t0, query=topic, engine="gemini", ticket=ticket, exempt=unlimited,
                tokens=usage.get("tokens"))
-        cmd = actions.commands.start(user["id"])
+        cmd = actions.commands.start(user["id"], recent)
     if out["type"] == "text":
         actions.commands.drop(cmd)
         return jsonify(type="text", text=out["text"], cmd=cmd, **info)
     args, why = actions.check_call(out["name"], out["args"], user)
+    if why is None and out["name"] == "search" and not actions.search_confirmed(contents):
+        why = actions.search_confirm_reason(args["query"], DAILY_LIMIT)   # 검색은 비용이 드니 확인부터
     call = {"name": out["name"], "args": args if why is None else out["args"], "signature": out["signature"]}
     if out["name"] not in actions.TOOLS:   # 등록 안 된 함수는 대화 기록에 넣을 수 없어서 여기서 끝
         actions.commands.drop(cmd)

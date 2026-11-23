@@ -92,7 +92,7 @@ class CheckCallTest(unittest.TestCase):
             ("open_favorites", {}, None, "로그인이 필요"),
             ("show_favorites", {}, USER, "등록되지 않은 함수"),                 # 예전 이름은 없음
             ("remove_favorite", {"favorite_number": 0}, USER, "1~50"),
-            ("add_favorite", {}, USER, "number 값이 빠졌어요"),
+            ("add_favorite", {}, USER, "number나 name 중 하나"),
             ("add_favorite", {"number": "2"}, USER, "형식이 잘못"),
             ("add_favorite", {"number": True}, USER, "형식이 잘못"),
             ("add_favorite", {"number": 0}, USER, "1~50"),
@@ -501,3 +501,120 @@ class AskUserPendingPageTest(unittest.TestCase):
         self.assertIn("matchOption", body)                       # 선택지와 맞을 때만 답
         self.assertIn("이전 질문은 취소했어요", body)
         self.assertLess(body.index("cancelAsk()"), body.index("await actRun"))   # 취소 → 끝나길 기다림 → 새 명령
+
+
+# ---------- 개선 1: 최근 명령 기억 ----------
+
+RECENT = [{"input": "로지텍 Pebble 찜 취소해줘", "calls": ['remove_favorite("로지텍 Pebble")'], "targets": ["로지텍 Pebble"]},
+          {"input": "무선 마우스 검색해줘", "calls": ['search("무선 마우스")'], "targets": []}]
+
+
+class RecentCommandsTest(ApiBase):
+    def test_clean_recent(self):
+        raw = RECENT + [{"input": f"명령 {i}", "calls": ["x"] * 9, "targets": [1, "가" * 200]} for i in range(9)]
+        out = actions.clean_recent(raw)
+        self.assertEqual(len(out), actions.MAX_RECENT)
+        self.assertEqual(out[0], RECENT[0])
+        self.assertEqual(len(out[2]["calls"]), 5)
+        self.assertEqual(out[2]["targets"], ["가" * 80])        # 숫자는 버리고 글자 수 제한
+        self.assertEqual(actions.clean_recent("x"), [])
+        self.assertEqual(actions.clean_recent([{"input": " "}, 3]), [])
+
+    def test_system_prompt(self):
+        self.assertEqual(actions.system_prompt([]), actions.SYSTEM)
+        p = actions.system_prompt(actions.clean_recent(RECENT))
+        self.assertIn("[최근 ⚡ 명령] (1이 가장 최근", p)
+        self.assertIn('1. 입력: 로지텍 Pebble 찜 취소해줘 | 실행: remove_favorite("로지텍 Pebble") | 대상: 로지텍 Pebble', p)
+        self.assertIn("2. 입력: 무선 마우스 검색해줘", p)
+        for w in ("다시/방금/그거/아까", "방금 찜 취소한 상품"):
+            self.assertIn(w, actions.SYSTEM)
+
+    def test_recent_sent_every_step(self):
+        """첫 단계에 받은 요약을 cmd에 기억해서 이어지는 단계의 Gemini 호출에도 같이 보냄."""
+        self.step.return_value = {"type": "call", "name": "add_favorite", "args": {"name": "로지텍 Pebble"}, "signature": None}
+        res = self.client.post("/chat/action/step", json={"contents": [user_turn("다시 찜해줘")], "recent": RECENT}, headers=GOOD)
+        d = res.get_json()
+        self.assertEqual(d["call"]["args"], {"name": "로지텍 Pebble"})   # 결과 번호 없이 이름으로 다시 찜
+        self.assertNotIn("rejected", d)
+        self.assertIn("대상: 로지텍 Pebble", self.step.call_args.args[0])
+        c = [user_turn("다시 찜해줘"), call_turn("add_favorite", {"name": "로지텍 Pebble"}, sig=None),
+             resp_turn("add_favorite", {"ok": True, "before": 0, "after": 1})]
+        self.step.return_value = {"type": "text", "text": "다시 찜했어요."}
+        self.client.post("/chat/action/step", json={"contents": c, "cmd": d["cmd"], "recent": []}, headers=GOOD)
+        self.assertIn("대상: 로지텍 Pebble", self.step.call_args.args[0])   # 이어지는 단계: 화면이 안 보내도 유지
+
+    def test_page_keeps_five(self):
+        html = (ROOT / "index.html").read_text(encoding="utf-8")
+        self.assertIn("{ contents, recent: actHistory }", html)
+        self.assertIn("actHistory = [{ input: sentence, calls, targets }, ...actHistory].slice(0, 5)", html)
+
+
+# ---------- 개선 2: search는 확인 필수 ----------
+
+class SearchConfirmTest(ApiBase):
+    def search_call(self, query="에어팟"):
+        return {"type": "call", "name": "search", "args": {"query": query}, "signature": None}
+
+    def test_rejected_without_search_word(self):
+        self.step.return_value = self.search_call()
+        with mock.patch.object(server, "DAILY_LIMIT", 5):   # 환경변수와 상관없이 기본 한도로
+            d = self.post([user_turn("에어팟 제일 싼 거 찜해줘")]).get_json()
+        self.assertEqual(d["type"], "call")
+        why = d["rejected"]
+        self.assertIn('에어팟을 새로 검색할까요? (하루 검색 5회 중 1회 사용)', why)
+        self.assertIn('options=["검색", "취소"]', why)
+
+    def test_allowed_when_user_said_search(self):
+        self.step.return_value = self.search_call()
+        for text in ("에어팟 검색해서 제일 싼 거 찜해줘", "에어팟 찾아줘"):
+            d = self.post([user_turn(text)]).get_json()
+            self.assertNotIn("rejected", d, text)
+
+    def test_allowed_after_confirm(self):
+        cmd = self.post([user_turn("에어팟 제일 싼 거 찜해줘")]).get_json()["cmd"]
+        ask = {"question": "에어팟을 새로 검색할까요? (하루 검색 5회 중 1회 사용)", "options": ["검색", "취소"]}
+        base = [user_turn("에어팟 제일 싼 거 찜해줘"), call_turn("ask_user", ask, sig=None)]
+        self.step.return_value = self.search_call()
+        d = self.post(base + [resp_turn("ask_user", {"answer": "검색"})], cmd).get_json()
+        self.assertNotIn("rejected", d)
+
+    def test_still_rejected_after_cancel(self):
+        cmd = self.post([user_turn("에어팟 제일 싼 거 찜해줘")]).get_json()["cmd"]
+        ask = {"question": "에어팟을 새로 검색할까요?", "options": ["검색", "취소"]}
+        c = [user_turn("에어팟 제일 싼 거 찜해줘"), call_turn("ask_user", ask, sig=None), resp_turn("ask_user", {"answer": "취소"})]
+        self.step.return_value = self.search_call()
+        self.assertIn("rejected", self.post(c, cmd).get_json())
+
+    def test_search_confirmed_unit(self):
+        f = lambda *turns: actions.search_confirmed(actions.clean_contents(list(turns)))   # noqa: E731
+        self.assertTrue(f(user_turn("무선 마우스 검색")))
+        self.assertFalse(f(user_turn("무선 마우스 찜해줘")))
+        other_q = call_turn("ask_user", {"question": "어느 거요?"}, sig=None)   # 검색 확인 질문이 아님
+        self.assertFalse(f(user_turn("x 찜"), other_q, resp_turn("ask_user", {"answer": "검색"})))
+        self.assertEqual(actions.eul_reul("에어팟"), "에어팟을")
+        self.assertEqual(actions.eul_reul("무선 마우스"), "무선 마우스를")
+        self.assertEqual(actions.eul_reul("K295"), "K295를")
+
+    def test_prompt_and_description(self):
+        self.assertIn("ask_user로 확인을 받아야", actions.TOOLS["search"][0])
+        self.assertIn('새로 검색할까요? (하루 검색 N회 중 1회 사용)", options=["검색", "취소"]', actions.SYSTEM)
+
+
+# ---------- 개선 3: 범위 기본값 ----------
+
+class ScopeDefaultTest(unittest.TestCase):
+    def test_scope_in_descriptions_and_prompt(self):
+        find = actions.TOOLS["find_in_results"][0]
+        self.assertIn("최저가/제일 싼/가장 비싼/평점 높은", find)
+        self.assertIn("기본적으로 이 현재 검색 결과 안에서", find)
+        fav = actions.TOOLS["get_favorites"][0]
+        self.assertIn('"찜한 것 중"', fav)
+        self.assertIn("때만 이 목록을 기준으로", fav)
+        self.assertIn("평점", fav)                                # 찜 중 평점 비교에 필요한 값
+        self.assertIn("범위 기본값", actions.SYSTEM)
+        self.assertIn('"찜한 것 중/찜 목록에서"라고 말할 때만 찜 목록(get_favorites) 기준', actions.SYSTEM)
+
+    def test_page_favorites_have_rating(self):
+        html = (ROOT / "index.html").read_text(encoding="utf-8")
+        i = html.index("const favoriteInfo")
+        self.assertIn("rating:", html[i:i + 400])
