@@ -162,7 +162,7 @@ def run(agg: dict) -> dict:
     rules = load_rules()
     budget = {"calls": 0, "tokens": 0, "error": None}
     llm = _make_llm(budget)
-    agg_json = json.dumps({k: agg[k] for k in ("date", "label", "no_usage", "metrics", "anomalies", "notes")}, ensure_ascii=False)
+    agg_json = json.dumps({k: agg[k] for k in ("date", "label", "no_usage", "metrics", "anomalies", "top_anomaly", "notes")}, ensure_ascii=False)
     no_usage = bool(agg.get("no_usage"))
     history = []   # 지금까지 받은 지적 전부 (수정할 때마다 같이 보냄)
     draft, checks, problems, fixes, reviewed, passed, skipped = None, [], [], 0, False, False, False

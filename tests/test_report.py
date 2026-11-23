@@ -435,7 +435,44 @@ class SummaryTest(unittest.TestCase):
 
     def test_no_performance_data(self):
         agg = dr.build([row("11-19 10:00", "chat")], [], NOW)   # 상담만 있는 날
-        self.assertEqual(dr.bad_summary({"summary": ["상담 1회[chat.total]", "기록 없음", "할 일 없음"]}, agg), [])
+        self.assertEqual(dr.bad_summary({"summary": ["상담 1회[chat.total]", "기록 없음", "특별히 할 일 없음"]}, agg), [])
+
+
+class TodoTest(unittest.TestCase):
+    USE, PERF = "검색 9회[search.total]", "평균 3초[search.avg_sec], 실패율 66.7%[search.fail_rate]"
+
+    def bad(self, third, rows=ROWS, second=None):
+        return dr.bad_summary({"summary": [self.USE, second or self.PERF, third]}, dr.build(rows, EVENTS, NOW))
+
+    def test_repeat(self):
+        for third in ("실패율 66.7%[search.fail_rate]를 낮추기", "평균 3.0초[search.avg_sec]라 점검", "66.7%를 낮추기"):
+            bad = self.bad(third)
+            self.assertEqual(len(bad), 1, third)
+            self.assertIn("반복", bad[0])
+        self.assertEqual(len(self.bad(self.PERF)), 2)   # 2번째 줄을 그대로 베끼면 숫자마다
+
+    def test_todo_only_ok(self):
+        self.assertEqual(self.bad("검색 실패 원인을 종류별로 확인하기"), [])
+        self.assertEqual(self.bad("한도에 걸린 사용자 1명[users.limited] 확인"), [])   # 다른 숫자는 반복이 아님
+        self.assertEqual(self.bad("토큰 실패 3회[search.fail_token] 확인"), [])       # 값이 같아도 다른 항목이면 반복이 아님
+
+    def test_no_anomaly(self):
+        rows = [row("11-19 10:00")]
+        second = "평균 2초[search.avg_sec]"
+        self.assertEqual(self.bad("특별히 할 일 없음", rows, second), [])
+        self.assertEqual(self.bad("특별히 할 일 없음.", rows, second), [])
+        for third in ("검색 속도 개선하기", "특별히 할 일 없음, 평균 2초[search.avg_sec]"):
+            self.assertEqual(len(self.bad(third, rows, second)), 1, third)
+
+    def test_anomaly_needs_todo(self):
+        self.assertIn("할 일을 써야 함", self.bad("특별히 할 일 없음")[0])
+
+    def test_priority(self):
+        self.assertEqual(dr.build(ROWS, EVENTS, NOW)["top_anomaly"]["id"], "rule.fail_rate")
+        agg = dr.build([row("11-19 10:00", duration_ms=50000), row("11-19 10:00", status="limited")], [], NOW)
+        self.assertEqual(agg["top_anomaly"], {"id": "rule.limited_users", "label": "한도 도달 사용자"})
+        self.assertIsNone(dr.build([row("11-19 10:00")], [], NOW)["top_anomaly"])
+        self.assertEqual(set(dr.PRIORITY), {r[0] for r in dr.RULES})   # 빠진 규칙 없음
 
 
 class NoUsageTest(unittest.TestCase):
@@ -595,7 +632,7 @@ class CrewTest(unittest.TestCase):
     def test_today_label_sent_to_ai(self):
         agg = dr.build(ROWS, EVENTS, NOW, day=date(2026, 11, 20))
         line = f'{agg["label"]} 검색 1회[search.total]'
-        text = json.dumps({"summary": [line, "평균 2초[search.avg_sec]", "b"], "anomalies": [], "suggestions": []}, ensure_ascii=False)
+        text = json.dumps({"summary": [line, "평균 2초[search.avg_sec]", "특별히 할 일 없음"], "anomalies": [], "suggestions": []}, ensure_ascii=False)
         with mock.patch.object(gemini, "chat_gemini", side_effect=[text, PASS]) as chat, mock.patch.object(stats, "record_engine"):
             out = report_crew.run(agg)
         self.assertEqual(out["verdict"], "검토 통과")
@@ -629,7 +666,7 @@ class CrewTest(unittest.TestCase):
         agg_rows = [row("11-19 10:00", "chat", query="[실행] " + t, outcome=o)
                     for t, o, n in RankTest.COMMANDS for _ in range(n)]
         agg = dr.build(agg_rows, [], NOW)
-        d = {"summary": ["⚡ 명령 3회[action.total]", "가", "나"], "anomalies": ["특이 사항 없음"],
+        d = {"summary": ["⚡ 명령 3회[action.total]", "가", "특별히 할 일 없음"], "anomalies": ["특이 사항 없음"],
              "suggestions": RankTest.SUGGESTIONS}
         with mock.patch.object(gemini, "chat_gemini", side_effect=[json.dumps(d, ensure_ascii=False), PASS]), \
                 mock.patch.object(stats, "record_engine"):
@@ -641,6 +678,14 @@ class CrewTest(unittest.TestCase):
         for s in ('"charts"', "30초 미만", "usage_logs tools"):
             self.assertNotIn(s, "".join(self.prompts))
         self.assertIn("사용량 → 성능 → 할 일", self.prompts[0])
+
+    def test_repeated_number_sent_back(self):
+        d = draft(extra=HITS)
+        d["summary"][2] = "실패 4회[search.failed]를 줄이기"
+        out = self.run_crew([json.dumps(d, ensure_ascii=False), OK, PASS])
+        self.assertEqual((out["verdict"], out["fixes"]), ("검토 통과", 1))
+        self.assertIn("2번째 줄 숫자(4)를 반복함", self.prompts[1])
+        self.assertIn('"top_anomaly"', self.prompts[0])
 
     def test_wrong_summary_order_sent_back(self):
         d = draft(extra=HITS)

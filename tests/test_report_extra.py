@@ -263,6 +263,12 @@ class RulesFileTest(unittest.TestCase):
         self.assertIn(json.dumps(dr.NO_USAGE_DRAFT, ensure_ascii=False), report_crew.load_rules()["사용 없음"])
         self.assertIn(dr.NO_USAGE_DRAFT["summary"][0], report_crew.load_rules()["검토"])
 
+    def test_todo_rule(self):
+        rules = report_crew.load_rules()
+        for name in ("작성", "검토"):
+            self.assertIn(dr.NO_TODO, rules[name])
+            self.assertIn("top_anomaly", rules[name])
+
     def test_missing_file_or_section(self):
         with tempfile.TemporaryDirectory() as d:
             f = Path(d) / "r.md"

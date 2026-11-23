@@ -28,6 +28,9 @@ BAD_OUTCOMES = {"error": "오류", "rejected": "검사(validate) 거부", "ask_c
 # ⚡ 기능 그래프에 보일 도구 (결과 찾기·찜 확인·되묻기는 중간 단계라 뺌)
 TOOL_NAMES = {"add_favorite": "찜", "remove_favorite": "찜 빼기", "compare_favorites": "비교", "search": "검색",
               "open_favorites": "목록 열기", "logout": "로그아웃"}
+# 여러 이상 징후 중 요약의 "할 일"에 쓸 순서 (앞이 더 중요)
+PRIORITY = ("rule.fail_rate", "rule.gemini_rate", "rule.limited_users", "rule.avg_sec", "rule.other_rate")
+NO_TODO = "특별히 할 일 없음"
 CARDS = ("search.total", "action.total", "search.avg_sec", "search.fail_rate")   # 화면 맨 위 숫자 카드
 # 요약 1줄(사용량)·2줄(성능)에 있어야 하는 근거
 USAGE_KEYS = ("search.total", "search.ok", "search.cached", "chat.total", "action.total", "gemini.calls", "users.limited")
@@ -258,7 +261,8 @@ def build(rows: list[dict], events: list[dict], now: datetime, truncated: bool =
     if not gemini_limit:
         notes.append("GEMINI_DAILY_LIMIT이 없어 Gemini 사용률은 판정하지 않음")
     return {"date": start.date().isoformat(), "label": label, "generated_at": now.astimezone(KST).isoformat(timespec="seconds"),
-            "metrics": metrics, "anomalies": anomalies, "notes": notes,
+            "metrics": metrics, "anomalies": anomalies, "top_anomaly": top_anomaly(anomalies),
+            "notes": notes,
             "no_usage": not (searches or talk), "cards": list(CARDS),
             "charts": build_charts(rows, searches, chats, cmds, metrics, end.hour if label else 23)}
 
@@ -420,6 +424,41 @@ def missing_anomalies(draft: dict, agg: dict) -> list[str]:
             and not any(f"[{a['metric']}]" in line and f"[{a['id']}]" in line for line in draft["anomalies"])]
 
 
+def top_anomaly(anomalies: list[dict]) -> dict | None:
+    """판정된 이상 징후 중 가장 중요한 것 {id, label} (없으면 None)."""
+    hit = {a["id"]: a for a in anomalies if a["triggered"]}
+    return next(({"id": i, "label": hit[i]["label"]} for i in PRIORITY if i in hit), None)
+
+
+def _numbers(line: str, date_text: str) -> list[tuple[float, str | None]]:
+    """줄에 쓴 숫자와 바로 뒤의 근거 키 (없으면 None)."""
+    line = line.replace(date_text, "")
+    tokens = list(_TOKEN.finditer(line))
+    out = []
+    for i, t in enumerate(tokens):
+        if t.group(2):
+            n = tokens[i + 1] if i + 1 < len(tokens) else None
+            key = n.group(1) if n and n.group(1) and _GAP.fullmatch(line[t.end():n.start()]) else None
+            out.append((float(t.group(2).replace(",", "")), key))
+    return out
+
+
+def bad_todo(draft: dict, agg: dict) -> list[str]:
+    """요약 3번째 줄: 이상 징후가 없으면 NO_TODO, 있으면 할 일 문장. 2번째 줄 숫자를 반복하면 안 됨."""
+    second, third = draft["summary"][1:3]
+    top = top_anomaly(agg["anomalies"])
+    plain = third.strip().rstrip(". ")
+    if not top:
+        return [] if plain == NO_TODO else [f'summary 3번째 줄: 이상 징후가 없으니 "{NO_TODO}"이라고만 써야 함']
+    out = [f"summary 3번째 줄: 이상 징후({top['label']})가 있으니 할 일을 써야 함"] if plain == NO_TODO else []
+    used = _numbers(second, agg["date"])
+    keys, values = {k for _, k in used if k}, {v for v, _ in used}
+    for v, k in _numbers(third, agg["date"]):
+        if k in keys or (k is None and v in values):
+            out.append(f"summary 3번째 줄: 2번째 줄 숫자({v:,g})를 반복함 (할 일 문장만 쓰기)")
+    return out
+
+
 def bad_summary(draft: dict, agg: dict) -> list[str]:
     """요약 순서(사용량 → 성능 → 할 일)와 잘 안 된 명령을 요약에 쓰지 않았는지."""
     lines, known = draft["summary"], {m["id"]: m["value"] for m in agg["metrics"]}
@@ -431,7 +470,7 @@ def bad_summary(draft: dict, agg: dict) -> list[str]:
         out.append("summary 2번째 줄: 성능(평균 응답 시간·실패율)이 근거와 함께 있어야 함")
     out += [f"summary {i}번째 줄: 잘 안 된 명령은 이상 징후·개선 제안에만 쓰기" for i, c in enumerate(cited, 1)
             if any(k.startswith(("action.bad", "action.failed")) for k in c)]
-    return out
+    return out + bad_todo(draft, agg)
 
 
 NO_USAGE_DRAFT = {"summary": ["사용 기록이 없는 날이에요"], "anomalies": ["특이 사항 없음"], "suggestions": ["제안 없음"]}
