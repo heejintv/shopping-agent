@@ -36,6 +36,13 @@
 - **계정별 하루 제한 + 서버 전체 상한**: 회원 한 명당 새 검색 5회·상담 30회, 모든 회원 합쳐 새 검색 20회. admin은 무제한
 - **찜 목록 동기화**: 로그인하면 내 계정 찜(Supabase `favorites`)만 보이고 다른 기기에서도 같은 목록. 로그아웃하면 이 기기의 기록을 모두 지움
 - **🛠 관리자 대시보드**: admin 계정에만 보이는 버튼. 회원 수, 오늘 사용량, Gemini 토큰·한도, 사용자별 순위, 최근 기록, 7일 그래프
+- **관리자 "Claude 연결 확인"**: 버튼 하나로 `/admin/claude-check` 호출 → 성공/실패, 에러 종류(로그인·토큰 / 사용량 한도 / 시간 초과 / 기타), 확인 시각. 확인 중에는 버튼이 "확인 중…"으로 잠김
+- **⚡ 문장으로 실행**: 챗봇에 "제일 싼 거 찜해줘"처럼 쓰면 AI가 등록된 도구를 한 단계씩 골라 실제로 실행 (찜·찜 취소·찜 목록·검색·찜한 상품 비교·로그아웃)
+  - **자동 ⚡**: "찜/저장/빼줘/검색해/비교/vs/로그아웃" 같은 행동 키워드면 Gemini 호출 없이 바로 ⚡로, 질문(물음표·"어때")은 상담으로 (`intent.js`)
+  - **되묻기·여러 개 선택**: 후보가 여럿인데 기준이 없으면 버튼으로 되물음. 비교처럼 2개를 골라야 하면 목록형 카드에서 여러 개 선택 (개수가 맞을 때만 [비교하기])
+  - **찜 전 승인 카드**: 상품명·가격을 보여 주고 [저장/취소], 로그아웃도 "로그아웃할까요?" [예/아니요] 확인 후에만
+  - **중복 찜 방지**: 이미 찜한 상품(상품 ID 기준)이면 "이미 찜한 상품이에요"라고만 답하고 아무것도 실행하지 않음 (찜 버튼이 토글이라 실수로 빠지지 않게)
+- **링크 없을 때 "쇼핑몰에서 찾기"**: 상품 링크가 절반 미만이면 같은 검색 안에서 한 번 더 찾고(횟수 차감 1회 그대로), 끝까지 없는 상품은 회색 "쇼핑몰에서 찾기"(네이버쇼핑 검색 + 상품명) 버튼으로 진짜 상품 링크와 구분
 
 ## 스크린샷
 
@@ -129,7 +136,7 @@ GitHub Pages: https://heejintv.github.io/shopping-agent/
 ### 검색 (`GET /search`)
 1. `cache/`에 같은 검색어+조건이 있으면 바로 돌려줌 (횟수 차감 없음)
 2. 없으면 `claude -p`를 **웹 검색(WebSearch)·웹페이지 읽기(WebFetch) 도구만** 허용해서 실행. JSON 스키마로 출력 모양을 강제
-3. 상품 링크마다 서버가 직접 접속해서 페이지 제목에 모델명이 있는지 확인. 실패한 상품만 모아 **한 번만** 다시 찾고, 그래도 실패하면 버튼 대신 "링크 확인 안 됨"
+3. 상품 링크마다 서버가 직접 접속해서 페이지 제목에 모델명이 있는지 확인. 실패한 상품(링크 있는 상품이 절반 미만이면 링크 없는 상품도)을 모아 **한 번만** 다시 찾고, 그래도 없으면 회색 "쇼핑몰에서 찾기" 버튼
 4. 결과를 `cache/`에 저장 (`engine`에 어떤 엔진으로 검색했는지 기록)
 
 Claude에게는 **인기 상위 5개 모델만, 웹 검색은 최대 3번**까지 하도록 지시해서 비용과 시간을 줄였습니다.
@@ -142,6 +149,51 @@ Claude에게는 **인기 상위 5개 모델만, 웹 검색은 최대 3번**까�
 - `CHAT_ENGINE=gemini`(기본)이면 Gemini, `claude`면 `claude -p`(도구 전부 끔, 답변만)
 - Gemini가 **429(한도 초과)·503(혼잡)·504(시간 초과)** 이면 Claude로 한 번 자동 재시도
 - 새 상품을 검색하면 대화 초기화
+
+### ⚡ 문장으로 실행 (`POST /chat/action/step`, `react_graph.py`)
+
+**Gemini Function Calling**으로 도구를 고르고, **LangGraph `StateGraph`**가 반복(ReAct)을 서버에서 관리합니다. 명령 하나 = 상담 1회 차감, Gemini 호출은 최대 5번.
+
+```
+START → agent ──(functionCall)──→ validate ──→ server_tool ──→ agent          서버에서 바로 실행
+          │                          │            └(add_favorite)→ approve → wait_client → agent
+          │                          ├──→ approve (logout: [예/아니요]) → END
+          │                          ├──→ wait_client → agent                  화면에서 실행 후 결과로 이어 감
+          │                          └(거부: 사유를 함수 결과로)→ agent
+          └(최종 답 / 호출 한도)→ END
+```
+
+- `agent`: Gemini 한 번 호출 → 함수 하나 또는 최종 답
+- `validate`: 등록된 함수인지, 입력값 형식·범위·로그인, 검색 확인 여부를 서버가 검사
+- `server_tool`: 검색 결과·찜 목록에서 찾기, 비교 (서버에서 숫자로 정렬·필터)
+- `approve` / `wait_client`: `interrupt()`로 멈추고 화면(승인 카드·버튼·실행 결과)을 기다림 → 화면이 `Command(resume=…)`로 이어 감. 상태는 `MemorySaver`에 명령 ID(`thread_id`)별로
+
+| 등록 도구 | 실행 위치 | 하는 일 |
+|---|---|---|
+| `find_in_results` | 서버 | 지금 검색 결과에서 후보 찾기 (`sort` 가격·평점, `max_price`·`min_price`, `brand`) |
+| `get_favorites` | 서버 | 찜 목록 데이터 (최근 찜한 순) |
+| `compare_favorites` | 서버 → 화면 | 찜·검색 결과에서 2개를 골라 1:1 비교 후 AI 비교 창 열기 (3개 이상이면 고르기 카드) |
+| `add_favorite` | 승인 → 화면 | 찜하기 (승인 카드, 중복이면 실행 안 함) |
+| `remove_favorite` | 화면 | 찜 빼기 |
+| `open_favorites` | 화면 | 찜 목록 창 열기 (열어 달라고 할 때만) |
+| `search` | 화면 | 새 검색 (검색창 제출과 같은 경로) |
+| `ask_user` | 화면 | 되묻기 버튼, `min_select`·`max_select`로 여러 개 선택 |
+| `logout` | 확인 → 화면 | 기존 로그아웃 함수 실행 |
+
+**사용 예시**
+
+- "제일 싼 거 찜해줘" → `find_in_results(sort=price_asc)` → 1등을 `add_favorite` → 승인 카드 [저장]
+- "버즈 비교해줘" → `compare_favorites(condition="버즈")` → 2개면 바로, 여럿이면 2개 고르기 → AI 비교 창
+- "평점 제일 높은 로지텍 찜해줘" → `find_in_results(sort=rating_desc, brand="로지텍")` → `add_favorite`
+- "방금 찜한 거 빼줘" → `get_favorites` → 찜 번호 1을 `remove_favorite`
+- "무선 청소기 검색해줘" → `search` (직접 "검색"이라고 하지 않았으면 먼저 "새로 검색할까요? (하루 N회 중 1회)" 확인)
+
+**안전장치**
+
+- **검색 확인 강제**: 사용자가 "검색/찾아"를 직접 말했거나 [검색] 버튼을 누른 기록이 없으면 서버(`validate`)가 `search`를 거부 → 하루 검색 횟수를 몰래 쓰지 않음
+- **등록 함수·로그인 검사**: 등록되지 않은 함수, 모르는 입력값, 형식·범위가 틀린 값, 로그인이 필요한 도구는 서버가 막고 사유를 AI에 돌려줌
+- **실행 결과로만 답**: 화면이 돌려준 실제 결과로 답함 (예: 비교 창이 실제로 열렸을 때(`opened: true`)만 "열었어요", 못 열면 이유를 그대로). 함수 결과 안의 지시문은 따르지 않음
+- **되돌리기 어려운 기능은 도구로 안 만듦**: 회원 탈퇴·찜 전체 삭제·결제 같은 기능은 등록하지 않음. 찜과 로그아웃은 실행 전에 반드시 확인
 
 ### 챗봇 ↔ 결과 화면 연결
 - **상품 매칭은 id로**: 서버가 상품마다 id(검색 결과 안의 순서)를 붙여 챗봇에 보내고, 챗봇은 답 끝에 `추천ID: 3`처럼 적습니다. 서버가 그 줄을 떼어 내고, 실제로 보낸 id일 때만 `pick_id`로 돌려줍니다. 상품명 글자 비교는 하지 않으며, 검색 결과에 없는 상품이면 강조하지 않습니다.
@@ -196,7 +248,8 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | 실행 환경 | **WSL2** (Windows 위 Ubuntu) | 서버·Claude Code CLI·ngrok을 Linux 환경에서 실행 |
 | 백엔드 | Python 3, **Flask** | API 서버 (`app.py`), 캐시·하루 제한·출처 확인 |
 | 검색 AI | **Claude Code CLI** (`claude -p`) | 웹 검색으로 상품 정보 수집, JSON 스키마 출력 |
-| 상담 AI | **Gemini API** (`google-genai`) | 상담 챗봇 답변, (선택) Google 검색 연동 검색 |
+| 상담 AI | **Gemini API** (`google-genai`) | 상담 챗봇 답변, ⚡ Function Calling, (선택) Google 검색 연동 검색 |
+| 에이전트 | **LangGraph** (`langgraph>=1.2,<2`) | ⚡ ReAct 반복: `StateGraph`·`interrupt`·`MemorySaver` (`react_graph.py`) |
 | 배포 | **Render** (무료 웹 서비스) + **gunicorn** | 내 PC 없이 서버 실행 (`render.yaml`, `gunicorn.conf.py`) |
 | 외부 공개 | **ngrok** (무료 고정 도메인) | 내 PC의 `localhost:5000`을 인터넷에 연결 |
 | 프론트엔드 | **GitHub Pages**, HTML·CSS·JavaScript | 화면 호스팅. 프레임워크 없이 한 파일(`index.html`) |
@@ -251,6 +304,8 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | `GET /cached?q=&c=` | 공유 링크용. 저장된 결과만 돌려주고 없으면 404 (새 검색·횟수 차감 없음) |
 | `GET /history` | `cache/`에 저장된 검색어 목록 (최근 순) |
 | `GET /history/<파일명>` | 저장된 결과 하나 (AI 실행·횟수 차감 없음) |
+| `POST /chat/action/step` | 🔒 ⚡ 문장으로 실행. `{sentence}`로 시작(상담 1회 차감) → 멈출 때마다 `{cmd, resume}`으로 이어 감. 응답은 `interrupt`(화면 실행·승인 대기) 또는 `text`(끝) + 지난 노드 순서 |
+| `GET /admin/claude-check` | 🔒👑 claude CLI 연결 확인. 성공/실패와 에러 종류(auth·limit·timeout·other)만 |
 | `POST /chat` | 🔒 상담 챗봇. `{question, results, history}`를 받아 검색 결과 안에서만 답함. `mode: "compare"`면 찜한 상품 정확히 2개만 받아 둘 중 하나를 추천 (대화 기록은 무시, 하루 제한은 같은 횟수) |
 | `GET /stats` | 모니터링 요약 (가동 시간, 오늘 요청 수, 응답 시간, 엔진별 성공·실패, 캐시 적중률, 인기 검색어, 사이트별 링크 확인 `danawa 0/5`, 상태) |
 | `GET /health` | 서버 상태, 내 PC 직접 접속이면 `unlimited: true` (계정별 남은 횟수는 `/me`) |
@@ -276,6 +331,10 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | `supabase/check_favorites.sql` | 찜이 계정끼리 섞였는지 점검하는 SQL (읽기 전용, 삭제문은 주석) |
 | `tests/` | 서버 단위 테스트 (`python -m unittest discover -s tests -v`) |
 | `e2e/` | Playwright 화면 테스트, 데모 모드 (`npm ci && npx playwright install chromium && npm run test:e2e`) |
+| `actions.py` | ⚡ 등록 도구(Function Declarations)·시스템 지시문·입력값 검사·명령(cmd) 주인과 만료 |
+| `react_graph.py` | ⚡ LangGraph `StateGraph` (agent → validate → server_tool/approve/wait_client → END) |
+| `intent.js` | 자동 ⚡ 판단(행동 키워드), 조사(을/를), 선택지 맞추기 (화면과 테스트가 같이 씀) |
+| `claude_errors.py` | claude CLI 실패 원인 분류(로그인·토큰/한도/시간 초과/기타)와 로그 마스킹 |
 | `chat.py` | 상담 챗봇. 지시문, 입력 정리, Gemini/Claude 호출과 자동 재시도 |
 | `polish.py` | 추천 이유 끝맺음을 "~해요/~예요"로 다듬기 (응답할 때 적용, `python polish.py demo`로 데모 파일 정리) |
 | `stats.py` | 모니터링 기록. 요청·엔진 결과를 `logs/`에 저장하고 `/stats` 요약 계산 |
@@ -475,7 +534,7 @@ admin 계정으로 로그인하면 헤더에 **🛠 관리자** 버튼이 보입
 python -m unittest discover -s tests -v
 ```
 
-Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니다.
+Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니다. 현재 **191개** 통과.
 
 | 파일 | 확인하는 것 |
 |---|---|
@@ -483,8 +542,19 @@ Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니
 | `tests/test_members.py` | Supabase REST 요청 모양 (키 헤더, 개수 세기, `exempt` 필터), 기록 실패해도 응답은 정상 |
 | `tests/test_modes.py` | 내 PC·Render 모드에서 실제 `is_local_request`를 거쳐 API 호출 |
 | `tests/test_admin.py` | `/admin/stats` 401·403·200, 대시보드 집계, Gemini 토큰 기록 |
+| `tests/test_actions.py` | ⚡ 입력값 검사, 그래프 흐름(interrupt/resume), 승인 카드, 중복 찜, 검색 확인, 여러 개 선택, 비교 창 열림 확인 (Gemini 가짜 응답) |
+| `tests/test_intent.py` | 자동 ⚡ 키워드, 조사, 선택지 맞추기 (`node`로 `intent.js` 실행) |
+| `tests/test_recent.py` | 최근 검색 순서 (한국 시간, 저장된 결과로 다시 검색해도 맨 앞) |
+| `tests/test_link_fallback.py` | 링크 절반 미만이면 1번 다시 찾기, 요약 줄 개발 용어 정리, "쇼핑몰에서 찾기" |
+| `tests/test_claude_check.py` | claude 실패 원인 분류·마스킹, `/admin/claude-check` 권한 |
+| `tests/test_small3.py` | 404/405/500 JSON, 화면 오류 안내(`readJson`), ⚡ logout 확인, 관리자 연결 확인 버튼 |
 
 화면(브라우저) 동작은 직접 확인합니다.
+
+## 알려진 한계
+
+- **Render 재시작 시 초기화**: ⚡ 진행 중인 명령은 메모리(`MemorySaver`)에만 있어서 서버가 다시 켜지면 사라지고(다시 입력해야 함), 최근 검색·캐시도 임시 디스크라 초기화됩니다 (`demo/` 결과만 다시 불러옴).
+- **비교는 2개까지**: 1:1 비교만 지원해요. 후보가 3개 이상이면 2개를 골라야 합니다.
 
 ## 주의
 
