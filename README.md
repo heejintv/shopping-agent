@@ -372,7 +372,7 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | `DAILY_LIMIT` | `5` | 회원 한 명의 새 검색 하루 최대 횟수 |
 | `CHAT_DAILY_LIMIT` | `30` | 회원 한 명의 상담 하루 최대 횟수 |
 | `REPORT_CRON_TOKEN` | — | 매일 자동 보고서용 비밀 값 (32자 이상). GitHub Secrets와 Render에 같은 값. 없으면 자동 보고서 꺼짐 |
-| `GEMINI_DAILY_LIMIT` | — | 관리자 대시보드의 Gemini 하루 무료 호출 한도 (남은 양 막대) |
+| `GEMINI_DAILY_LIMIT` | — | 관리자 대시보드의 Gemini 하루 무료 호출 한도 (남은 양 막대). Render에서는 대시보드에서 입력 (`render.yaml`이 덮어쓰지 않음) |
 | `GLOBAL_SEARCH_LIMIT` | `20` | 서버 전체(모든 회원 합계) 새 검색 하루 최대 횟수. admin·내 PC 제외 |
 | `SUPABASE_URL`, `SUPABASE_ANON_KEY` | — | 로그인 확인 |
 | `SUPABASE_SERVICE_KEY` | — | 서버 전용. 등급 확인·사용 기록 (화면·GitHub·로그에 절대 넣지 않음) |
@@ -545,7 +545,7 @@ admin 계정으로 로그인하면 헤더에 **🛠 관리자** 버튼이 보입
 python -m unittest discover -s tests -v
 ```
 
-Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니다. 현재 **375개** 통과 (crewai가 없는 Python 3.14에서는 Crew 테스트 29개를 건너뜀).
+Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니다. 현재 **376개** 통과 (crewai가 없는 Python 3.14에서는 Crew 테스트 29개를 건너뜀).
 
 | 파일 | 확인하는 것 |
 |---|---|

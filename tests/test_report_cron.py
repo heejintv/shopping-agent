@@ -245,6 +245,10 @@ class FilesTest(unittest.TestCase):
             text = (ROOT / name).read_text(encoding="utf-8")
             self.assertIsNone(re.search(r"REPORT_CRON_TOKEN\s*[:=]\s*[\"']?[A-Za-z0-9_\-]{16,}", text), name)
 
+    def test_gemini_limit_not_overwritten_by_blueprint(self):
+        """render.yaml에 값을 적으면 Blueprint 동기화 때 대시보드에서 고친 한도를 덮어씀 (500 → 1000 사건)."""
+        self.assertRegex((ROOT / "render.yaml").read_text(encoding="utf-8"), r"GEMINI_DAILY_LIMIT[^\n]*\n\s+sync: false")
+
     def test_token_masked_in_logs(self):
         with mock.patch.dict(os.environ, {"REPORT_CRON_TOKEN": TOKEN}):
             self.assertNotIn(TOKEN, claude_errors.mask(f"x {TOKEN} y"))
