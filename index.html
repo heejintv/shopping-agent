@@ -2095,13 +2095,13 @@ function askMulti(p) {
 }
 
 // 줄 표시용: 상품명을 짧은 이름 + 구분 사양으로 나눔
-// "애플 맥북프로14 M5프로 10코어 24GB 1TB 스페이스블랙" → {name: "맥북프로14 M5프로", spec: "10코어 · 24GB · 1TB · 스페이스블랙"}
+// "애플 맥북프로14 M5프로 10코어 24GB 1TB 스페이스블랙" → {name: "맥북프로14 M5프로", spec: "애플 · 10코어 · 24GB · 1TB · 스페이스블랙"}
 const SPEC_WORD = /^(?:\d+(?:\.\d+)?(?:GB|TB|MB|코어|core|W|mAh|인치|형|mm|Hz|L|리터|kg|g|세대)|(?:CPU|GPU)\d+.*|[(\[].*[)\]]|블랙|화이트|실버|그레이|골드|블루|레드|그린|핑크|퍼플|베이지|네이비|스페이스\S*|미드나이트|스타라이트|\S+색)$/i;
 function splitName(label) {
   const words = String(label || "").replace(/^\s*\d+\s*[.)]\s*/, "").split(/\s+/).filter(Boolean);
   const spec = words.filter(w => SPEC_WORD.test(w));
   let base = words.filter(w => !SPEC_WORD.test(w));
-  if (base.length >= 3) base = base.slice(1);   // 3단어 이상이면 앞 브랜드는 뺌
+  if (base.length >= 2) { spec.unshift(base[0]); base = base.slice(1); }   // 앞 단어(브랜드)는 사양 줄 맨 앞으로
   const name = base.slice(0, 3).join(" ") || words.join(" ");
   return { name, spec: spec.join(" · ") };
 }
