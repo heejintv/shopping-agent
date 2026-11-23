@@ -334,13 +334,14 @@ def triggered(agg):
 
 HITS = triggered(dr.build(ROWS, EVENTS, NOW))   # 이 날의 이상 징후: 초안에 꼭 있어야 함
 class RankTest(unittest.TestCase):
-    """"N위"는 같은 줄의 근거 키 순위와 맞으면 통과. (SUGGESTIONS는 만든 예시. 실제 초안 아님)"""
+    """"N위"는 같은 줄의 근거 키 순위와 맞으면 통과. SUGGESTIONS는 실제로 받은 초안의 개선 제안 3줄."""
 
-    COMMANDS = (("에어팟 찜해줘", "search_cancelled", 3), ("2번 빼줘", "rejected", 2), ("배송 언제 와", "cannot", 1))
+    COMMANDS = (("에어팟 찜해줘", "search_cancelled", 1), ("키보드 찜해줘", "approve_cancelled", 1),
+                ("제일 싼 거 찜해줘", "approve_cancelled", 1))
     SUGGESTIONS = [
-        '잘 안 된 명령 1위 "에어팟 찜해줘" 3회[action.bad_top1]가 검색 확인에서 취소됨 → 비슷한 결과를 먼저 보여주기 검토',
-        '2위 "2번 빼줘" 2회[action.bad_top2]가 검사에서 거부됨 → 찜 번호 안내 문구 추가',
-        '3위인 "배송 언제 와" 1회[action.bad_top3]에 할 수 없다고 답함 → 지원 범위 안내 추가',
+        '⚡ 명령 개선 제안. 잘 안 된 ⚡ 명령 1위 (검색 확인에서 취소)인 "에어팟 찜해줘" 1회[action.bad_top1] → 검색 횟수 안내 문구 대신 비슷한 결과를 먼저 보여주기 검토',
+        '⚡ 명령 개선 제안. 잘 안 된 ⚡ 명령 2위 (승인 카드 취소)인 "키보드 찜해줘" 1회[action.bad_top2] → 승인 단계에서 상품 정보를 더 명확하게 확인하도록 UI 개선 검토',
+        '⚡ 명령 개선 제안. 잘 안 된 ⚡ 명령 3위 (승인 카드 취소)인 "제일 싼 거 찜해줘" 1회[action.bad_top3] → 최저가 정렬 결과를 즉시 제시하고 바로 승인할 수 있게 연결 개선 검토',
     ]
 
     def setUp(self):
@@ -353,6 +354,13 @@ class RankTest(unittest.TestCase):
     def bad(self, line):
         return [c for c in self.checks(line) if not c["ok"]]
 
+    def test_aggregates_match_real_report(self):
+        got = {m["id"]: (m["label"], m["text"], m["value"]) for m in self.agg["metrics"] if m["id"].startswith("action.bad_top")}
+        self.assertEqual(got, {
+            "action.bad_top1": ("잘 안 된 ⚡ 명령 1위 (검색 확인에서 취소)", "에어팟 찜해줘", 1),
+            "action.bad_top2": ("잘 안 된 ⚡ 명령 2위 (승인 카드 취소)", "키보드 찜해줘", 1),
+            "action.bad_top3": ("잘 안 된 ⚡ 명령 3위 (승인 카드 취소)", "제일 싼 거 찜해줘", 1)})
+
     def test_three_suggestions_pass(self):
         checks = self.checks(*self.SUGGESTIONS)
         self.assertTrue(all(c["ok"] for c in checks), checks)
@@ -363,12 +371,12 @@ class RankTest(unittest.TestCase):
         self.assertEqual(self.bad("1위[action.bad_top1]"), [])
 
     def test_wrong_rank(self):
-        for line in ("2위 3회[action.bad_top1]", "1위 명령", "1위 9회[action.bad_top9]", "2위[action.bad_top1]",
-                     "1위와 2위 3회[action.bad_top1]", "1위 6회[action.bad]"):
+        for line in ("2위 1회[action.bad_top1]", "1위 명령", "1위 9회[action.bad_top9]", "2위[action.bad_top1]",
+                     "1위와 2위 1회[action.bad_top1]", "1위 3회[action.bad]"):
             self.assertTrue(self.bad(line), line)
 
     def test_not_a_rank(self):
-        self.assertTrue(self.bad("1 위치 3회[action.bad_top1]"))
+        self.assertTrue(self.bad("1 위치 1회[action.bad_top1]"))
 
     def test_value_still_checked(self):
         self.assertTrue(self.bad("1위 4회[action.bad_top1]"))
@@ -454,7 +462,7 @@ class CrewTest(unittest.TestCase):
         agg_rows = [row("11-19 10:00", "chat", query="[실행] " + t, outcome=o)
                     for t, o, n in RankTest.COMMANDS for _ in range(n)]
         agg = dr.build(agg_rows, [], NOW)
-        d = {"summary": ["잘 안 된 명령 6회[action.bad]", "가", "나"], "anomalies": ["특이 사항 없음"],
+        d = {"summary": ["잘 안 된 명령 3회[action.bad]", "가", "나"], "anomalies": ["특이 사항 없음"],
              "suggestions": RankTest.SUGGESTIONS}
         with mock.patch.object(gemini, "chat_gemini", side_effect=[json.dumps(d, ensure_ascii=False), PASS]), \
                 mock.patch.object(stats, "record_engine"):
