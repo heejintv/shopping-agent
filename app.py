@@ -18,6 +18,7 @@
 - /search/stream: 새 검색의 진행 단계를 실시간으로 보냄 (Server-Sent Events). 취소하면 claude를 멈추고 횟수에서 빼지 않음
 - /me: 로그인한 사람의 등급과 오늘 남은 횟수
 - /admin/stats: 관리자 대시보드 (admin.html). 토큰 확인 + profiles.role=admin일 때만, 아니면 403
+- /admin/claude-check: admin 전용. claude --version + 짧은 claude -p로 토큰이 살아 있는지 (성공/실패·원인 종류만)
 - Render 배포(환경변수 RENDER=true): 모든 요청을 외부로 보고 하루 제한 적용, 처음 켜질 때 demo/ 결과를 캐시로 불러옴
 - /stats: 모니터링 요약 (stats.py, 화면은 status.html). 질문 원문·IP는 기록하지 않음
 """
@@ -41,6 +42,7 @@ from flask import Flask, Response, g, jsonify, request, send_from_directory
 import admin_stats
 import auth
 import chat
+import claude_errors
 import members
 import stats
 from gemini import EngineError, call_gemini
@@ -403,6 +405,15 @@ def claude_bin() -> str:
     return os.environ.get("CLAUDE_BIN") or shutil.which("claude") or (str(local) if local.exists() else "claude")
 
 
+def claude_failed(why: str, stderr: str, stdout: str):
+    """claude 실패를 로그에 남기고(stderr·stdout 끝부분, 토큰·키는 가림) 원인별 EngineError를 낸다."""
+    kind = claude_errors.classify(stderr, stdout)
+    app.logger.warning("claude 실행 실패 (%s, 종류 %s) stderr=[%s] stdout=[%s]",
+                       why, kind, claude_errors.tail(stderr), claude_errors.tail(stdout))
+    message, code = claude_errors.KINDS[kind]
+    raise EngineError(message, code)
+
+
 def call_claude(prompt: str, schema: dict, timeout: int, job: Job | None = None) -> dict:
     """claude -p를 웹 도구만 허용해서 실행하고, 스키마 모양의 결과(dict)를 돌려준다.
     job이 있으면 0.5초마다 취소 여부를 확인해서, 취소되면 프로세스를 멈추고 Cancelled를 낸다."""
@@ -428,10 +439,13 @@ def call_claude(prompt: str, schema: dict, timeout: int, job: Job | None = None)
                 _kill(proc)
                 raise subprocess.TimeoutExpired(cmd[:2], timeout)
     if proc.returncode != 0:
-        raise RuntimeError(f"claude 실행 실패 (코드 {proc.returncode}): {stderr[-500:]}")
-    out = json.loads(stdout)
+        claude_failed(f"코드 {proc.returncode}", stderr, stdout)
+    try:
+        out = json.loads(stdout)
+    except json.JSONDecodeError:
+        claude_failed("JSON 아님", stderr, stdout)
     if out.get("is_error"):
-        raise RuntimeError(f"claude 오류: {out.get('result')}")
+        claude_failed("is_error", stderr, stdout)
     data = out.get("structured_output")
     if data is None:  # 혹시 structured_output이 없으면 result 텍스트를 JSON으로 파싱
         data = json.loads(out["result"])
@@ -700,8 +714,8 @@ def search():
             record(ok=False, code=504)
             done("timeout", engine=engine, ticket=ticket)
             return jsonify(error=f"검색 시간이 {CLAUDE_TIMEOUT}초를 넘었어요. 다시 시도해 주세요."), 504
-        except EngineError as e:  # Gemini 한도 초과·키 오류 등은 이유를 화면에 보여줌
-            app.logger.warning("gemini search failed: %s (%s)", e, e.__cause__)
+        except EngineError as e:  # 엔진(Gemini·claude) 한도 초과·로그인 오류 등은 이유를 화면에 보여줌
+            app.logger.warning("search engine failed: %s (%s)", e, e.__cause__)
             record(ok=False, code=e.code)
             done("error", engine=engine, ticket=ticket)
             return jsonify(error=str(e)), 502
@@ -801,7 +815,7 @@ def search_stream():
             status = "timeout"
             job.emit("error", {"error": f"검색 시간이 {CLAUDE_TIMEOUT}초를 넘었어요. 다시 시도해 주세요.", "status": 504})
         except EngineError as e:
-            app.logger.warning("gemini search failed: %s (%s)", e, e.__cause__)
+            app.logger.warning("search engine failed: %s (%s)", e, e.__cause__)
             record(ok=False, code=e.code)
             job.emit("error", {"error": str(e), "status": 502})
         except Exception:
@@ -952,10 +966,8 @@ def me():
     return jsonify(out)
 
 
-@app.get("/admin/stats")
-def admin_stats_api():
-    """관리자 대시보드 데이터. 토큰 확인 → profiles.role이 admin인지 새로 확인 → SERVICE 키로 읽어서 정리.
-    ?period=today|7d|30d (기본 today), ?q=이메일 일부 (순위·최근 기록에 적용)"""
+def require_admin():
+    """출처·토큰 확인 → profiles.role이 admin인지 새로 확인. 통과하면 None, 아니면 오류 응답."""
     origin = request.headers.get("Origin")
     if origin and origin not in LOCAL_ORIGINS:
         return jsonify(error="허용되지 않은 출처예요."), 403
@@ -969,6 +981,62 @@ def admin_stats_api():
         return jsonify(error=MEMBER_DOWN), 503
     if role != "admin":
         return jsonify(error="관리자만 볼 수 있어요."), 403
+    return None
+
+
+CHECK_TIMEOUT = 60   # 초. /admin/claude-check의 짧은 claude -p 호출
+
+
+def _run_check(cmd: list[str], timeout: int) -> tuple[bool, str, str]:
+    """명령 하나 실행 → (성공, 원인 종류, stdout). 실패는 가린 끝부분만 로그에 남김."""
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=BASE_DIR)
+    except FileNotFoundError:
+        return False, "not_installed", ""
+    except subprocess.TimeoutExpired:
+        return False, "timeout", ""
+    ok = proc.returncode == 0
+    if ok and "-p" in cmd:
+        try:
+            ok = not json.loads(proc.stdout).get("is_error")
+        except (json.JSONDecodeError, AttributeError):
+            ok = False
+    if ok:
+        return True, "", proc.stdout
+    kind = claude_errors.classify(proc.stderr, proc.stdout)
+    app.logger.warning("claude-check 실패 (%s, 코드 %s, 종류 %s) stderr=[%s] stdout=[%s]", cmd[1],
+                       proc.returncode, kind, claude_errors.tail(proc.stderr), claude_errors.tail(proc.stdout))
+    return False, kind, ""
+
+
+@app.get("/admin/claude-check")
+def admin_claude_check():
+    """admin 전용: claude --version + 아주 짧은 claude -p 한 번으로 토큰이 살아 있는지 확인.
+    답변 내용은 돌려주지 않고 성공/실패와 원인 종류(auth·limit·timeout·other·not_installed)만."""
+    err = require_admin()
+    if err:
+        return err
+    out = {}
+    ok, kind, text = _run_check([claude_bin(), "--version"], 15)
+    m = re.search(r"\d+\.\d+\.\d+", text)
+    out["version"] = {"ok": ok, "error": kind or None, "value": m.group(0) if m else None}
+    t = time.time()
+    ok, kind, _ = _run_check([claude_bin(), "-p", "OK라고만 답해.", "--tools", "", "--output-format", "json"],
+                             CHECK_TIMEOUT) if ok else (False, kind, "")
+    out["prompt"] = {"ok": ok, "error": kind or None, "ms": round((time.time() - t) * 1000)}
+    out["ok"] = out["version"]["ok"] and out["prompt"]["ok"]
+    resp = jsonify(out)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.get("/admin/stats")
+def admin_stats_api():
+    """관리자 대시보드 데이터. 토큰 확인 → profiles.role이 admin인지 새로 확인 → SERVICE 키로 읽어서 정리.
+    ?period=today|7d|30d (기본 today), ?q=이메일 일부 (순위·최근 기록에 적용)"""
+    err = require_admin()
+    if err:
+        return err
 
     period = request.args.get("period") or "today"
     if period not in admin_stats.PERIODS:
