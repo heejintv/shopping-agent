@@ -5,6 +5,8 @@ Gemini를 한 번만 불러서 문장을 최대 3단계 계획 JSON으로 바꾼
 화면(index.html)이 기존 검색·찜 함수로 한 단계씩 실행한다 (pick은 Gemini 없이 결과 데이터로 계산).
 """
 
+import re
+
 from gemini import EngineError, plan_json
 
 MAX_SENTENCE = 200
@@ -18,7 +20,11 @@ TOOLS = ("search", "pick", "add_favorite", "remove_favorite", "show_favorites", 
 NEED_TWO = "비교하려면 찜한 상품이 2개 이상 필요해요."
 NO_RESULTS = "먼저 상품을 검색해주세요."
 MAX_FAVORITES = 100
-PICK_BY = ("cheapest", "top_rated", "first", "brand", "index")
+PICK_BY = ("cheapest", "most_expensive", "top_rated", "lowest_rated", "first", "last", "brand", "index",
+           "price_under", "price_over")
+PRICE_BY = ("price_under", "price_over")
+# 자동 ⚡로 들어온 행동 명령이 계획 실패해서 상담으로 넘어갈 때 답 위에 붙이는 한 줄
+UNSUPPORTED_NOTE = "이 명령은 아직 실행할 수 없어요 (지원: 최저가·최고가·평점·번호·브랜드·가격대)"
 
 SCHEMA = {
     "type": "object",
@@ -28,7 +34,8 @@ SCHEMA = {
             "tool": {"type": "string", "enum": list(TOOLS)},
             "query": {"type": "string", "description": "search의 검색어"},
             "by": {"type": "string", "enum": list(PICK_BY), "description": "pick 기준"},
-            "value": {"type": "string", "description": "pick 기준이 brand면 브랜드 이름, index면 번호(1부터)"},
+            "value": {"type": "string",
+                      "description": "pick 기준이 brand면 브랜드 이름, index면 번호(1부터), price_under·price_over면 원 단위 숫자"},
             "name": {"type": "string", "description": "add_favorite·remove_favorite의 상품명. 바로 앞 pick으로 고른 상품이면 비움"},
             "condition": {"type": "string", "description": "compare_favorites의 조건 (검색어나 브랜드, 없으면 비움)"},
         },
@@ -40,8 +47,10 @@ SCHEMA = {
 SYSTEM = f"""너는 쇼핑 사이트의 명령 계획기야. 사용자 문장을 최대 {MAX_STEPS}단계 계획 JSON으로 바꿔. 실행은 하지 마.
 도구:
 - search(query): 새 상품 검색
-- pick(by, value): 지금 검색 결과에서 상품 하나 고르기. by = cheapest(최저가) | top_rated(평점 최고) | first(첫 번째)
-  | brand(value=브랜드 이름) | index(value=번호, 1부터)
+- pick(by, value): 지금 검색 결과에서 상품 하나 고르기. by =
+  cheapest(최저가) | most_expensive(가장 비싼) | top_rated(평점 최고) | lowest_rated(평점 최저)
+  | first(첫 번째) | last(마지막) | brand(value=브랜드 이름) | index(value=번호, 1부터)
+  | price_under(value=원 단위 금액, 그 금액 이하) | price_over(value=원 단위 금액, 그 금액 이상)
 - add_favorite(name): 찜하기. 바로 앞 단계 pick으로 고른 상품이면 name을 비워
 - remove_favorite(name): 찜 빼기. pick 뒤면 name을 비워
 - show_favorites(): 찜 목록 보기
@@ -49,7 +58,16 @@ SYSTEM = f"""너는 쇼핑 사이트의 명령 계획기야. 사용자 문장을
   이 도구는 혼자만 써 (다른 단계와 섞지 마)
 규칙:
 - [현재 검색 결과]에 있는 상품을 이름으로 말하면 그 이름을 name에 그대로 써 (pick 필요 없음)
-- "제일 싼/최저가/가장 저렴" = cheapest, "평점 높은/제일 좋은" = top_rated, "첫 번째" = first, "N번째" = index
+- pick 기준 한국어 예시:
+  "제일 싼/최저가/가장 저렴한/싼 거" → cheapest
+  "비싼/고가/제일 높은 가격/가장 비싼/프리미엄" → most_expensive
+  "평점 높은/별점 좋은/제일 좋은/평이 좋은" → top_rated
+  "평점 낮은/별점 제일 낮은/평이 안 좋은" → lowest_rated
+  "첫 번째/맨 위" → first, "마지막/맨 아래/끝에 있는" → last, "두 번째/3번" → index (value "2"/"3")
+  "삼성 거/애플 제품" → brand (value "삼성"/"애플")
+  "10만원 이하/10만원 안쪽/10만원 밑으로" → price_under (value "100000")
+  "5만원 이상/20만원 넘는" → price_over (value "50000"/"200000")
+  금액은 항상 원 단위 숫자로만 써 (3만 5천원 → "35000", 1.5만원 → "15000")
 - 다른 상품을 검색해야 하면 search를 먼저 넣어
 - 해당하는 동작이 없거나 상담 질문(추천해줘, 뭐가 좋아 등)이면 steps를 빈 배열로
 예: "에어팟 검색해서 제일 싼 거 찜해줘" → {{"steps":[{{"tool":"search","query":"에어팟"}},{{"tool":"pick","by":"cheapest"}},{{"tool":"add_favorite"}}]}}
@@ -72,6 +90,27 @@ def _text(v) -> str:
     return " ".join(str(v or "").split())[:MAX_ARG]
 
 
+def parse_won(v) -> int | None:
+    """금액 → 원 단위 정수. "100000", "100,000원", "10만원", "3만 5천원", "1.5만" 모두 허용. 아니면 None."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        n = int(v)
+        return n if 0 < n <= 1_000_000_000 else None
+    t = re.sub(r"[\s,원]", "", str(v or ""))
+    if not t:
+        return None
+    if re.fullmatch(r"\d+", t):
+        n = int(t)
+    else:
+        m = re.fullmatch(r"(?:(\d+(?:\.\d+)?)만)?(?:(\d+(?:\.\d+)?)천)?(\d+)?", t)
+        if not m or not any(m.groups()):
+            return None
+        man, cheon, rest = m.groups()
+        n = round(float(man or 0) * 10000 + float(cheon or 0) * 1000 + int(rest or 0))
+    return n if 0 < n <= 1_000_000_000 else None
+
+
 def _step(raw, picked: bool) -> dict | None:
     """단계 하나 검사 → {"tool", "args"}. 잘못됐으면 None."""
     if not isinstance(raw, dict):
@@ -91,6 +130,9 @@ def _step(raw, picked: bool) -> dict | None:
             except ValueError:
                 return None
             return {"tool": tool, "args": {"by": by, "value": n}} if 1 <= n <= 50 else None
+        if by in PRICE_BY:
+            won = parse_won(raw.get("value"))
+            return {"tool": tool, "args": {"by": by, "value": won}} if won else None
         return {"tool": tool, "args": {"by": by}} if by in PICK_BY else None
     if tool in ("add_favorite", "remove_favorite"):
         name = _text(raw.get("name"))

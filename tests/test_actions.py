@@ -80,6 +80,38 @@ class ValidateTest(unittest.TestCase):
         self.assertEqual(one(by="index", value="0"), [])
         self.assertEqual(one(by="cheapest_ever"), [])
 
+    def test_new_pick_criteria(self):
+        one = lambda **kw: actions.validate(plan({"tool": "pick", **kw}))   # noqa: E731
+        for by in ("most_expensive", "lowest_rated", "last"):
+            self.assertEqual(one(by=by), [{"tool": "pick", "args": {"by": by}}])
+        self.assertEqual(one(by="price_under", value="100000")[0]["args"], {"by": "price_under", "value": 100000})
+        self.assertEqual(one(by="price_over", value="5만원")[0]["args"], {"by": "price_over", "value": 50000})
+        self.assertEqual(one(by="price_under"), [])            # 금액 없음
+        self.assertEqual(one(by="price_over", value="많이"), [])
+        steps = actions.validate(plan({"tool": "search", "query": "키보드"}, {"tool": "pick", "by": "price_under",
+                                                                             "value": "100,000원"}, {"tool": "add_favorite"}))
+        self.assertEqual([x["tool"] for x in steps], ["search", "pick", "add_favorite"])
+
+    def test_parse_won(self):
+        cases = {"100000": 100000, "100,000원": 100000, "10만원": 100000, "3만 5천원": 35000, "1.5만": 15000,
+                 "5천": 5000, 120000: 120000, 0: None, -5: None, "abc": None, "": None, None: None, True: None, "만": None}
+        for v, want in cases.items():
+            self.assertEqual(actions.parse_won(v), want, repr(v))
+
+    def test_prompt_examples(self):
+        """계획 프롬프트에 기준별 한국어 예시가 들어 있음."""
+        for phrase in ("비싼/고가/제일 높은 가격", "most_expensive", "10만원 이하", '"100000"', "price_over",
+                       "lowest_rated", "마지막", "last"):
+            self.assertIn(phrase, actions.SYSTEM)
+        self.assertEqual(actions.SCHEMA["properties"]["steps"]["items"]["properties"]["by"]["enum"], list(actions.PICK_BY))
+
+    def test_chat_prompt_knows_action(self):
+        """상담 챗봇이 '직접 찜할 수 없어요'라고 하지 않도록 ⚡ 기능을 알려 줌."""
+        import chat
+        self.assertIn("⚡", chat.SYSTEM)
+        self.assertIn("찜해줘", chat.SYSTEM)
+        self.assertIn("제가 직접 찜할 수 없어요\"처럼 말하지 말고", chat.SYSTEM)
+
     def test_limits(self):
         s = {"tool": "show_favorites"}
         self.assertEqual(len(actions.validate(plan(s, s, s))), 3)
@@ -234,6 +266,17 @@ class ChatActionApiTest(unittest.TestCase):
         self.assertEqual(args[0], BODY["sentence"])                 # 같은 문장을 그대로 상담으로
         self.assertEqual(args[2], [{"role": "user", "text": "안녕"}])
         self.assertEqual([(x["action"], x["status"]) for x in self.logs], [("chat", "ok")])
+
+    def test_auto_fallback_adds_note(self):
+        """자동 ⚡로 온 행동 명령이 계획 실패 → 상담 답 위에 붙일 한 줄. 직접 ⚡를 켠 경우엔 없음."""
+        self.pick.return_value = {"steps": []}
+        d = self.post(GOOD, {**BODY, "results": RESULTS, "auto": True}).get_json()
+        self.assertEqual(d["chat"]["note"], actions.UNSUPPORTED_NOTE)
+        self.assertIn("최저가·최고가·평점·번호·브랜드·가격대", d["chat"]["note"])
+        d = self.post(GOOD, {**BODY, "results": RESULTS}).get_json()
+        self.assertNotIn("note", d["chat"])
+        d = self.post(GOOD, {**BODY, "results": RESULTS, "auto": "yes"}).get_json()   # true만 인정
+        self.assertNotIn("note", d["chat"])
 
     def test_plan_error_goes_to_chat(self):
         self.pick.side_effect = EngineError("Gemini 서버에 일시적인 문제가 있어요.", 503)

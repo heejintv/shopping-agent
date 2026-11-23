@@ -1878,10 +1878,31 @@ function runAction(tool, args, picked) {
 }
 
 // pick 단계: Gemini를 다시 부르지 않고 지금 결과 데이터로 계산. {p, label} 또는 {error}
-const PICK_LABELS = { cheapest: "최저가", top_rated: "평점 최고", first: "첫 번째", brand: "브랜드", index: "번호" };
+const PICK_LABELS = { cheapest: "최저가", most_expensive: "최고가", top_rated: "평점 최고", lowest_rated: "평점 최저",
+  first: "첫 번째", last: "마지막", brand: "브랜드", index: "번호", price_under: "가격 이하", price_over: "가격 이상" };
 function pickProduct(products, { by, value }) {
   const num = v => typeof v === "number" && isFinite(v);
+  const won = v => Number(v).toLocaleString("ko-KR") + "원";
+  const cheapestOf = list => list.reduce((a, b) => b.price < a.price ? b : a);
   if (by === "first") return products[0] ? { p: products[0], label: "첫 번째" } : { error: "결과가 없어요." };
+  if (by === "last") {
+    const p = products[products.length - 1];
+    return p ? { p, label: "마지막" } : { error: "결과가 없어요." };
+  }
+  if (by === "most_expensive") {
+    const list = products.filter(p => num(p.price));
+    if (!list.length) return { error: "가격이 있는 상품이 없어요." };
+    return { p: list.reduce((a, b) => b.price > a.price ? b : a), label: "최고가" };
+  }
+  if (by === "price_under" || by === "price_over") {   // 그 가격대 안에서 결과 순서대로 첫 번째
+    const under = by === "price_under";
+    const p = products.find(x => num(x.price) && (under ? x.price <= value : x.price >= value));
+    const label = `${won(value)} ${under ? "이하" : "이상"}`;
+    if (p) return { p, label };
+    const list = products.filter(x => num(x.price));
+    const hint = list.length ? ` (결과 가격 ${won(cheapestOf(list).price)}~${won(list.reduce((a, b) => b.price > a.price ? b : a).price)})` : "";
+    return { error: `${label} 상품이 결과에 없어요${hint}.` };
+  }
   if (by === "index") {
     const p = products[value - 1];
     return p ? { p, label: `${value}번째` } : { error: `${value}번째 상품이 없어요 (결과 ${products.length}개).` };
@@ -1889,13 +1910,18 @@ function pickProduct(products, { by, value }) {
   if (by === "cheapest") {
     const list = products.filter(p => num(p.price));
     if (!list.length) return { error: "가격이 있는 상품이 없어요." };
-    return { p: list.reduce((a, b) => b.price < a.price ? b : a), label: "최저가" };
+    return { p: cheapestOf(list), label: "최저가" };
   }
   if (by === "top_rated") {
     const list = products.filter(p => num(p.rating));
     if (!list.length) return { error: "평점이 있는 상품이 없어요." };
     const rc = p => num(p.review_count) ? p.review_count : 0;
     return { p: list.reduce((a, b) => b.rating > a.rating || (b.rating === a.rating && rc(b) > rc(a)) ? b : a), label: "평점 최고" };
+  }
+  if (by === "lowest_rated") {
+    const list = products.filter(p => num(p.rating));
+    if (!list.length) return { error: "평점이 있는 상품이 없어요." };
+    return { p: list.reduce((a, b) => b.rating < a.rating ? b : a), label: "평점 최저" };
   }
   if (by === "brand") {
     const w = norm(String(value || ""));
@@ -1991,6 +2017,7 @@ async function chatAct(sentence, opts = {}) {
       body: JSON.stringify({
         sentence, names: (shownResult?.products || []).slice(0, 10).map(productLabel),
         results: chatResult, history: chatHistory.slice(-6),   // 계획을 못 세우면 서버가 같은 문장을 상담으로 답함
+        auto: actAuto,                                          // 자동 ⚡면 상담 답 위에 "아직 실행할 수 없어요" 한 줄
         favorites: wishList.map(favForCompare),                 // compare_favorites용 (최신순)
       }),
     });
@@ -2004,11 +2031,12 @@ async function chatAct(sentence, opts = {}) {
     if (data.compare) return showFavCompare(steps[0]?.args?.condition || "", data.compare);
     if (data.chat) {   // 계획을 못 세워서 상담으로 답함 (상담 횟수는 이 요청 한 번만)
       const pick = validPick(data.chat.pick_id);
+      if (data.chat.note) chatAdd("info", data.chat.note);
       chatAddAnswer(data.chat.answer, pick, highlightProduct, "👉 결과에서 보기");
       if (pick != null) highlightProduct(pick);
       chatHistory.push({ role: "user", text: sentence }, { role: "assistant", text: data.chat.answer });
       chatHistory = chatHistory.slice(-6);
-      return actLogLine("계획 없음 → 상담으로 답함");
+      return actLogLine(data.chat.note ? "실행할 수 없는 명령 → 상담으로 답함" : "계획 없음 → 상담으로 답함");
     }
     if (!steps.length) { chatAdd("info", data.message || "어떤 동작인지 알아듣지 못했어요. 버튼으로 해 주세요."); return actLogLine("계획 없음 · " + (data.message || "")); }
     await runPlan(steps, who);

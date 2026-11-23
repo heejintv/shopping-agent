@@ -1007,6 +1007,8 @@ def chat_action():
             else:
                 ans = chat.answer(sentence, results, history)
                 out["chat"] = {"answer": ans["answer"], "pick_id": ans["pick_id"]}
+                if body.get("auto") is True:   # 자동 ⚡로 온 행동 명령인데 실행 못 함 → 답 위에 한 줄
+                    out["chat"]["note"] = actions.UNSUPPORTED_NOTE
                 engine = ans.get("engine") or chat.chat_engine()
                 tokens += ans.get("tokens") or 0
     except EngineError as e:   # 비교·상담 답변 실패 (/chat과 같은 문구)
