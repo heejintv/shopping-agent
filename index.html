@@ -21,6 +21,7 @@
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%232563eb'/%3E%3Cstop offset='1' stop-color='%237c3aed'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M11 11V9a5 5 0 0 1 10 0v2' fill='none' stroke='url(%23g)' stroke-width='2.6' stroke-linecap='round'/%3E%3Cpath d='M6 11h20l-1.4 15.3A3 3 0 0 1 21.6 29H10.4a3 3 0 0 1-3-2.7z' fill='url(%23g)'/%3E%3Cpath d='M11.4 19.6l3.3 3.3 6-6.5' fill='none' stroke='%23fff' stroke-width='2.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
 <script src="config.js"></script>
+<script src="intent.js"></script>
 <!-- 로그인(Supabase). 버전을 고정해서 CDN이 바뀌어도 그대로 동작 -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <style>
@@ -1776,9 +1777,13 @@ $("chatFab").addEventListener("click", () => {
   if (open && !$("chatIn").disabled) $("chatIn").focus();
 });
 $("chatClose").addEventListener("click", () => $("chatBox").classList.remove("open", "peek"));
+// ⚡가 꺼져 있어도 행동 명령(찜·검색 등, intent.js 키워드 판단)이거나 검색 결과가 없으면 ⚡로 처리 → 실행 기록에 "(자동 ⚡)"
 $("chatForm").addEventListener("submit", e => {
   e.preventDefault();
-  (actMode || !chatResult) ? chatAct($("chatIn").value) : chatAsk($("chatIn").value);
+  const text = $("chatIn").value;
+  if (actMode) return chatAct(text);
+  if (!chatResult || window.isActionCommand?.(text)) return chatAct(text, { auto: true });
+  chatAsk(text);
 });
 
 // ---------- 문장으로 실행 (함수 호출) ----------
@@ -1808,7 +1813,9 @@ function findProduct(name, list) {
   return best;
 }
 
+let actAuto = false;   // 지금 실행 중인 ⚡가 자동으로 넘어온 것인지 (실행 기록 앞에 표시)
 function actLogLine(text) {
+  if (actAuto) text = "(자동 ⚡) " + text;
   $("actLog").hidden = false;
   $("actLog").textContent = text;
   $("actLog").title = text;
@@ -1943,7 +1950,7 @@ async function runPlan(steps, who) {
   }
 }
 
-async function chatAct(sentence) {
+async function chatAct(sentence, opts = {}) {
   sentence = sentence.trim().split(/\s+/).join(" ");
   if (!sentence || chatBusy || demoMode) return;
   if (!authUser) return openAuth("login", "로그인하면 문장으로 실행할 수 있어요.");
@@ -1951,7 +1958,8 @@ async function chatAct(sentence) {
   if (!token) return openAuth("login", "로그인이 만료됐어요. 다시 로그인해 주세요.");
   if (sentence.length > 200) return chatAdd("err", "문장은 200자까지 쓸 수 있어요.");
   const who = authUser.id;
-  chatAdd("user", "⚡ " + sentence);
+  actAuto = !!opts.auto;   // 여기부터는 finally에서 항상 되돌림
+  chatAdd("user", (actAuto ? "⚡(자동) " : "⚡ ") + sentence);
   $("chatIn").value = "";
   chatBusy = true; chatSetEnabled();
   const wait = chatAdd("bot wait", "실행할 동작을 고르는 중...");
@@ -1975,7 +1983,7 @@ async function chatAct(sentence) {
     wait.remove();
     chatAdd("err", err instanceof TypeError ? "서버에 연결할 수 없어요. 버튼으로 해 주세요." : err.message);
   } finally {
-    chatBusy = false; chatSetEnabled();
+    chatBusy = false; actAuto = false; chatSetEnabled();
   }
 }
 $("chatEx").addEventListener("click", e => { if (e.target.tagName === "BUTTON") chatAsk(e.target.textContent); });

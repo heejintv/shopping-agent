@@ -606,6 +606,11 @@ def config_js():
     return send_from_directory(BASE_DIR, "config.js")
 
 
+@app.get("/intent.js")
+def intent_js():
+    return send_from_directory(BASE_DIR, "intent.js")
+
+
 @app.get("/demo/<path:name>")
 def demo_files(name):
     return send_from_directory(BASE_DIR / "demo", name)
