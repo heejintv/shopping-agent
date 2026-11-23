@@ -271,7 +271,7 @@ def log_run(source: str, status: str, reason: str | None = None, day: str | None
 
 
 def last_run(source: str, status: str | None = None) -> dict | None:
-    """가장 최근 실행 시도 (status를 주면 그 결과 중 최근). 연습(practice)은 뺌."""
+    """가장 최근 실행 시도 (status를 주면 그 결과 중 최근). 예전에 남은 연습 기록(practice)은 뺌."""
     columns = "id,at,source,status,reason,report_date"
     params = {"or": "(reason.is.null,reason.neq.practice)", "source": f"eq.{source}", "order": "id.desc", "limit": "1"}
     if status:

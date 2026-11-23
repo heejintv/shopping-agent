@@ -1518,17 +1518,6 @@ def admin_report_runs():
     return _cron_response(out)
 
 
-@app.post("/admin/report/practice")
-def admin_report_practice():
-    """검토 연습: 예시 데이터로 숫자 하나가 틀린 초안을 만들어 실제 대조 코드로 검사. Gemini·저장 없음, 실행 로그는 manual·practice."""
-    err = require_admin()
-    if err:
-        return err
-    out = daily_report.practice(datetime.now(KST), secrets.choice(daily_report.PRACTICE_KEYS))
-    logged = members.log_run("manual", "skipped", "practice", None, out["mismatches"])
-    return _cron_response({**out, "logged": bool(logged), "message": BLOCKED})
-
-
 @app.post("/admin/report/evidence")
 def admin_report_evidence():
     """{date, key, until?, text?} 근거 숫자를 만든 usage_logs 기록 최대 10건 (개인정보 가림).

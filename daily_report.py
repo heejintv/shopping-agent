@@ -383,35 +383,11 @@ def has_mismatch(report: dict) -> bool:
     return any(not c.get("ok") for c in report.get("checks") or [])
 
 
-# 연습: 예시 데이터로 만든 초안에서 숫자 하나만 일부러 틀리게 (Gemini·실제 기록 안 씀)
-PRACTICE_KEYS = ("search.total", "chat.total", "action.total", "search.avg_sec", "search.fail_rate")
-
-
-def practice(now: datetime, wrong: str) -> dict:
-    start, _ = yesterday(now)
-    made = lambda n, action, status="ok", **kw: [   # noqa: E731
-        {"created_at": (start + timedelta(hours=10)).isoformat(), "user_id": "practice", "action": action, "status": status,
-         "engine": "claude", "duration_ms": 20000, "query": "예시", **kw} for _ in range(n)]
-    rows = (made(12, "search") + made(1, "search", "error", error_kind="limit") + made(3, "chat")
-            + made(4, "chat", query=ACTION_PREFIX + "예시 명령", outcome="ok", tools=[]))
-    agg = build(rows, [], now)
-    v = {m["id"]: m["value"] for m in agg["metrics"]}
-    v[wrong] = round(v[wrong] + 1, 1)
-    draft = {"summary": [f"검색 {v['search.total']}회[search.total], 상담 {v['chat.total']}회[chat.total], "
-                         f"⚡ 명령 {v['action.total']}회[action.total]",
-                         f"새 검색은 평균 {v['search.avg_sec']}초[search.avg_sec], 실패율 {v['search.fail_rate']}%[search.fail_rate]",
-                         NO_TODO],
-             "anomalies": [NO_USAGE_DRAFT["anomalies"][0]], "suggestions": [NO_SUGGESTION]}
-    checks = check_numbers(draft, agg)
-    return {"practice": True, "draft": draft, "checks": checks, "mismatches": mismatches(checks, agg),
-            "units": {k: next(m["unit"] for m in agg["metrics"] if m["id"] == k) for k in PRACTICE_KEYS}}
-
-
 # ---------- 실행 로그 (report_runs) ----------
 
 RUN_REASONS = {"no_data": "자료 없음", "gemini": "Gemini 오류", "gemini_key": "Gemini 키 오류", "token": "토큰 오류",
                "exists": "이미 있음", "busy": "다른 보고서를 만드는 중", "db": "Supabase 오류", "save": "저장 실패",
-               "crewai": "CrewAI 없음", "mismatch": "숫자 불일치", "practice": "연습", "other": "기타 오류"}
+               "crewai": "CrewAI 없음", "mismatch": "숫자 불일치", "other": "기타 오류"}
 RUN_STATUS = {"ok": "성공", "failed": "실패", "skipped": "건너뜀"}
 
 

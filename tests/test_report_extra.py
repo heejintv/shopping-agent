@@ -170,6 +170,11 @@ class MismatchTest(tc.Base):
         self.assertNotIn("blocked", d)
         self.assertEqual(self.admin("post", "/approve", json={"id": d["id"]}).status_code, 200)
 
+    def test_page_blocks_approve(self):
+        html = (ROOT / "admin.html").read_text(encoding="utf-8")
+        for s in ('id="reportBlocked"', "!!d.blocked"):
+            self.assertIn(s, html)
+
     def test_run_text(self):
         run = {"id": 2, "at": NOW.isoformat(), "status": "failed", "reason": "mismatch", "detail": DETAIL * 3}
         self.assertEqual(dr.run_summary(run, None, NOW)["text"],
@@ -198,40 +203,6 @@ class MismatchTest(tc.Base):
             self.assertIsNone(members.last_run("auto"))
         self.assertEqual(sent[1]["reason"], "mismatch")   # 상세만 빼고 남김
         self.assertIn("neq.practice", sent[-1]["or"])
-
-
-class PracticeTest(tc.Base):
-    def test_admin_only(self):
-        self.assertEqual(self.admin("post", "/practice", None).status_code, 401)
-        self.assertEqual(self.admin("post", "/practice", "user-token").status_code, 403)
-        self.assertEqual(self.runs, [])
-
-    def test_api(self):
-        with mock.patch.object(gemini, "chat_gemini") as chat, mock.patch.object(report_crew, "available", return_value=False):
-            res = self.admin("post", "/practice")   # crewai 없이도 됨
-        d = res.get_json()
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(len([c for c in d["checks"] if not c["ok"]]), 1)
-        chat.assert_not_called()
-        for m in (self.crew, self.save, self.usage):
-            m.assert_not_called()
-        self.assertEqual(server._report, {"state": "none"})
-        self.assertEqual(self.runs, [("manual", "skipped", "practice", None, d["mismatches"])])
-        self.assertFalse(d["logged"])   # 가짜 log_run은 True를 돌려주지 않음
-
-    def test_every_key_makes_exactly_one_error(self):
-        for key in dr.PRACTICE_KEYS:
-            p = dr.practice(NOW, key)
-            bad = [c for c in p["checks"] if not c["ok"]]
-            self.assertEqual([c["id"] for c in bad], [key])
-            self.assertEqual(len(p["checks"]), len(dr.PRACTICE_KEYS))
-            self.assertEqual(len(p["mismatches"]), 1)
-            self.assertAlmostEqual(float(bad[0]["number"]), bad[0]["expected"] + 1)
-
-    def test_page(self):
-        html = (ROOT / "admin.html").read_text(encoding="utf-8")
-        for s in ("틀린 초안으로 검토 연습", "/admin/report/practice", 'id="reportBlocked"', "!!d.blocked"):
-            self.assertIn(s, html)
 
 
 class RunSummaryTest(unittest.TestCase):
