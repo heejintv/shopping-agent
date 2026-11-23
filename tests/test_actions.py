@@ -199,9 +199,11 @@ class StepCallTest(unittest.TestCase):
         out, _, _ = self.run_with(parts)
         self.assertEqual(out, {"type": "text", "text": "2번을 찜했어요."})
 
-    def test_empty_is_error(self):
-        with self.assertRaises(EngineError):
-            self.run_with([])
+    def test_empty_final_text(self):
+        """최종 답이 비면 오류가 아니라 빈 답 (화면이 실행 결과 문구로 대신 표시)."""
+        self.assertEqual(self.run_with([])[0], {"type": "text", "text": ""})
+        only_thought = [SimpleNamespace(thought=True, text="생각", function_call=None)]
+        self.assertEqual(self.run_with(only_thought)[0], {"type": "text", "text": ""})
 
 
 class ApiBase(unittest.TestCase):
@@ -306,6 +308,14 @@ class StepApiTest(ApiBase):
         self.assertEqual(d["type"], "call")
         self.assertIn("형식이 잘못", d["rejected"])            # 화면은 실행하지 않고 사유를 functionResponse로 돌려보냄
         self.assertEqual(d["call"]["args"], {"number": "두번째"})
+
+    def test_empty_final_answer_passes_through(self):
+        cmd = self.post([user_turn()]).get_json()["cmd"]
+        self.step.return_value = {"type": "text", "text": ""}
+        c = [user_turn(), call_turn("add_favorite", {"number": 1}), resp_turn("add_favorite", {"ok": True})]
+        res = self.post(c, cmd)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.get_json()["text"], "")
 
     def test_unknown_function_ends(self):
         self.step.return_value = {"type": "call", "name": "delete_all", "args": {}, "signature": None}

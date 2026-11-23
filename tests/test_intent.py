@@ -46,6 +46,33 @@ class IntentTest(unittest.TestCase):
             self.assertFalse(self.result[t], f"질문인데 ⚡로 감: {t!r}")
 
 
+JOSA = [   # (단어, 조사 쌍, 기대값)
+    ("로지텍 K295", "을/를", "로지텍 K295를"), ("로지텍 M196", "을/를", "로지텍 M196을"),
+    ("에어팟 프로 2", "을/를", "에어팟 프로 2를"), ("키보드", "을/를", "키보드를"), ("애플 에어팟", "을/를", "애플 에어팟을"),
+    ("“로지텍 Pebble”", "을/를", "“로지텍 Pebble”를"), ("“저소음 키보드”", "은/는", "“저소음 키보드”는"),
+    ("마우스", "은/는", "마우스는"), ("이어폰", "은/는", "이어폰은"), ("갤럭시 버즈", "이/가", "갤럭시 버즈가"),
+    ("Galaxy M", "을/를", "Galaxy M을"), ("Pixel", "을/를", "Pixel을"), ("서울", "으로/로", "서울로"), ("집", "으로/로", "집으로"),
+    ("소니 WH-1000", "을/를", "소니 WH-1000을"), ("K7", "을/를", "K7을"),
+]
+
+
+@unittest.skipUnless(NODE, "node가 없어요")
+class JosaTest(unittest.TestCase):
+    def test_josa(self):
+        script = ("const {josa} = require(process.argv[1]);"
+                  "console.log(JSON.stringify(JSON.parse(process.argv[2]).map(([w, p]) => josa(w, p))));")
+        out = subprocess.run([NODE, "-e", script, str(ROOT / "intent.js"), json.dumps([[w, p] for w, p, _ in JOSA])],
+                             capture_output=True, text=True, timeout=30, check=True).stdout
+        for (w, p, want), got in zip(JOSA, json.loads(out)):
+            self.assertEqual(got, want, (w, p))
+
+    def test_no_placeholder_josa_in_page(self):
+        """화면 문구에 "을(를)"·"은(는)" 같은 자리표시 조사를 쓰지 않음."""
+        html = (ROOT / "index.html").read_text(encoding="utf-8")
+        for bad in ("을(를)", "은(는)", "이(가)", "와(과)"):
+            self.assertNotIn(bad, html)
+
+
 class IntentFileTest(unittest.TestCase):
     def test_served_and_loaded(self):
         import os, tempfile, sys  # noqa: E401

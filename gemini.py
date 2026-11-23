@@ -210,7 +210,8 @@ def _to_contents(contents: list[dict], types) -> list:
 
 def step_call(system: str, contents: list[dict], tools: dict, timeout: int, usage: dict | None = None) -> dict:
     """Function Calling 한 번 (함수는 실행하지 않음). tools = {이름: (설명, JSON 스키마 또는 None, ...)}.
-    → {"type": "call", "name", "args", "signature"(base64 또는 None)} 또는 {"type": "text", "text"}. 실패하면 EngineError."""
+    → {"type": "call", "name", "args", "signature"(base64 또는 None)} 또는 {"type": "text", "text"(빈 문자열일 수 있음)}.
+    호출이 실패하면 EngineError."""
     client, types = _client(timeout)
     decls = [types.FunctionDeclaration(name=n, description=t[0], parameters_json_schema=t[1]) if t[1]
              else types.FunctionDeclaration(name=n, description=t[0]) for n, t in tools.items()]
@@ -240,7 +241,5 @@ def step_call(system: str, contents: list[dict], tools: dict, timeout: int, usag
                     "signature": base64.b64encode(sig).decode() if sig else None}
         if getattr(part, "text", None):
             texts.append(part.text)
-    text = "".join(texts).strip()
-    if not text:
-        raise EngineError("Gemini가 빈 답변을 보냈어요. 다시 시도해 주세요.")
-    return {"type": "text", "text": text}
+    # 최종 답이 비어 있어도 오류로 보지 않음 (화면이 실행 결과로 대신 안내)
+    return {"type": "text", "text": "".join(texts).strip()}

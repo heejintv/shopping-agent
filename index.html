@@ -357,7 +357,7 @@
   #actMode { flex: none; width: 40px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--muted); font-size: 16px; }
   #actMode[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
   #actMode:disabled { opacity: .5; cursor: default; }
-  #actLog { padding: 0 14px 10px; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #actLog { padding: 0 14px 10px; font-size: 12px; line-height: 1.5; color: var(--muted); white-space: normal; overflow-wrap: anywhere; word-break: keep-all; }
   #chatBox.guest #actLog { display: none; }
   .act-opts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .act-opts .act-ask { margin-top: 0; }
@@ -1921,25 +1921,31 @@ async function compareFavorites(condition, cmd) {
   }
   const cmp = (r.keys || []).map(k => wishList.find(w => w.key === k));
   const names = cmp.map(w => w ? productLabel(w) : "?");
-  const what = condition ? `“${condition}” ` : "";
-  chatAdd("info", `⚖️ 1:1 비교: ${names.join("  vs  ")}` + (r.matched > 2 ? `\n(${what}찜 ${r.matched}개 중 최근 2개)` : ""));
   const i = Number.isInteger(r.pick_id) && cmp[r.pick_id] ? r.pick_id : null;
-  if (cmp.every(Boolean)) chatAddAnswer(r.answer, i, k => openCompare(cmp, k), "👉 비교 화면에서 보기");
-  else chatAdd("bot", r.answer);   // 기다리는 동안 찜이 바뀜: 답만 보여 줌
-  return { response: { ok: true, compared: names, recommended: i != null ? names[i] : null,
-    note: "추천 문장은 화면에 이미 보였어요. 한 문장으로 마무리하세요." },
-    summary: `${names.join(" vs ")}${i != null ? ` → 추천 ${names[i]}` : ""}` };
+  const more = r.matched > 2 ? ` (찜 ${r.matched}개 중 최근 2개)` : "";
+  return {
+    response: { ok: true, compared: names, recommended: i != null ? names[i] : null, analysis: r.answer,
+      note: "analysis는 서버가 숫자를 확인한 비교 결과예요. 추천 상품과 이유를 2~3문장으로 전해 주세요." },
+    summary: `${names.join(" vs ")}${more}${i != null ? ` → 추천 ${names[i]}` : ""}`,
+    message: r.answer,   // 최종 답이 비면 이 비교 답을 대신 보여 줌
+    see: cmp.every(Boolean) ? { pid: i ?? 0, onPick: k => openCompare(cmp, k), label: "👉 비교 화면에서 보기" } : null,
+  };
 }
 
-// 함수 하나 실행 → {response(Gemini에 돌려줄 결과), summary(실행 기록 문구), stop?}
-async function execTool(name, args, cmd) {
+// 조사: 받침에 맞게 (intent.js의 josa, 없으면 받침 없는 쪽)
+const jo = (w, pair) => window.josa ? window.josa(w, pair) : w + pair.split("/")[1];
+const q = w => `“${w}”`;   // 따옴표 안 이름에 조사를 붙일 때: jo(q(name), "을/를")
+
+// 함수 하나 실행 → {response(Gemini에 돌려줄 결과), summary(실행 기록 문구), message?(최종 답이 비면 대신 보일 문구),
+//                  see?(최종 답 아래 "보기" 링크), stop?}. 말풍선은 띄우지 않음 (말풍선은 Gemini 최종 답 하나)
+async function execTool(name, args, cmd, progress) {
   const products = shownResult?.products || [];
   const before = wishList.length;
   const noItem = n => ({ response: { error: `${n}번 상품이 지금 결과에 없어요 (결과 ${products.length}개).` }, summary: `${n}번 없음` });
   if (name === "find_in_results") return findInResults(args.description);
   if (name === "search") {
     if (searchCtl) return { response: { error: "이미 진행 중인 검색이 있어요." }, summary: "검색 중이라 못 함" };
-    actLogLine(`검색 중: ${args.query}`);
+    progress("검색 중…");
     const r = await searchAndWait(args.query);
     if (!r.ok) return { response: { error: r.error }, summary: `검색 실패: ${r.error}` };
     const list = r.result?.products || [];
@@ -1949,25 +1955,29 @@ async function execTool(name, args, cmd) {
   if (name === "add_favorite") {
     const p = products[args.number - 1];
     if (!p) return noItem(args.number);
+    const pid = products.indexOf(p);
+    const see = { pid, onPick: highlightProduct, label: "👉 결과에서 보기" };
+    highlightProduct(pid);   // 찜한(이미 찜된) 상품 카드 강조 (예전 추천 강조와 같은 방식)
     if (isWished(wishKey(p))) {
-      chatAdd("bot", `“${productLabel(p)}”은(는) 이미 찜했어요.`);
-      return { response: { ok: true, already: true, name: productLabel(p), count: before }, summary: `이미 찜 (${before}개)` };
+      return { response: { ok: true, already: true, name: productLabel(p), count: before }, summary: `이미 찜 (${before}개)`,
+        message: `${jo(q(productLabel(p)), "은/는")} 이미 찜했어요.`, see };
     }
     toggleWish(p, shownResult);   // 하트 버튼과 같은 함수
-    chatAdd("bot", `♥ “${productLabel(p)}”을(를) 찜했어요.`);
-    return { response: { ok: true, name: productLabel(p), before, after: wishList.length }, summary: `찜 ${before}→${wishList.length}` };
+    return { response: { ok: true, name: productLabel(p), before, after: wishList.length }, summary: `찜 ${before}→${wishList.length}`,
+      message: `♥ ${jo(q(productLabel(p)), "을/를")} 찜했어요.`, see };
   }
   if (name === "remove_favorite") {
     const p = args.number ? products[args.number - 1] : (findProduct(args.name, products) || findProduct(args.name, wishList));
-    if (!p) return args.number ? noItem(args.number) : { response: { error: `“${args.name}”을(를) 찾지 못했어요.` }, summary: "못 찾음" };
-    if (!isWished(wishKey(p))) return { response: { error: `“${productLabel(p)}”은(는) 찜 목록에 없어요.` }, summary: "찜에 없음" };
+    if (!p) return args.number ? noItem(args.number) : { response: { error: `${jo(q(args.name), "을/를")} 찾지 못했어요.` }, summary: "못 찾음" };
+    if (!isWished(wishKey(p))) return { response: { error: `${jo(q(productLabel(p)), "은/는")} 찜 목록에 없어요.` }, summary: "찜에 없음" };
     toggleWish(p, shownResult);
-    chatAdd("bot", `♡ “${productLabel(p)}”을(를) 찜에서 뺐어요.`);
-    return { response: { ok: true, name: productLabel(p), before, after: wishList.length }, summary: `찜 ${before}→${wishList.length}` };
+    return { response: { ok: true, name: productLabel(p), before, after: wishList.length }, summary: `찜 ${before}→${wishList.length}`,
+      message: `♡ ${jo(q(productLabel(p)), "을/를")} 찜에서 뺐어요.` };
   }
   if (name === "show_favorites") {
     renderWishSheet(); openSheet("wishSheet");
-    return { response: { count: wishList.length, items: wishList.slice(0, 20).map(productLabel) }, summary: `찜 ${wishList.length}개` };
+    return { response: { count: wishList.length, items: wishList.slice(0, 20).map(productLabel) }, summary: `찜 ${wishList.length}개`,
+      message: `찜 목록을 열었어요 (${wishList.length}개).` };
   }
   if (name === "compare_favorites") return compareFavorites(args.condition || "", cmd);
   if (name === "ask_user") {
@@ -1997,8 +2007,9 @@ async function chatAct(sentence, opts = {}) {
   chatBusy = true; chatSetEnabled();
   const contents = [{ role: "user", parts: [{ text: sentence }] }];
   const log = [];
-  const show = () => actLogLine(log.join(" → "));
+  const show = (extra = "") => actLogLine([...log, extra].filter(Boolean).join(" → "));
   let cmd = null, wait = null;
+  let message = "", see = null;   // 마지막 도구의 대신 보일 문구·보기 링크 (최종 답 말풍선에 붙임)
   try {
     for (let i = 0; i < ACT_MAX; i++) {
       const token = await authToken();
@@ -2016,18 +2027,28 @@ async function chatAct(sentence, opts = {}) {
       if (res.status === 401 && data.login_required) { loginExpired(res, data); throw new Error(data.error || "다시 로그인해 주세요."); }
       if (!res.ok) throw new Error(data.error || "문장으로 실행하지 못했어요. 버튼으로 해 주세요.");
       cmd = data.cmd || cmd;
-      if (data.type === "text") {   // 최종 답
-        chatAdd("bot", data.text);
-        log.push(data.rejected ? `거부: ${data.rejected}` : "완료");
-        return show();
+      if (data.type === "text") {   // 최종 답: 말풍선은 이것 하나. 비어 있으면 그때만 앱 문구로 대신
+        if (data.rejected) log.push(`거부: ${data.rejected}`);
+        show();
+        const text = String(data.text || "").trim();
+        if (!text && !message) return chatAdd("info", log.length ? "실행을 마쳤어요. 아래 실행 기록을 확인해 주세요." : "알아듣지 못했어요. 버튼으로 해 주세요.");
+        if (see) chatAddAnswer(text || message, see.pid, see.onPick, see.label);
+        else if (text) chatAdd("bot", text);
+        else chatAdd("info", message);
+        return;
       }
       const { name, args = {}, signature } = data.call || {};
       contents.push({ role: "model", parts: [{ functionCall: { name, args }, ...(signature ? { thoughtSignature: signature } : {}) }] });
       // 서버가 거부한 함수(입력값·권한 오류)는 실행하지 않고 사유를 Gemini에 돌려보냄
-      const r = data.rejected ? { response: { error: data.rejected }, summary: `거부: ${data.rejected}` } : await execTool(name, args, cmd);
+      const step = `${MARKS[i]} ${callLabel(name, args)}`;
+      show(step);
+      const r = data.rejected ? { response: { error: data.rejected }, summary: `거부: ${data.rejected}` }
+        : await execTool(name, args, cmd, text => show(`${step} → ${text}`));
       if (who !== authUser?.id) return;
-      log.push(`${MARKS[i]} ${callLabel(name, args)}${r.summary ? " → " + r.summary : ""}`);
+      log.push(`${step}${r.summary ? " → " + r.summary : ""}`);
       show();
+      if (r.message) message = r.message;
+      if (r.see) see = r.see;
       if (r.stop) return;
       contents.push({ role: "user", parts: [{ functionResponse: { name, response: r.response } }] });
     }
