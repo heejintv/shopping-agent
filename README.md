@@ -330,6 +330,7 @@ AI가 비교 이유에 "같은 점"이나 "상대가 더 나은 점"을 섞어 �
 | `admin_stats.py` | 관리자 대시보드 집계 (숫자 카드, Gemini 사용량, 순위, 최근 기록, 7일 그래프) |
 | `daily_report.py` | 일일 보고서 집계(어제 KST, 출처 포함, 개인정보 가림)와 숫자 대조. AI 없음 |
 | `report_crew.py` | CrewAI 작성·검토 Agent (Gemini만, 보고서 하나에 최대 5번, 수정 최대 2번). Python 3.13 이하 필요 |
+| `make_report.py` | 일일 보고서를 명령으로 만들기 (Claude Code `/daily-report`에서 사용) |
 | `admin.html` | 관리자 대시보드 화면 (데이터는 `/admin/stats`에서만 받음) |
 | `supabase/schema.sql` | Supabase 표 3개·가입 트리거·RLS 규칙. SQL Editor에서 실행 |
 | `supabase/check_favorites.sql` | 찜이 계정끼리 섞였는지 점검하는 SQL (읽기 전용, 삭제문은 주석) |
@@ -538,7 +539,7 @@ admin 계정으로 로그인하면 헤더에 **🛠 관리자** 버튼이 보입
 python -m unittest discover -s tests -v
 ```
 
-Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니다. 현재 **221개** 통과 (crewai가 없는 Python 3.14에서는 Crew 테스트 9개를 건너뜀).
+Supabase·Claude·Gemini는 가짜로 바꿔서 네트워크 없이 돌아갑니다. 현재 **223개** 통과 (crewai가 없는 Python 3.14에서는 Crew 테스트 9개를 건너뜀).
 
 | 파일 | 확인하는 것 |
 |---|---|

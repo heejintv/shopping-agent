@@ -4,7 +4,9 @@ Crew 테스트는 crewai가 있을 때만 (Python 3.14에는 설치되지 않음
 실행: python -m unittest discover -s tests -v
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -23,6 +25,7 @@ import app as server  # noqa: E402
 import auth  # noqa: E402
 import daily_report as dr  # noqa: E402
 import gemini  # noqa: E402
+import make_report  # noqa: E402
 import members  # noqa: E402
 import report_crew  # noqa: E402
 import stats  # noqa: E402
@@ -234,6 +237,29 @@ class NoCrewaiTest(unittest.TestCase):
 
     def test_crewai_not_loaded_at_start(self):
         self.run_server("", "assert 'crewai' not in sys.modules")
+
+
+class CliTest(unittest.TestCase):
+    def run_cli(self, available, state):
+        def fake(report_id):
+            server._report = {"state": state, "id": report_id}
+
+        out = io.StringIO()
+        with mock.patch.object(report_crew, "available", return_value=available), \
+                mock.patch.object(server, "_report", {"state": "none"}), \
+                mock.patch.object(server, "_make_report", side_effect=fake) as make, contextlib.redirect_stdout(out):
+            code = make_report.main()
+        return code, out.getvalue(), make
+
+    def test_no_crewai(self):
+        code, out, make = self.run_cli(False, "draft")
+        self.assertEqual((code, out.strip()), (2, report_crew.UNAVAILABLE))
+        make.assert_not_called()
+
+    def test_result_and_error(self):
+        code, out, _ = self.run_cli(True, "draft")
+        self.assertEqual((code, json.loads(out)["state"]), (0, "draft"))
+        self.assertEqual(self.run_cli(True, "error")[0], 1)
 
 
 class ApiTest(unittest.TestCase):
