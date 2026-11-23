@@ -919,7 +919,7 @@ class MultiSelectTest(GraphBase):
         html = (ROOT / "index.html").read_text(encoding="utf-8")
         body = html[html.index("function askMulti("):]
         body = body[:body.index("\n}\n")]
-        self.assertIn("picked.size < mn || picked.size > mx", body)            # 개수 맞을 때만 보내기 버튼
+        self.assertIn("picked.length < mn || picked.length > mx", body)            # 개수 맞을 때만 보내기 버튼
         self.assertIn("p.selected", body)                                       # 다시 물을 때 선택 유지
         self.assertIn("b.disabled = true", body)                                # 답한 질문의 버튼은 비활성화
         sub = html[html.index('$("chatForm").addEventListener("submit"'):]
