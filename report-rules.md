@@ -38,6 +38,15 @@ aggregates의 date 하루치 운영 보고서를 써라. label이 있으면 아�
 {"summary": ["사용 기록이 없는 날이에요"], "anomalies": ["특이 사항 없음"], "suggestions": ["제안 없음"]}
 이유를 추측하거나(시스템 점검, 장애, 휴일 등) 할 일을 덧붙이지 않는다.
 
+## 이상 징후 기준
+
+판정은 Python(`daily_report.RULES`)이 한다. 아래는 사람이 보는 설명이며 Agent에는 aggregates의 anomalies로 전달된다.
+- 검색 실패율 > 10%
+- 새 검색 평균 시간 > 90초
+- 실패 중 기타 비율 ≥ 50%
+- Gemini 하루 한도 사용률 > 80%
+- 한도 도달 사용자 ≥ 1명
+
 ## 검토
 
 초안의 모든 숫자를 하나씩 aggregates와 대조해라.

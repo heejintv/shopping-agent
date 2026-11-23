@@ -35,10 +35,10 @@ CARDS = ("search.total", "action.total", "search.avg_sec", "search.fail_rate")  
 # 요약 1줄(사용량)·2줄(성능)에 있어야 하는 근거
 USAGE_KEYS = ("search.total", "search.ok", "search.cached", "chat.total", "action.total", "gemini.calls", "users.limited")
 PERF_KEYS = ("search.avg_sec", "search.fail_rate", "search.failed")
-# 이상 징후 규칙: (id, 이름, 보는 값, 비교, 기준값, 단위)
+# 이상 징후 규칙: (id, 이름, 보는 값, 비교, 기준값, 단위). 바꾸면 report-rules.md의 "이상 징후 기준"도 맞추기
 RULES = (
     ("rule.fail_rate", "검색 실패율", "search.fail_rate", ">", 10, "%"),
-    ("rule.avg_sec", "새 검색 평균 시간", "search.avg_sec", ">", 45, "초"),
+    ("rule.avg_sec", "새 검색 평균 시간", "search.avg_sec", ">", 90, "초"),
     ("rule.other_rate", "실패 중 기타 비율", "search.other_rate", "≥", 50, "%"),
     ("rule.gemini_rate", "Gemini 하루 한도 사용률", "gemini.usage_rate", ">", 80, "%"),
     ("rule.limited_users", "한도 도달 사용자", "users.limited", "≥", 1, "명"),

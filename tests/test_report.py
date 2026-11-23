@@ -180,8 +180,8 @@ class RuleTest(unittest.TestCase):
         self.assertNotEqual(v["value"], 10)
 
     def test_avg_sec(self):
-        self.assertFalse(self.judged(self.searches(1, duration_ms=45000))[0]["rule.avg_sec"]["triggered"])
-        self.assertTrue(self.judged(self.searches(1, duration_ms=45001))[0]["rule.avg_sec"]["triggered"])
+        self.assertFalse(self.judged(self.searches(1, duration_ms=90000))[0]["rule.avg_sec"]["triggered"])
+        self.assertTrue(self.judged(self.searches(1, duration_ms=90001))[0]["rule.avg_sec"]["triggered"])
 
     def test_other_rate(self):
         other, known = row("11-19 10:00", status="error", error_kind="other"), self.searches(0, 1)
@@ -469,7 +469,7 @@ class TodoTest(unittest.TestCase):
 
     def test_priority(self):
         self.assertEqual(dr.build(ROWS, EVENTS, NOW)["top_anomaly"]["id"], "rule.fail_rate")
-        agg = dr.build([row("11-19 10:00", duration_ms=50000), row("11-19 10:00", status="limited")], [], NOW)
+        agg = dr.build([row("11-19 10:00", duration_ms=100000), row("11-19 10:00", status="limited")], [], NOW)
         self.assertEqual(agg["top_anomaly"], {"id": "rule.limited_users", "label": "한도 도달 사용자"})
         self.assertIsNone(dr.build([row("11-19 10:00")], [], NOW)["top_anomaly"])
         self.assertEqual(set(dr.PRIORITY), {r[0] for r in dr.RULES})   # 빠진 규칙 없음

@@ -273,6 +273,11 @@ class RulesFileTest(unittest.TestCase):
         self.assertIn(json.dumps(dr.NO_USAGE_DRAFT, ensure_ascii=False), report_crew.load_rules()["사용 없음"])
         self.assertIn(dr.NO_USAGE_DRAFT["summary"][0], report_crew.load_rules()["검토"])
 
+    def test_thresholds_same_as_python(self):
+        text = report_crew.load_rules()["이상 징후 기준"]
+        lines = [x[2:] for x in text.splitlines() if x.startswith("- ")]
+        self.assertEqual(lines, [f"{label} {op} {base}{unit}" for _, label, _, op, base, unit in dr.RULES])
+
     def test_todo_rule(self):
         rules = report_crew.load_rules()
         for name in ("작성", "검토"):
